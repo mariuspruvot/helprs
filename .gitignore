@@ -40,3 +40,8 @@ htmlcov/
 
 # Alembic
 apps/api/alembic/versions/*.pyc
+
+# BMAD planning & tooling (kept locally, not tracked in production repo)
+_bmad/
+_bmad-output/
+.claude/
