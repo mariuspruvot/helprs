@@ -55,7 +55,6 @@ class BYOKConfigAdmin(ModelView, model=BYOKConfig):
         BYOKConfig.validated_at,
         BYOKConfig.created_at,
     ]
-    column_exclude_list = [BYOKConfig.encrypted_api_key]
     column_details_exclude_list = [BYOKConfig.encrypted_api_key]
     name = "BYOK Config"
     name_plural = "BYOK Configs"
