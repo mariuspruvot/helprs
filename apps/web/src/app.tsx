@@ -1,4 +1,8 @@
 import { BrowserRouter, Routes, Route } from 'react-router'
+import OAuthCallback from './features/auth/OAuthCallback'
+import ProtectedRoute from './features/auth/ProtectedRoute'
+import SetupView from './features/installation/SetupView'
+import SettingsView from './features/installation/SettingsView'
 
 function Home() {
   return (
@@ -18,6 +22,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/auth/callback" element={<OAuthCallback />} />
+        <Route path="/installations/:installationId/setup" element={<ProtectedRoute><SetupView /></ProtectedRoute>} />
+        <Route path="/installations/:installationId/settings" element={<ProtectedRoute><SettingsView /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   )

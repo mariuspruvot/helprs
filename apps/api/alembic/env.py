@@ -14,7 +14,11 @@ if config.config_file_name is not None:
 if database_url := os.environ.get("DATABASE_URL"):
     config.set_main_option("sqlalchemy.url", database_url)
 
-target_metadata = None
+from helprs.core.database import Base  # noqa: E402
+from helprs.modules.identity.models import GitHubUser  # noqa: E402, F401
+from helprs.modules.installation.models import BYOKConfig, Installation  # noqa: E402, F401
+
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
