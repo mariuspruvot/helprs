@@ -1,22 +1,33 @@
+import importlib
 import os
+import pkgutil
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from DATABASE_URL env var if available
-if database_url := os.environ.get("DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", database_url)
+# DATABASE_URL must be set — alembic.ini placeholder is not a valid connection string
+database_url = os.environ.get("DATABASE_URL")
+if not database_url:
+    raise RuntimeError("DATABASE_URL environment variable is required for migrations")
+config.set_main_option("sqlalchemy.url", database_url)
 
+# Auto-discover all models so Alembic sees every table for autogenerate
+import helprs.modules  # noqa: E402
 from helprs.core.database import Base  # noqa: E402
-from helprs.modules.identity.models import GitHubUser  # noqa: E402, F401
-from helprs.modules.installation.models import BYOKConfig, Installation  # noqa: E402, F401
+
+for _, module_name, _ in pkgutil.walk_packages(
+    helprs.modules.__path__, prefix="helprs.modules."
+):
+    if module_name.endswith(".models"):
+        importlib.import_module(module_name)
 
 target_metadata = Base.metadata
 
