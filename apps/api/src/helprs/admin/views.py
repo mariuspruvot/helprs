@@ -10,7 +10,11 @@ from helprs.modules.installation.models import BYOKConfig, Installation
 
 class GitHubUserAdmin(ModelView, model=GitHubUser):
     column_list = [
-        GitHubUser.id, GitHubUser.github_id, GitHubUser.github_login, GitHubUser.email, GitHubUser.created_at,
+        GitHubUser.id,
+        GitHubUser.github_id,
+        GitHubUser.github_login,
+        GitHubUser.email,
+        GitHubUser.created_at,
     ]
     column_searchable_list = [GitHubUser.github_login, GitHubUser.email]
     column_sortable_list = [GitHubUser.github_id, GitHubUser.github_login, GitHubUser.created_at]
@@ -70,9 +74,7 @@ class AdminAuth(AuthenticationBackend):
         settings = get_settings()
         # For MVP: accept any login if ENVIRONMENT is development,
         # otherwise require ADMIN_PASSWORD
-        if settings.ENVIRONMENT == "development" or (
-            settings.ADMIN_PASSWORD and password == settings.ADMIN_PASSWORD
-        ):
+        if settings.ENVIRONMENT == "development" or (settings.ADMIN_PASSWORD and password == settings.ADMIN_PASSWORD):
             request.session.update({"authenticated": True})
             return True
         return False

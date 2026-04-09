@@ -116,9 +116,7 @@ class TestGithubCallback:
                 follow_redirects=False,
             ) as client:
                 client.cookies.set("oauth_state", state)
-                resp = await client.get(
-                    f"/api/v1/auth/github/callback?code=test_code&state={state}"
-                )
+                resp = await client.get(f"/api/v1/auth/github/callback?code=test_code&state={state}")
                 assert resp.status_code == 307
                 location = resp.headers["location"]
                 assert "access_token=" in location
@@ -130,9 +128,7 @@ class TestGithubCallback:
             base_url="http://test",
             follow_redirects=False,
         ) as client:
-            resp = await client.get(
-                "/api/v1/auth/github/callback?code=test&state=invalid"
-            )
+            resp = await client.get("/api/v1/auth/github/callback?code=test&state=invalid")
             assert resp.status_code == 401
 
 

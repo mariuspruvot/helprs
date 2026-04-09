@@ -14,9 +14,7 @@ class Installation(Base):
 
     __tablename__ = "installations"
 
-    github_installation_id: Mapped[int] = mapped_column(
-        BigInteger, unique=True, index=True, nullable=False
-    )
+    github_installation_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
     account_login: Mapped[str] = mapped_column(String(255), nullable=False)
     account_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     account_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -26,16 +24,10 @@ class Installation(Base):
     permissions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     events: Mapped[list | None] = mapped_column(JSON, nullable=True)
     suppression_labels: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
-    suspended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    byok_config: Mapped["BYOKConfig | None"] = relationship(
-        "BYOKConfig", back_populates="installation", uselist=False
-    )
+    byok_config: Mapped["BYOKConfig | None"] = relationship("BYOKConfig", back_populates="installation", uselist=False)
 
 
 class BYOKConfig(Base):
@@ -48,11 +40,7 @@ class BYOKConfig(Base):
     )
     encrypted_api_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     key_status: Mapped[str] = mapped_column(String(20), default="valid")
-    validated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     key_hint: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
-    installation: Mapped["Installation"] = relationship(
-        "Installation", back_populates="byok_config"
-    )
+    installation: Mapped["Installation"] = relationship("Installation", back_populates="byok_config")

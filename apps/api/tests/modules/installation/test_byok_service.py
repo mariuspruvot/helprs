@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from cryptography.fernet import Fernet
 
 from helprs.core.exceptions import BYOKKeyInvalidError, ExternalServiceError
 from helprs.core.security import fernet_encrypt
@@ -78,17 +77,19 @@ class TestConfigureByok:
         assert config.installation_id == test_installation.id
 
     async def test_invalid_key_raises(self, db_session, test_installation, settings):
-        with patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
-            return_value=False,
+        with (
+            patch(
+                "helprs.modules.installation.service.validate_anthropic_api_key",
+                return_value=False,
+            ),
+            pytest.raises(BYOKKeyInvalidError, match="validation failed"),
         ):
-            with pytest.raises(BYOKKeyInvalidError, match="validation failed"):
-                await configure_byok(
-                    db_session,
-                    test_installation.id,
-                    "sk-ant-bad-key",
-                    settings.FERNET_KEY,
-                )
+            await configure_byok(
+                db_session,
+                test_installation.id,
+                "sk-ant-bad-key",
+                settings.FERNET_KEY,
+            )
 
     async def test_upsert_updates_existing(self, db_session, test_installation, settings):
         with patch(

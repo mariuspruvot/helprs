@@ -97,9 +97,7 @@ class TestFetchGithubUser:
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 401
-            mock_client.get.side_effect = httpx.HTTPStatusError(
-                "Unauthorized", request=MagicMock(), response=mock_resp
-            )
+            mock_client.get.side_effect = httpx.HTTPStatusError("Unauthorized", request=MagicMock(), response=mock_resp)
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
