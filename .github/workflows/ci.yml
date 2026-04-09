@@ -45,6 +45,10 @@ jobs:
       - run: uv run pytest
         env:
           DATABASE_URL: postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test
+          SECRET_KEY: ci-test-secret-key
+          FERNET_KEY: "-fB7lL74GHGbXnRClRQTaBP9_flqSUHFC9_c2n3Tvbo="
+          GITHUB_APP_ID: "000000"
+          ENVIRONMENT: test
 
   lint-frontend:
     runs-on: ubuntu-latest
