@@ -1,0 +1,48 @@
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/Dockerfile.api
+      target: dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api/src:/app/src
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uv run uvicorn helprs.main:app --host 0.0.0.0 --port 8000 --reload
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: ../../infra/docker/Dockerfile.web
+      target: dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./apps/web/src:/app/src
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    command: npx vite --host 0.0.0.0 --port 5173
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: helprs
+      POSTGRES_USER: helprs
+      POSTGRES_PASSWORD: helprs
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helprs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

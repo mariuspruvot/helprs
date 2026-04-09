@@ -1,0 +1,22 @@
+.PHONY: dev lint test build migrate types
+
+dev:
+	docker compose up --build
+
+lint:
+	cd apps/api && uv run ruff check src/ tests/
+	cd apps/api && uv run ruff format --check src/ tests/
+	cd apps/web && npx eslint src/
+
+test:
+	cd apps/api && uv run pytest
+	cd apps/web && npx vitest run
+
+build:
+	docker compose -f infra/coolify/docker-compose.prod.yml build
+
+migrate:
+	cd apps/api && uv run alembic upgrade head
+
+types:
+	@echo "OpenAPI → TypeScript type generation (configured in future story)"
