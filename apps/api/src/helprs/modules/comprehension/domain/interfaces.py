@@ -1,0 +1,1 @@
+"""Comprehension domain interfaces (ports)."""
