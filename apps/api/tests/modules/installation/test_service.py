@@ -51,9 +51,7 @@ class TestCreateInstallation:
 
 class TestSoftDeleteInstallation:
     async def test_sets_deleted_at(self, db_session, test_installation):
-        result = await soft_delete_installation(
-            db_session, test_installation.github_installation_id
-        )
+        result = await soft_delete_installation(db_session, test_installation.github_installation_id)
 
         assert result is not None
         assert result.deleted_at is not None
@@ -73,9 +71,7 @@ class TestSoftDeleteInstallation:
 
 class TestGetInstallationByGithubId:
     async def test_finds_installation(self, db_session, test_installation):
-        result = await get_installation_by_github_id(
-            db_session, test_installation.github_installation_id
-        )
+        result = await get_installation_by_github_id(db_session, test_installation.github_installation_id)
         assert result is not None
         assert result.id == test_installation.id
 
@@ -83,9 +79,7 @@ class TestGetInstallationByGithubId:
         test_installation.deleted_at = datetime.now(UTC)
         await db_session.flush()
 
-        result = await get_installation_by_github_id(
-            db_session, test_installation.github_installation_id
-        )
+        result = await get_installation_by_github_id(db_session, test_installation.github_installation_id)
         assert result is None
 
 

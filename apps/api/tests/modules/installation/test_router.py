@@ -90,14 +90,10 @@ class TestListInstallations:
 
         # Mock GitHub API /user/installations to return our test installation
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "installations": [{"id": installation.github_installation_id}]
-        }
+        mock_response.json.return_value = {"installations": [{"id": installation.github_installation_id}]}
         mock_response.raise_for_status = MagicMock()
 
-        with patch(
-            "helprs.modules.installation.service.httpx.AsyncClient"
-        ) as mock_client_cls:
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.get.return_value = mock_response
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -109,10 +105,7 @@ class TestListInstallations:
         assert response.status_code == 200
         data = response.json()
         assert data["total"] >= 1
-        assert any(
-            i["github_installation_id"] == installation.github_installation_id
-            for i in data["items"]
-        )
+        assert any(i["github_installation_id"] == installation.github_installation_id for i in data["items"])
 
     async def test_without_auth_returns_401(self, app_with_db):
         async with AsyncClient(
@@ -132,18 +125,14 @@ class TestGetInstallation:
         mock_response.json.return_value = {"role": "admin", "state": "active"}
         mock_response.raise_for_status = MagicMock()
 
-        with patch(
-            "helprs.modules.installation.service.httpx.AsyncClient"
-        ) as mock_client_cls:
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.get.return_value = mock_response
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
 
-            response = await client.get(
-                f"/api/v1/installations/{installation.github_installation_id}"
-            )
+            response = await client.get(f"/api/v1/installations/{installation.github_installation_id}")
 
         assert response.status_code == 200
         data = response.json()

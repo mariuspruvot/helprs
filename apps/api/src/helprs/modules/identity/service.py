@@ -79,9 +79,7 @@ async def get_or_create_user(
     github_id = github_user_data["id"]
     encrypted_token = fernet_encrypt(access_token, settings.FERNET_KEY)
 
-    result = await session.execute(
-        select(GitHubUser).where(GitHubUser.github_id == github_id)
-    )
+    result = await session.execute(select(GitHubUser).where(GitHubUser.github_id == github_id))
     user = result.scalar_one_or_none()
 
     if user:
@@ -148,9 +146,7 @@ async def refresh_tokens(
     except (ValueError, AttributeError) as e:
         raise UnauthorizedError("Invalid refresh token payload") from e
 
-    result = await session.execute(
-        select(GitHubUser).where(GitHubUser.id == user_id)
-    )
+    result = await session.execute(select(GitHubUser).where(GitHubUser.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise UnauthorizedError("User not found")

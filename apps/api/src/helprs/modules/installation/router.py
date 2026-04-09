@@ -17,7 +17,6 @@ from helprs.modules.installation.schemas import (
 from helprs.modules.installation.service import (
     configure_byok,
     delete_byok_config,
-    get_byok_config,
     get_installation_by_github_id,
     get_installations_for_user,
     update_suppression_labels,
@@ -100,9 +99,7 @@ async def post_byok(
     if not installation:
         raise NotFoundError("Installation not found")
     await verify_admin_permission(user, installation, settings)
-    config = await configure_byok(
-        session, installation.id, body.api_key, settings.FERNET_KEY
-    )
+    config = await configure_byok(session, installation.id, body.api_key, settings.FERNET_KEY)
     return BYOKConfigResponse.model_validate(config)
 
 

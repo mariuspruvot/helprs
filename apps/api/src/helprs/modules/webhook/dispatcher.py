@@ -21,9 +21,7 @@ _HANDLERS: dict[tuple[str, str], object] = {
 }
 
 
-async def dispatch_webhook(
-    event_type: str, action: str, payload: dict, session: AsyncSession
-) -> None:
+async def dispatch_webhook(event_type: str, action: str, payload: dict, session: AsyncSession) -> None:
     """Route webhook events to the appropriate handler."""
     handler = _HANDLERS.get((event_type, action))
     if handler:

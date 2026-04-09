@@ -29,11 +29,13 @@ async def github_login(request: Request, settings: GetSettings):
     """Redirect to GitHub OAuth authorization page."""
     state = secrets.token_urlsafe(32)
     # Store state in a cookie for CSRF validation on callback
-    params = urlencode({
-        "client_id": settings.GITHUB_CLIENT_ID,
-        "scope": OAUTH_SCOPES,
-        "state": state,
-    })
+    params = urlencode(
+        {
+            "client_id": settings.GITHUB_CLIENT_ID,
+            "scope": OAUTH_SCOPES,
+            "state": state,
+        }
+    )
     is_secure = settings.ENVIRONMENT != "development"
     response = RedirectResponse(url=f"{GITHUB_AUTHORIZE_URL}?{params}")
     response.set_cookie(

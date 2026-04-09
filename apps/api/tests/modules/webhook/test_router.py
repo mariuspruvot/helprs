@@ -37,9 +37,7 @@ async def app_with_db():
 @pytest.fixture
 async def app_client(app_with_db):
     """Create a test client from app_with_db."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app_with_db), base_url="http://test"
-    ) as ac:
+    async with AsyncClient(transport=ASGITransport(app=app_with_db), base_url="http://test") as ac:
         yield ac
 
 

@@ -17,9 +17,7 @@ class TestGetDefaultSuppressionLabels:
 
 class TestUpdateSuppressionLabels:
     async def test_success(self, db_session, test_installation):
-        result = await update_suppression_labels(
-            db_session, test_installation.id, ["hotfix", "wip"]
-        )
+        result = await update_suppression_labels(db_session, test_installation.id, ["hotfix", "wip"])
         assert result.suppression_labels == ["hotfix", "wip"]
 
     async def test_too_many_labels(self, db_session, test_installation):
@@ -38,7 +36,5 @@ class TestUpdateSuppressionLabels:
             await update_suppression_labels(db_session, test_installation.id, labels)
 
     async def test_empty_list(self, db_session, test_installation):
-        result = await update_suppression_labels(
-            db_session, test_installation.id, []
-        )
+        result = await update_suppression_labels(db_session, test_installation.id, [])
         assert result.suppression_labels == []

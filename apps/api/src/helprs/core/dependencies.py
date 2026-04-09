@@ -63,9 +63,7 @@ async def get_current_user(
     except (ValueError, AttributeError) as e:
         raise UnauthorizedError("Invalid token payload") from e
 
-    result = await session.execute(
-        select(GitHubUser).where(GitHubUser.id == user_id)
-    )
+    result = await session.execute(select(GitHubUser).where(GitHubUser.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise UnauthorizedError("User not found")

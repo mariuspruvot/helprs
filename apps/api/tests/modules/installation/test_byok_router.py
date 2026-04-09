@@ -11,8 +11,7 @@ from helprs.core.database import Base
 from helprs.core.security import create_access_token, fernet_encrypt
 from helprs.main import create_app
 from helprs.modules.identity.models import GitHubUser
-from helprs.modules.installation.models import BYOKConfig, Installation
-from helprs.modules.installation.service import configure_byok
+from helprs.modules.installation.models import Installation
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
 
@@ -106,9 +105,12 @@ class TestPostByok:
     async def test_valid_key(self, authed_client):
         client, inst_id, _ = authed_client
 
-        with _mock_admin_permission(), patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
-            return_value=True,
+        with (
+            _mock_admin_permission(),
+            patch(
+                "helprs.modules.installation.service.validate_anthropic_api_key",
+                return_value=True,
+            ),
         ):
             response = await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
@@ -124,9 +126,12 @@ class TestPostByok:
     async def test_invalid_key(self, authed_client):
         client, inst_id, _ = authed_client
 
-        with _mock_admin_permission(), patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
-            return_value=False,
+        with (
+            _mock_admin_permission(),
+            patch(
+                "helprs.modules.installation.service.validate_anthropic_api_key",
+                return_value=False,
+            ),
         ):
             response = await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
@@ -178,9 +183,12 @@ class TestDeleteByok:
         client, inst_id, session_factory = authed_client
 
         # First create a BYOK config
-        with _mock_admin_permission(), patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
-            return_value=True,
+        with (
+            _mock_admin_permission(),
+            patch(
+                "helprs.modules.installation.service.validate_anthropic_api_key",
+                return_value=True,
+            ),
         ):
             await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
@@ -213,9 +221,12 @@ class TestGetInstallationIncludesByokStatus:
         client, inst_id, _ = authed_client
 
         # Configure BYOK first
-        with _mock_admin_permission(), patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
-            return_value=True,
+        with (
+            _mock_admin_permission(),
+            patch(
+                "helprs.modules.installation.service.validate_anthropic_api_key",
+                return_value=True,
+            ),
         ):
             await client.post(
                 f"/api/v1/installations/{inst_id}/byok",

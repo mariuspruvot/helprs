@@ -42,9 +42,7 @@ class SuppressionLabelsRequest(BaseModel):
             if len(label) > 50:
                 raise ValueError(f"Label '{label}' exceeds maximum 50 characters")
             if not re.match(r"^[a-zA-Z0-9\-]+$", label):
-                raise ValueError(
-                    f"Label '{label}' contains invalid characters. Only alphanumeric and hyphens allowed"
-                )
+                raise ValueError(f"Label '{label}' contains invalid characters. Only alphanumeric and hyphens allowed")
         return v
 
 
