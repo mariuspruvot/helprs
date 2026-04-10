@@ -1,3 +1,4 @@
+import { useSessionStore } from './store'
 import type { SessionResponse, SessionRole } from './types'
 
 interface SessionHeaderProps {
@@ -28,12 +29,16 @@ const ROLE_BADGE: Record<SessionRole, RoleBadgeStyle> = {
 // for the exact rgba()/hex role badge tones which are load-bearing per UX.
 export default function SessionHeader({ session }: SessionHeaderProps) {
   const badge = ROLE_BADGE[session.role]
-  // TODO: story-3.3 — replace the second `question_count` with the real total
-  // once questions are persisted. The shape of the string must remain stable
-  // for screen reader users tracking `aria-live`.
+  // Story 3.3: committed questions live in the store as chat messages
+  // with kind 'ai_question'. We count those (not the streamingQuestion)
+  // so the progress indicator only ticks forward on commit — not on
+  // every token arrival. The total comes from session.total_questions.
+  const committedQuestions = useSessionStore((s) =>
+    s.messages.filter((m) => m.kind === 'ai_question').length,
+  )
   const progressLabel =
-    session.question_count > 0
-      ? `Question ${session.question_count} of ${session.question_count}`
+    session.total_questions > 0
+      ? `Question ${committedQuestions} of ${session.total_questions}`
       : 'Questions pending...'
 
   return (

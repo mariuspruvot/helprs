@@ -162,6 +162,14 @@ async def _handle_pull_request_common(
         pr_head_sha=pr_head_sha,
         pr_diff_url=pr_diff_url,
         pr_labels=pr_labels,
+        # TODO(story-3.5): fetch the PR diff here to compute
+        # ``pr_diff_line_count`` so ``estimate_question_count`` gets a
+        # non-``None`` input. Currently ``None`` → the handler falls
+        # back to ``total_questions=5`` for every PR, which is fine for
+        # Story 3.3's minimal heuristic but defeats the point of the
+        # size-tiered sizing. Story 3.5 rewrites the heuristic anyway,
+        # so the diff-fetch wiring is tracked as part of that story.
+        pr_diff_line_count=None,
     )
 
     handler = StartSessionHandler(session)

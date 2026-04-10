@@ -13,12 +13,12 @@ back cleanly. This is deliberately the opposite of the webhook repository
 
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from helprs.modules.comprehension.domain.entities import PRContext, Session
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus
-from helprs.modules.comprehension.infrastructure.models import SessionModel
+from helprs.modules.comprehension.domain.entities import PRContext, Question, Session
+from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic
+from helprs.modules.comprehension.infrastructure.models import QuestionModel, SessionModel
 
 
 def _to_domain(row: SessionModel) -> Session:
@@ -40,8 +40,26 @@ def _to_domain(row: SessionModel) -> Session:
         pr_diff_url=row.pr_diff_url,
         role=SessionRole(row.role),
         status=SessionStatus(row.status),
+        total_questions=row.total_questions,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _to_domain_question(row: QuestionModel) -> Question:
+    """Map an ORM ``QuestionModel`` row to a domain ``Question``.
+
+    Mirrors ``_to_domain`` for sessions. The verbatim question text is
+    intentionally absent from both the ORM row and the domain entity
+    (FR35/NFR14) — only the SHA-256 ``text_hash`` is persisted.
+    """
+    return Question(
+        id=row.id,
+        session_id=row.session_id,
+        number=row.number,
+        topic=Topic(row.topic),
+        text_hash=row.text_hash,
+        created_at=row.created_at,
     )
 
 
@@ -51,11 +69,32 @@ class SqlAlchemySessionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def add_pair(self, *, pr_ctx: PRContext) -> tuple[Session, Session]:
-        """Insert an (author, reviewer) pair and flush to assign IDs."""
+    async def add_pair(
+        self,
+        *,
+        pr_ctx: PRContext,
+        total_questions: int = 5,
+    ) -> tuple[Session, Session]:
+        """Insert an (author, reviewer) pair and flush to assign IDs.
+
+        Story 3.3: ``total_questions`` is now written onto both rows at
+        creation time using ``StartSessionHandler``'s line-count
+        heuristic. Defaults to ``5`` for backward compatibility with
+        tests that don't care about sizing.
+        """
         shared = pr_ctx.to_columns()
-        author = SessionModel(role=SessionRole.AUTHOR.value, status=SessionStatus.PENDING.value, **shared)
-        reviewer = SessionModel(role=SessionRole.REVIEWER.value, status=SessionStatus.PENDING.value, **shared)
+        author = SessionModel(
+            role=SessionRole.AUTHOR.value,
+            status=SessionStatus.PENDING.value,
+            total_questions=total_questions,
+            **shared,
+        )
+        reviewer = SessionModel(
+            role=SessionRole.REVIEWER.value,
+            status=SessionStatus.PENDING.value,
+            total_questions=total_questions,
+            **shared,
+        )
         self._session.add_all((author, reviewer))
         # Flush — not commit — so the caller retains unit-of-work control.
         # IDs + created_at/updated_at are populated here.
@@ -145,3 +184,63 @@ class SqlAlchemySessionRepository:
         """
         row = await self._session.get(SessionModel, session_id)
         return _to_domain(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # Story 3.3: question persistence
+    # ------------------------------------------------------------------
+
+    async def count_questions(self, *, session_id: UUID) -> int:
+        """Return the number of ``QuestionModel`` rows for the session."""
+        result = await self._session.execute(
+            select(func.count()).select_from(QuestionModel).where(QuestionModel.session_id == session_id)
+        )
+        return int(result.scalar_one())
+
+    async def list_questions(self, *, session_id: UUID) -> list[Question]:
+        """Return all questions for the session, ordered by ``number`` ASC."""
+        result = await self._session.execute(
+            select(QuestionModel).where(QuestionModel.session_id == session_id).order_by(QuestionModel.number.asc())
+        )
+        rows = list(result.scalars().all())
+        return [_to_domain_question(r) for r in rows]
+
+    async def append_question(
+        self,
+        *,
+        session_id: UUID,
+        topic: Topic,
+        text_hash: str,
+    ) -> Question:
+        """Insert a new question row, auto-incrementing ``number``.
+
+        Serializes concurrent inserts for the same session with a
+        ``SELECT ... FOR UPDATE`` row lock on the parent ``sessions``
+        row, then computes ``next_number = max(number) + 1`` inside
+        the lock. This is simpler than a sequence per session and
+        keeps the ``(session_id, number)`` invariant sound under
+        concurrent SSE streams (e.g. user opens two tabs).
+
+        UoW rule: flushes but does NOT commit — the caller's outer
+        ``async with get_db_context() as tx`` block commits on
+        successful exit.
+        """
+        # Row-level lock on the parent session. asyncpg translates this
+        # to ``SELECT ... FOR UPDATE`` at the wire level.
+        await self._session.execute(select(SessionModel.id).where(SessionModel.id == session_id).with_for_update())
+        # Compute the next number while holding the lock. ``COALESCE``
+        # because the first question on a session has ``MAX == NULL``.
+        max_result = await self._session.execute(
+            select(func.coalesce(func.max(QuestionModel.number), 0)).where(QuestionModel.session_id == session_id)
+        )
+        next_number = int(max_result.scalar_one()) + 1
+
+        row = QuestionModel(
+            session_id=session_id,
+            number=next_number,
+            topic=topic.value,
+            text_hash=text_hash,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return _to_domain_question(row)

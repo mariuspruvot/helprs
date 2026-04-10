@@ -7,11 +7,12 @@ the ``LLMProvider`` port — the contract Story 3.3's PydanticAI provider
 will implement.
 """
 
+from collections.abc import AsyncIterator
 from typing import Protocol
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.entities import PRContext, Session
-from helprs.modules.comprehension.domain.value_objects import SessionRole
+from helprs.modules.comprehension.domain.entities import PRContext, Question, Session
+from helprs.modules.comprehension.domain.value_objects import SessionRole, Topic
 
 
 class SessionRepository(Protocol):
@@ -71,6 +72,44 @@ class SessionRepository(Protocol):
         """
         ...
 
+    # ------------------------------------------------------------------
+    # Story 3.3: question persistence (metadata-only — hash, never text)
+    # ------------------------------------------------------------------
+
+    async def count_questions(self, *, session_id: UUID) -> int:
+        """Return the number of questions already persisted for the session.
+
+        Used by ``GetSessionHandler`` to populate ``question_count`` on
+        the detail response, replacing the Story 3.1 hardcoded ``0``.
+        """
+        ...
+
+    async def list_questions(self, *, session_id: UUID) -> list[Question]:
+        """List all persisted questions for a session, ordered by ``number``.
+
+        Used by the SSE endpoint to decide which question numbers still
+        need to be generated (supports resume-after-disconnect without
+        duplicating already-persisted questions).
+        """
+        ...
+
+    async def append_question(
+        self,
+        *,
+        session_id: UUID,
+        topic: Topic,
+        text_hash: str,
+    ) -> Question:
+        """Persist a new question for the session, auto-incrementing ``number``.
+
+        The implementation takes a ``SELECT ... FOR UPDATE`` row lock on
+        the sessions row so the ``(session_id, number)`` uniqueness
+        invariant holds under concurrent streams. Flushes but does NOT
+        commit — the caller (an outer ``get_db_context`` block) owns
+        the transaction boundary.
+        """
+        ...
+
 
 class LLMProvider(Protocol):
     """Port for LLM calls.
@@ -82,6 +121,23 @@ class LLMProvider(Protocol):
     persisted anywhere along this path (FR35/NFR13).
     """
 
+    def stream_question(
+        self,
+        *,
+        pr_diff: str,
+        role: SessionRole,
+        previous_questions: list[str],
+        api_key: str,
+    ) -> AsyncIterator[str]:
+        """Yield question-text chunks as they arrive from the LLM.
+
+        Story 3.3 implementation: ``async for chunk in stream_question(...)``
+        returns token-level deltas. The fresh-Agent-per-call rule means
+        ``api_key`` is passed as a function argument and never stashed on
+        the provider instance (zero-retention, FR34).
+        """
+        ...
+
     async def generate_question(
         self,
         *,
@@ -89,7 +145,13 @@ class LLMProvider(Protocol):
         role: SessionRole,
         previous_questions: list[str],
         api_key: str,
-    ) -> str: ...
+    ) -> str:
+        """Non-streaming convenience: consume ``stream_question`` fully
+        and return the concatenated text. Kept so legacy callers and
+        tests that do not care about streaming semantics continue to
+        work unchanged.
+        """
+        ...
 
     async def generate_feedback(
         self,
