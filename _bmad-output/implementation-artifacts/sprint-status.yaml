@@ -1,5 +1,5 @@
 # generated: 2026-04-09
-# last_updated: 2026-04-10 # post code-review: 3-1 → awaiting-manual-qa (backfilled gate), 3-2 → in-progress (4 action items remain)
+# last_updated: 2026-04-10 # second-pass code review complete: 3-2 → awaiting-manual-qa (5 patches applied + 1 dismissed, 24 web tests green)
 # project: helprs
 # project_key: NOKEY
 # tracking_system: file-system
@@ -45,7 +45,7 @@
 #   'awaiting-manual-qa', unless invoked with `--skip-manual-qa-gate <reason>`.
 
 generated: 2026-04-09
-last_updated: 2026-04-10 # post code-review: 3-1 → awaiting-manual-qa, 3-2 → in-progress (4 action items)
+last_updated: 2026-04-10 # 3-3 → in-progress (dev-story: question generation + SSE streaming)
 project: helprs
 project_key: NOKEY
 tracking_system: file-system
@@ -75,13 +75,46 @@ development_status:
   # to `awaiting-manual-qa`; the Project Lead's Manual QA for story 3-2
   # covers story 3-1's ACs as well (see 3-2 Manual QA Checklist section
   # "Coverage for story 3-1 ACs (bundled)").
-  3-1-comprehension-domain-model-and-session-api: awaiting-manual-qa
+  #
+  # MANUAL QA BYPASS — 2026-04-10
+  # ==============================
+  # Project Lead (Marius) explicitly accepted bypassing the manual QA gate
+  # for BOTH stories 3-1 and 3-2. The 27 checklist items in
+  # `3-2-split-view-session-ui-and-diff-viewer.md` (lines 611–670) are
+  # INTENTIONALLY LEFT UNCHECKED as proof that the checklist was not
+  # executed. This is a knowing, traceable skip — NOT a silent chain-through
+  # like the Epic 1/2 failure mode that the `awaiting-manual-qa` gate was
+  # created to prevent.
+  #
+  # Rationale given: front-end split-view + backend read-only session API
+  # will be exercised end-to-end during Story 3-3 (question generation +
+  # SSE streaming) manual QA, which depends on both 3-1 and 3-2 working.
+  # If 3-3's Manual QA surfaces a regression that would have been caught
+  # here, that regression becomes a new P0 bug story blocking 3-3.
+  #
+  # This bypass decision is restricted to stories 3-1 and 3-2. It does
+  # NOT set a precedent. The default behaviour for future stories remains:
+  # HALT at `awaiting-manual-qa`, hand off explicitly, wait for sign-off.
+  3-1-comprehension-domain-model-and-session-api: done
   # bmad-code-review ran 2026-04-10: 10 patches applied automatically, 4
-  # remain as action items (AC #3 keyboard 5% step, AC #10 missing test,
-  # 4xx error branches in ChatView, binary-file placeholder in DiffViewer).
-  # Status reverts to in-progress for a second dev pass before manual QA.
-  3-2-split-view-session-ui-and-diff-viewer: in-progress
-  3-3-question-generation-and-sse-streaming: backlog
+  # remained as action items. Second dev pass 2026-04-10 resolved all 4.
+  # Second-pass bmad-code-review ran 2026-04-10: 2 decision-needed + 5
+  # patches + 6 deferred + 7 dismissed. Decisions resolved: (D1/Critical)
+  # REMOVED the custom onSeparatorKeyDown because react-resizable-panels v4
+  # already does a 5% step via a native keydown listener — the custom
+  # handler was a duplicate that caused store/DOM drift, hidden by a test
+  # mock that replaced the real Separator; (D2/Minor) transient 429 during
+  # background refetch wipes UI state → deferred, revisit with Story 3.3
+  # SSE lifecycle. Patches applied: (P1) removed custom keyboard handler +
+  # 3 vacuous tests + mock onKeyDown forwarding, (P2) refined
+  # DiffViewer.isBinaryFile heuristic — excludes renames/copies, documented
+  # mode-only false positive as deferred (gitdiff-parser's isBinary flag
+  # is empirically never set), (P3) added 422/429 regression tests,
+  # (P4) added role=region + aria-label to binary placeholder, (P5)
+  # replaced "Story 3.3 backlog" prose with grep-able TODO(story-3.3).
+  # make lint && vitest = clean + 24 web tests green (24 = 25 −3 +2).
+  3-2-split-view-session-ui-and-diff-viewer: done
+  3-3-question-generation-and-sse-streaming: in-progress
   3-4-answer-submission-and-feedback-with-code-links: backlog
   3-5-role-adaptation-beyond-diff-and-large-pr-handling: backlog
   epic-3-retrospective: optional
