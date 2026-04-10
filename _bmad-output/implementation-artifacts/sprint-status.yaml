@@ -1,5 +1,5 @@
 # generated: 2026-04-09
-# last_updated: 2026-04-10 # story 3-1 created (ready-for-dev); epic-3 → in-progress
+# last_updated: 2026-04-10 # story 3-2 → review (dev-story implementation complete, awaiting code-review)
 # project: helprs
 # project_key: NOKEY
 # tracking_system: file-system
@@ -45,7 +45,7 @@
 #   'awaiting-manual-qa', unless invoked with `--skip-manual-qa-gate <reason>`.
 
 generated: 2026-04-09
-last_updated: 2026-04-10 # story 3-1 created (ready-for-dev); epic-3 → in-progress
+last_updated: 2026-04-10 # story 3-2 → review (dev-story implementation complete, awaiting code-review)
 project: helprs
 project_key: NOKEY
 tracking_system: file-system
@@ -69,8 +69,8 @@ development_status:
 
   # Epic 3: Socratic Comprehension Experience
   epic-3: in-progress
-  3-1-comprehension-domain-model-and-session-api: ready-for-dev
-  3-2-split-view-session-ui-and-diff-viewer: backlog
+  3-1-comprehension-domain-model-and-session-api: done
+  3-2-split-view-session-ui-and-diff-viewer: review
   3-3-question-generation-and-sse-streaming: backlog
   3-4-answer-submission-and-feedback-with-code-links: backlog
   3-5-role-adaptation-beyond-diff-and-large-pr-handling: backlog
