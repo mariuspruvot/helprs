@@ -133,6 +133,36 @@ describe('ChatView — data loading', () => {
     })
   })
 
+  test('renders 422 error screen with no Retry button when fetch returns 422', async () => {
+    mockApiFetchOnce(mockedApiFetch, new Response(null, { status: 422 }))
+
+    renderAtSessionRoute(<ChatView />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Invalid session ID')).toBeTruthy()
+    })
+    expect(
+      screen.getByText(/This session link is malformed\. Check the URL and try again\./),
+    ).toBeTruthy()
+    // 422 is a URL problem — retrying would not help, so no Retry button.
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+  })
+
+  test('renders 429 error screen with no Retry button when fetch returns 429', async () => {
+    mockApiFetchOnce(mockedApiFetch, new Response(null, { status: 429 }))
+
+    renderAtSessionRoute(<ChatView />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Rate limit exceeded')).toBeTruthy()
+    })
+    expect(
+      screen.getByText(/Too many requests\. Please wait a moment before trying again\./),
+    ).toBeTruthy()
+    // 429 deliberately has no Retry button — hammering the limiter is worse.
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+  })
+
   test('renders retryable error screen on 500 and Retry triggers a new fetch', async () => {
     // useSession retries 5xx twice (failureCount < 2), so 3 total attempts
     // before the query enters error state. We queue one extra 500 for the

@@ -52,4 +52,29 @@ describe('DiffViewer', () => {
       'Large PR — diff truncated at 1 MB. Story 3.5 will add file-ranked selection.',
     )
   })
+
+  test('keeps binary files in the tab list with a placeholder body instead of silently dropping them', () => {
+    // Mixed PR: one text file + one binary file. git-format binary delta
+    // uses the `Binary files … and … differ` sentinel with zero hunks; the
+    // old code filtered it out and the user never knew the PR had a binary
+    // change. The fix keeps the tab and renders a placeholder body when
+    // the binary tab is active.
+    const mixedDiff = `${MULTI_FILE_DIFF}diff --git a/assets/logo.png b/assets/logo.png
+index 1111111..2222222 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+`
+    render(<DiffViewer session={makeSession({ diff: mixedDiff })} />)
+
+    // Both text files AND the binary file are in the tab list.
+    expect(screen.getByTestId('diff-file-tab-0').textContent).toBe('foo.ts')
+    expect(screen.getByTestId('diff-file-tab-1').textContent).toBe('bar.py')
+    expect(screen.getByTestId('diff-file-tab-2').textContent).toBe('logo.png')
+
+    // Clicking the binary tab surfaces the placeholder, not a crash or
+    // empty state.
+    fireEvent.click(screen.getByTestId('diff-file-tab-2'))
+    const placeholder = screen.getByTestId('diff-binary-placeholder')
+    expect(placeholder.textContent).toContain('Binary file — not displayed')
+    expect(placeholder.textContent).toContain('assets/logo.png')
+  })
 })

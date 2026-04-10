@@ -125,6 +125,30 @@ export default function ChatView() {
       )
     }
 
+    // 422 → malformed session id. Retry is meaningless (the URL is the
+    // problem, not the server), so we omit the Retry button entirely.
+    if (status === 422) {
+      return (
+        <ErrorScreen
+          title="Invalid session ID"
+          message="This session link is malformed. Check the URL and try again."
+        />
+      )
+    }
+
+    // 429 → rate limit. A Retry button would hammer the limiter; instead we
+    // tell the user to wait.
+    // TODO(story-3.3): plumb the Retry-After header through SessionFetchError
+    // and render a live countdown here instead of the generic wait message.
+    if (status === 429) {
+      return (
+        <ErrorScreen
+          title="Rate limit exceeded"
+          message="Too many requests. Please wait a moment before trying again."
+        />
+      )
+    }
+
     return (
       <ErrorScreen
         title="Temporarily unavailable"
