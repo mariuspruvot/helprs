@@ -1,22 +1,25 @@
 """Comprehension domain interfaces (ports).
 
-Story 2.2 introduces the ``SessionRepository`` port used by the
-``StartSessionHandler`` to persist session pairs. Story 3.1 will add
-``LLMProvider`` and expand the repository contract.
+Story 2.2 introduced the ``SessionRepository`` port used by the
+``StartSessionHandler`` to persist session pairs. Story 3.1 extends the
+repository contract with ``get_by_id`` (for the GET endpoint) and adds
+the ``LLMProvider`` port — the contract Story 3.3's PydanticAI provider
+will implement.
 """
 
 from typing import Protocol
 from uuid import UUID
 
 from helprs.modules.comprehension.domain.entities import PRContext, Session
+from helprs.modules.comprehension.domain.value_objects import SessionRole
 
 
 class SessionRepository(Protocol):
     """Port for persisting/loading session pairs.
 
     Implemented by ``SqlAlchemySessionRepository`` in the infrastructure
-    layer. Exposes only the three operations Story 2.2 needs; additional
-    methods (by-id lookup, status updates, …) land in Story 3.1.
+    layer. Story 2.2's three methods stay untouched; Story 3.1 adds
+    ``get_by_id`` for the detail endpoint.
     """
 
     async def add_pair(self, *, pr_ctx: PRContext) -> tuple[Session, Session]:
@@ -59,3 +62,40 @@ class SessionRepository(Protocol):
         caller decides whether to create, recover, or update.
         """
         ...
+
+    async def get_by_id(self, *, session_id: UUID) -> Session | None:
+        """Load a single session by primary key.
+
+        Returns ``None`` when the row is absent. Used by the detail
+        endpoint and the forthcoming question/answer submission paths.
+        """
+        ...
+
+
+class LLMProvider(Protocol):
+    """Port for LLM calls.
+
+    Story 3.1 only declares the contract so application-layer code can
+    depend on a stable shape; the concrete ``PydanticAILLMProvider``
+    ships in Story 3.3. The call sites pass the in-memory PR diff and
+    the user's decrypted BYOK key as plain strings — neither is
+    persisted anywhere along this path (FR35/NFR13).
+    """
+
+    async def generate_question(
+        self,
+        *,
+        pr_diff: str,
+        role: SessionRole,
+        previous_questions: list[str],
+        api_key: str,
+    ) -> str: ...
+
+    async def generate_feedback(
+        self,
+        *,
+        question: str,
+        answer: str,
+        pr_diff: str,
+        api_key: str,
+    ) -> str: ...

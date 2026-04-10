@@ -1,5 +1,7 @@
 """Tests for SqlAlchemySessionRepository."""
 
+import uuid
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -192,3 +194,52 @@ class TestDeleteOne:
         )
         assert len(rows) == 1
         assert rows[0].role is SessionRole.REVIEWER
+
+
+class TestGetById:
+    """``get_by_id`` is the Story 3.1 read-path primitive powering the
+    ``GET /api/v1/sessions/{id}`` endpoint."""
+
+    async def test_returns_domain_session_when_row_exists(self, db_session, test_installation):
+        repo = SqlAlchemySessionRepository(db_session)
+        author, reviewer = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        loaded_author = await repo.get_by_id(session_id=author.id)
+        loaded_reviewer = await repo.get_by_id(session_id=reviewer.id)
+
+        assert isinstance(loaded_author, Session)
+        assert isinstance(loaded_reviewer, Session)
+        assert loaded_author.id == author.id
+        assert loaded_author.role is SessionRole.AUTHOR
+        assert loaded_reviewer.id == reviewer.id
+        assert loaded_reviewer.role is SessionRole.REVIEWER
+        assert loaded_author.status is SessionStatus.PENDING
+        # Ensure mapping is a domain dataclass, not the ORM row.
+        assert not isinstance(loaded_author, SessionModel)
+
+    async def test_returns_none_when_row_missing(self, db_session):
+        repo = SqlAlchemySessionRepository(db_session)
+        result = await repo.get_by_id(session_id=uuid.uuid4())
+        assert result is None
+
+    async def test_get_by_id_does_not_commit(self, db_session, test_installation, monkeypatch):
+        """Invariant: reads never commit — the caller owns the UoW."""
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        commit_calls = 0
+        original_commit = db_session.commit
+
+        async def tracking_commit():
+            nonlocal commit_calls
+            commit_calls += 1
+            await original_commit()
+
+        monkeypatch.setattr(db_session, "commit", tracking_commit)
+
+        hit = await repo.get_by_id(session_id=author.id)
+        miss = await repo.get_by_id(session_id=uuid.uuid4())  # miss path too
+
+        assert hit is not None, "hit path must return the loaded session"
+        assert miss is None, "miss path must return None"
+        assert commit_calls == 0

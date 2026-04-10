@@ -159,6 +159,7 @@ def create_app() -> FastAPI:
     # API router
     api_router = APIRouter(prefix="/api/v1")
 
+    from helprs.modules.comprehension.presentation.routers import router as comprehension_router
     from helprs.modules.identity.router import router as identity_router
     from helprs.modules.installation.router import router as installation_router
     from helprs.modules.webhook.router import router as webhook_router
@@ -166,6 +167,7 @@ def create_app() -> FastAPI:
     api_router.include_router(identity_router)
     api_router.include_router(installation_router)
     api_router.include_router(webhook_router)
+    api_router.include_router(comprehension_router)
 
     app.include_router(api_router)
 

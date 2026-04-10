@@ -2,16 +2,17 @@
 
 Story 2.2 introduces ``StartSessionHandler`` — the use-case boundary
 between the webhook adapter and the session-creation persistence path.
-It owns:
 
-* installation lookup
-* suppression-label evaluation (with default-labels fallback)
-* session-pair creation (opened) or in-place update (synchronize)
-* orphan recovery for the edge case of a single stray row
+Story 3.1 adds ``GetSessionHandler`` — the use-case boundary for the
+session detail read path. Kept colocated with ``StartSessionHandler``
+so the CQRS seam is obvious (commands + queries live in the same
+module, dispatched by the router / webhook adapter).
 
-It does **not** perform HTTP (token minting + PR-comment posting live in
-the webhook adapter / installation service). Story 3.1 may refactor
-this to a ``PRCommentPublisher`` port once a second publisher exists.
+Neither handler performs HTTP itself. ``StartSessionHandler`` hands
+off PR-comment posting to the webhook adapter; ``GetSessionHandler``
+hands off the GitHub diff fetch to the router (which exits the DB
+scope first — the pattern Epic 2's retrospective flagged as a blocker
+for Story 3.3).
 """
 
 from dataclasses import dataclass
@@ -19,13 +20,21 @@ from dataclasses import dataclass
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from helprs.core.exceptions import DomainValidationError, NotFoundError
+from helprs.core.config import Settings
+from helprs.core.exceptions import (
+    DomainValidationError,
+    ForbiddenError,
+    NotFoundError,
+)
 from helprs.modules.comprehension.application.commands import StartSessionCommand
+from helprs.modules.comprehension.application.queries import GetSessionQuery, GetSessionResult
 from helprs.modules.comprehension.domain.entities import PRContext, Session
 from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemySessionRepository
 from helprs.modules.installation.service import (
     get_default_suppression_labels,
     get_installation_by_github_id,
+    get_installations_for_user,
+    mint_installation_token,
 )
 
 logger = structlog.get_logger()
@@ -176,4 +185,65 @@ class StartSessionHandler:
             suppressed_by_label=None,
             sessions=pair,
             comment_needed=comment_needed,
+        )
+
+
+class GetSessionHandler:
+    """Load a session, verify repo access, and mint an installation token.
+
+    The handler is intentionally **DB-only in spirit**: it does not
+    fetch the PR diff. The router calls it, snapshots the result into
+    locals, and then hits GitHub for the diff outside the handler.
+    This sets the pattern precedent Epic 2's retrospective flagged as
+    a blocker for Story 3.3 (where LLM calls will follow the same rule).
+
+    Known acceptable exceptions — two outbound HTTP calls still run
+    while holding the ``AsyncSession``:
+
+    1. ``get_installations_for_user`` — calls GitHub ``/user/installations``
+       to re-check FR26 access. Bounded by the 10 s httpx timeout.
+    2. ``mint_installation_token`` — App-JWT → scoped token exchange
+       (~100-300 ms, bounded by the same timeout).
+
+    Both are accepted for Story 3.1 because inlining either would
+    require either (a) duplicating the access-check query locally or
+    (b) splitting the handler into a DB phase and an HTTP phase that
+    the router orchestrates. The retro-driven full fix is owned by
+    Story 3.3 prep, where LLM latency (>> diff fetch latency) makes
+    the split mandatory.
+
+    ``GetSessionQuery.requesting_user`` is the ``GitHubUser`` row
+    already loaded by the ``get_current_user`` FastAPI dependency;
+    the handler reuses it directly rather than re-issuing a ``SELECT``.
+    """
+
+    def __init__(self, session: AsyncSession, settings: Settings) -> None:
+        self._session = session
+        self._settings = settings
+
+    async def handle(self, query: GetSessionQuery) -> GetSessionResult:
+        # 1. Load the session by id.
+        repo = SqlAlchemySessionRepository(self._session)
+        domain_session = await repo.get_by_id(session_id=query.session_id)
+        if domain_session is None:
+            raise NotFoundError(f"Session {query.session_id} not found")
+
+        # 2. Verify the user has access to the session's installation.
+        #    ``get_installations_for_user`` is the exact same function the
+        #    ``/installations`` listing uses — identical FR26 semantics.
+        #    The user is reused from the FastAPI dependency (no re-query).
+        accessible = await get_installations_for_user(self._session, query.requesting_user, self._settings)
+        if not any(i.id == domain_session.installation_id for i in accessible):
+            raise ForbiddenError("You do not have access to this session's repository")
+
+        # 3. Mint an installation token so the router can fetch the diff
+        #    after the handler returns. Minting happens inside the DB
+        #    scope intentionally — see class docstring "known acceptable
+        #    exceptions".
+        installation_token = await mint_installation_token(domain_session.github_installation_id, self._settings)
+
+        return GetSessionResult(
+            session=domain_session,
+            installation_token=installation_token,
+            question_count=0,  # Story 3.3 will count QuestionModel rows here
         )
