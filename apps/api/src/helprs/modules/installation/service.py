@@ -1,5 +1,7 @@
 """Installation business logic."""
 
+import asyncio
+import random
 import re
 import uuid
 from datetime import UTC, datetime
@@ -19,7 +21,7 @@ from helprs.core.exceptions import (
     ForbiddenError,
     UnauthorizedError,
 )
-from helprs.core.security import fernet_decrypt, fernet_encrypt
+from helprs.core.security import create_app_jwt, fernet_decrypt, fernet_encrypt
 from helprs.modules.installation.models import BYOKConfig, Installation
 
 logger = structlog.get_logger()
@@ -48,6 +50,102 @@ async def get_installation_access_token(installation_id: int, app_jwt: str) -> d
             raise UnauthorizedError("GitHub App JWT is invalid or expired") from e
         raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
     return resp.json()
+
+
+async def mint_installation_token(github_installation_id: int, settings: Settings) -> str:
+    """Mint a scoped GitHub App installation access token.
+
+    Thin orchestrator over ``create_app_jwt`` + ``get_installation_access_token``
+    that returns the bare token string — callers building an
+    ``Authorization: Bearer ...`` header do not need the metadata envelope.
+    """
+    app_jwt = create_app_jwt(settings.GITHUB_APP_ID, settings.GITHUB_APP_PRIVATE_KEY)
+    response = await get_installation_access_token(github_installation_id, app_jwt)
+    return response["token"]
+
+
+async def post_pr_comment(
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    body: str,
+    installation_token: str,
+) -> None:
+    """Post an issue comment on a pull request via the GitHub REST API.
+
+    Uses the ``/repos/{owner}/{repo}/issues/{pr_number}/comments`` endpoint
+    — PRs are issues in GitHub's data model, and that endpoint is the
+    correct one for general PR discussion comments (NOT
+    ``/pulls/{n}/reviews`` which is for review comments, or
+    ``/pulls/{n}/comments`` which is for inline code comments).
+    """
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {installation_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json={"body": body}, headers=headers)
+        resp.raise_for_status()
+
+
+# Inter-attempt sleeps for 3 total attempts — only 2 sleeps are needed
+# (after the 1st and 2nd failures). No sleep follows the final failure.
+_PR_COMMENT_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.0)
+
+
+async def post_pr_comment_with_retry(
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    body: str,
+    installation_token: str,
+) -> None:
+    """Retry wrapper around ``post_pr_comment`` with exponential backoff.
+
+    Policy:
+    * 3 attempts total, with 0.5s / 1.0s sleeps between attempts plus up
+      to 0.25s jitter. No sleep after the final failure (avoids wasting
+      NFR1 budget and holding the outer DB transaction open longer than
+      needed).
+    * Retries only on ``httpx.TransportError`` and HTTP 5xx responses.
+      4xx (deleted PR, permission revoked, expired token) are permanent
+      failures for this invocation and are raised immediately.
+    * Final failure is wrapped in ``ExternalServiceError`` so the webhook
+      background task's ``mark_failed`` path catches it cleanly.
+
+    Uses a fresh ``httpx.AsyncClient`` per attempt (via ``post_pr_comment``)
+    so a poisoned connection pool from one failure cannot bleed into the
+    next attempt.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            await post_pr_comment(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                body=body,
+                installation_token=installation_token,
+            )
+            return
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status < 500:
+                # 4xx is permanent for this invocation; surface immediately.
+                raise ExternalServiceError(f"GitHub rejected PR comment post with HTTP {status}") from exc
+            last_exc = exc
+        except httpx.TransportError as exc:
+            last_exc = exc
+
+        if attempt < len(_PR_COMMENT_RETRY_DELAYS):
+            delay = _PR_COMMENT_RETRY_DELAYS[attempt] + random.uniform(0, 0.25)
+            await asyncio.sleep(delay)
+
+    raise ExternalServiceError("Failed to post PR comment after 3 attempts") from last_exc
 
 
 async def create_installation(session: AsyncSession, webhook_data: dict) -> Installation:

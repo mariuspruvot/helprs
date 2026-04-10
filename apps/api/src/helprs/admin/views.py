@@ -4,6 +4,7 @@ from sqladmin import Admin, ModelView
 from sqladmin.authentication import AuthenticationBackend
 from starlette.requests import Request
 
+from helprs.modules.comprehension.infrastructure.models import SessionModel
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import BYOKConfig, Installation
 from helprs.modules.webhook.models import WebhookEvent
@@ -81,6 +82,32 @@ class WebhookEventAdmin(ModelView, model=WebhookEvent):
     icon = "fa-solid fa-bolt"
 
 
+class SessionAdmin(ModelView, model=SessionModel):
+    column_list = [
+        SessionModel.id,
+        SessionModel.repo_full_name,
+        SessionModel.pr_number,
+        SessionModel.role,
+        SessionModel.status,
+        SessionModel.pr_head_sha,
+        SessionModel.created_at,
+    ]
+    column_sortable_list = [
+        SessionModel.created_at,
+        SessionModel.repo_full_name,
+        SessionModel.pr_number,
+        SessionModel.status,
+    ]
+    column_default_sort = ("created_at", True)
+    # Read-only — sessions are managed by the comprehension pipeline, not operators.
+    can_create = False
+    can_edit = False
+    can_delete = False
+    name = "Session"
+    name_plural = "Sessions"
+    icon = "fa-solid fa-comments"
+
+
 class AdminAuth(AuthenticationBackend):
     """Simple admin authentication backend for MVP internal use."""
 
@@ -114,4 +141,5 @@ def setup_admin(app, engine, secret_key: str) -> Admin:
     admin.add_view(InstallationAdmin)
     admin.add_view(BYOKConfigAdmin)
     admin.add_view(WebhookEventAdmin)
+    admin.add_view(SessionAdmin)
     return admin
