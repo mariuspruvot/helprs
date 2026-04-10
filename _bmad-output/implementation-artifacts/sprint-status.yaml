@@ -1,5 +1,5 @@
 # generated: 2026-04-09
-# last_updated: 2026-04-10 # story 3-2 → review (dev-story implementation complete, awaiting code-review)
+# last_updated: 2026-04-10 # post code-review: 3-1 → awaiting-manual-qa (backfilled gate), 3-2 → in-progress (4 action items remain)
 # project: helprs
 # project_key: NOKEY
 # tracking_system: file-system
@@ -45,7 +45,7 @@
 #   'awaiting-manual-qa', unless invoked with `--skip-manual-qa-gate <reason>`.
 
 generated: 2026-04-09
-last_updated: 2026-04-10 # story 3-2 → review (dev-story implementation complete, awaiting code-review)
+last_updated: 2026-04-10 # post code-review: 3-1 → awaiting-manual-qa, 3-2 → in-progress (4 action items)
 project: helprs
 project_key: NOKEY
 tracking_system: file-system
@@ -69,8 +69,18 @@ development_status:
 
   # Epic 3: Socratic Comprehension Experience
   epic-3: in-progress
-  3-1-comprehension-domain-model-and-session-api: done
-  3-2-split-view-session-ui-and-diff-viewer: review
+  # 3-1 was bundled with story 3-2's PR (2026-04-10) — code review found
+  # that 3-1's backend had silently been marked `done` without passing the
+  # `awaiting-manual-qa` gate (epic-2 retro action items #1-3). Reverted
+  # to `awaiting-manual-qa`; the Project Lead's Manual QA for story 3-2
+  # covers story 3-1's ACs as well (see 3-2 Manual QA Checklist section
+  # "Coverage for story 3-1 ACs (bundled)").
+  3-1-comprehension-domain-model-and-session-api: awaiting-manual-qa
+  # bmad-code-review ran 2026-04-10: 10 patches applied automatically, 4
+  # remain as action items (AC #3 keyboard 5% step, AC #10 missing test,
+  # 4xx error branches in ChatView, binary-file placeholder in DiffViewer).
+  # Status reverts to in-progress for a second dev pass before manual QA.
+  3-2-split-view-session-ui-and-diff-viewer: in-progress
   3-3-question-generation-and-sse-streaming: backlog
   3-4-answer-submission-and-feedback-with-code-links: backlog
   3-5-role-adaptation-beyond-diff-and-large-pr-handling: backlog

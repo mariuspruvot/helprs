@@ -16,5 +16,12 @@ export async function fetchSession(sessionId: string): Promise<SessionResponse> 
   if (!resp.ok) {
     throw new SessionFetchError(resp.status, `Failed to fetch session: ${resp.status}`)
   }
-  return resp.json() as Promise<SessionResponse>
+  // Wrap `resp.json()` so a malformed / truncated / empty body throws a
+  // `SessionFetchError` the caller can classify, instead of a raw
+  // `SyntaxError` that `useSession.retry` would blindly retry.
+  try {
+    return (await resp.json()) as SessionResponse
+  } catch {
+    throw new SessionFetchError(resp.status, 'Malformed session response body')
+  }
 }

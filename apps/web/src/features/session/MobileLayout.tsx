@@ -9,7 +9,7 @@ export default function MobileLayout({ session }: MobileLayoutProps) {
   return (
     <div className="h-full w-full flex flex-col bg-primary" data-testid="mobile-layout">
       <div
-        className="mx-3 mt-3 mb-2 px-3 py-2 rounded bg-surface text-text-secondary text-[14px] shrink-0"
+        className="mx-3 mt-3 mb-2 px-3 py-3 rounded bg-surface text-text-secondary text-[14px] shrink-0"
         style={{ minHeight: 40 }}
         data-testid="mobile-banner"
       >

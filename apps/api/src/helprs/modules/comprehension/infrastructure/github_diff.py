@@ -10,6 +10,7 @@ The wrapper is deliberately thin so tests can mock it by patching this
 module directly.
 """
 
+import codecs
 from urllib.parse import quote
 
 import httpx
@@ -81,25 +82,41 @@ async def fetch_pr_diff(
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    buffer = bytearray()
+    # Decode streaming chunks through an incremental UTF-8 decoder so a
+    # cut at the byte budget cannot split a multi-byte codepoint. The
+    # decoder buffers partial sequences and emits complete characters
+    # only; any trailing partial bytes at the end are flushed with
+    # ``errors="replace"`` so nothing crashes on malformed tail data.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    decoded_parts: list[str] = []
+    consumed_bytes = 0
     truncated = False
+
+    # Explicit timeouts so the previous ``timeout=10.0`` (wall-clock for
+    # the entire stream) cannot mis-classify a legitimate 900 KB diff on
+    # a slow network as "GitHub temporarily unavailable". connect is
+    # kept tight to fail fast on DNS/TLS issues; read is relaxed to 30 s
+    # so large-but-legitimate diffs have room to arrive.
+    timeout = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
 
     try:
         async with (
-            httpx.AsyncClient(timeout=10.0) as client,
+            httpx.AsyncClient(timeout=timeout) as client,
             client.stream("GET", url, headers=headers) as resp,
         ):
             resp.raise_for_status()
             async for chunk in resp.aiter_bytes():
-                remaining = _BODY_BYTE_BUDGET - len(buffer)
+                remaining = _BODY_BYTE_BUDGET - consumed_bytes
                 if remaining <= 0:
                     truncated = True
                     break
                 if len(chunk) > remaining:
-                    buffer.extend(chunk[:remaining])
+                    decoded_parts.append(decoder.decode(chunk[:remaining]))
+                    consumed_bytes += remaining
                     truncated = True
                     break
-                buffer.extend(chunk)
+                decoded_parts.append(decoder.decode(chunk))
+                consumed_bytes += len(chunk)
     except httpx.TimeoutException as e:
         _scrub_auth(e.request)
         raise ExternalServiceError("GitHub is temporarily unavailable") from e
@@ -115,7 +132,10 @@ async def fetch_pr_diff(
         _scrub_auth(e.request)
         raise ExternalServiceError("GitHub is temporarily unavailable") from e
 
-    body = bytes(buffer).decode("utf-8", errors="ignore")
+    # Flush any bytes the decoder is holding so the final codepoint state
+    # is closed out before we return.
+    decoded_parts.append(decoder.decode(b"", final=True))
+    body = "".join(decoded_parts)
     if truncated:
         return body + _TRUNCATION_MARKER
     return body

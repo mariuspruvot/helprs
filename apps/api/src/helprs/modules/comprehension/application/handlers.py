@@ -215,6 +215,23 @@ class GetSessionHandler:
     ``GetSessionQuery.requesting_user`` is the ``GitHubUser`` row
     already loaded by the ``get_current_user`` FastAPI dependency;
     the handler reuses it directly rather than re-issuing a ``SELECT``.
+
+    .. warning::
+       **SECURITY DEBT — installation-level access only.** The access
+       check below validates installation membership, NOT repository
+       membership. For GitHub Apps with
+       ``repository_selection="selected"``, a user with access to ANY
+       repo in an installation will be treated as having access to
+       ALL sessions on that installation. This is a **BLOCKER for
+       any `selected` install reaching production** and must be
+       fixed before the MVP launch widens beyond
+       ``repository_selection="all"``. The fix is an additional call
+       to ``GET /user/installations/{id}/repositories`` and checking
+       that ``domain_session.repo_full_name`` is in the response.
+       Tracked in ``_bmad-output/implementation-artifacts/deferred-work.md``
+       under "code review of story-3-2" (2026-04-10). Deferred so
+       Story 3.3's read-path refactor can absorb the check instead
+       of layering it twice.
     """
 
     def __init__(self, session: AsyncSession, settings: Settings) -> None:
