@@ -77,3 +77,43 @@ async def handle_installation_unsuspended(payload: dict, session: AsyncSession) 
             "webhook_installation_unsuspend_not_found",
             github_installation_id=github_id,
         )
+
+
+async def _log_pull_request_event(payload: dict, action: str) -> None:
+    """Placeholder pull_request handler shared by opened/synchronize.
+
+    Must NOT raise — webhook receipt already returned 200 and a propagating
+    exception would just mark the WebhookEvent as ``failed``. The actual
+    session creation, suppression-label matching, and PR comment posting
+    are deferred to Story 2.2.
+    """
+    try:
+        installation_id = payload["installation"]["id"]
+        pr_number = payload["pull_request"]["number"]
+        repo = payload["repository"]["full_name"]
+    except (KeyError, TypeError) as exc:
+        await logger.awarning(
+            "pull_request_event_malformed_payload",
+            action=action,
+            error=str(exc),
+        )
+        return
+
+    await logger.ainfo(
+        "pull_request_event_received",
+        action=action,
+        repo=repo,
+        pr_number=pr_number,
+        github_installation_id=installation_id,
+    )
+    # TODO(story 2.2): create session, apply suppression labels, post PR comment
+
+
+async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> None:
+    """Handle pull_request.opened webhook event — placeholder until Story 2.2."""
+    await _log_pull_request_event(payload, "opened")
+
+
+async def handle_pull_request_synchronize(payload: dict, session: AsyncSession) -> None:
+    """Handle pull_request.synchronize webhook event — placeholder until Story 2.2."""
+    await _log_pull_request_event(payload, "synchronize")

@@ -6,6 +6,7 @@ from starlette.requests import Request
 
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import BYOKConfig, Installation
+from helprs.modules.webhook.models import WebhookEvent
 
 
 class GitHubUserAdmin(ModelView, model=GitHubUser):
@@ -61,6 +62,25 @@ class BYOKConfigAdmin(ModelView, model=BYOKConfig):
     icon = "fa-solid fa-key"
 
 
+class WebhookEventAdmin(ModelView, model=WebhookEvent):
+    column_list = [
+        WebhookEvent.delivery_id,
+        WebhookEvent.event_type,
+        WebhookEvent.action,
+        WebhookEvent.status,
+        WebhookEvent.created_at,
+    ]
+    column_sortable_list = [WebhookEvent.created_at, WebhookEvent.status]
+    column_default_sort = ("created_at", True)
+    # Read-only — webhook events are managed by the system, never by operators.
+    can_create = False
+    can_edit = False
+    can_delete = False
+    name = "Webhook Event"
+    name_plural = "Webhook Events"
+    icon = "fa-solid fa-bolt"
+
+
 class AdminAuth(AuthenticationBackend):
     """Simple admin authentication backend for MVP internal use."""
 
@@ -93,4 +113,5 @@ def setup_admin(app, engine, secret_key: str) -> Admin:
     admin.add_view(GitHubUserAdmin)
     admin.add_view(InstallationAdmin)
     admin.add_view(BYOKConfigAdmin)
+    admin.add_view(WebhookEventAdmin)
     return admin
