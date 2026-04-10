@@ -26,7 +26,11 @@ export default function SplitLayout({ session }: SplitLayoutProps) {
     <Group
       orientation="horizontal"
       className="h-full w-full flex"
-      onLayoutChange={(layout) => {
+      // Use `onLayoutChanged` (past tense) — the library docs call this out
+      // explicitly: `onLayoutChange` fires every pointer frame during drag
+      // (N renders per drag); `onLayoutChanged` fires once on pointer release,
+      // which is what we want for syncing the store.
+      onLayoutChanged={(layout) => {
         const chat = layout[CHAT_PANEL_ID]
         if (typeof chat === 'number') {
           setPanelRatio(chat / 100)

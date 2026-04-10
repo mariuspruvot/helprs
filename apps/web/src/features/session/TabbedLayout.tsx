@@ -28,6 +28,10 @@ export default function TabbedLayout({ session }: TabbedLayoutProps) {
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    // Let browser shortcuts through: Cmd/Ctrl/Alt/Shift + Arrow all have
+    // reserved meaning (back/forward, word jump, selection). Only handle
+    // unmodified ArrowLeft/ArrowRight as tab navigation.
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     event.preventDefault()
     const currentIndex = TABS.findIndex((t) => t.id === activeTab)
     const nextIndex =

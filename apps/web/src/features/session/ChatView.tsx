@@ -64,12 +64,25 @@ function LoadedLayout({ session }: LoadedLayoutProps) {
   const setSession = useSessionStore((s) => s.setSession)
   const clearSession = useSessionStore((s) => s.clearSession)
 
+  // Sync the store with the current session on every new SessionResponse
+  // identity (e.g. after a background refetch). Do NOT put clearSession in
+  // this effect's cleanup — React-Query refetches produce a new object
+  // identity, which would fire the cleanup and wipe panelRatio /
+  // activeFileIndex mid-interaction. The store reset belongs to real
+  // unmount only; see the separate effect below.
   useEffect(() => {
     setSession(session)
+  }, [session, setSession])
+
+  // Reset the UI-local store when the ChatView leaves the screen. Empty
+  // deps — the cleanup fires on true unmount only, not on session refetch.
+  // `clearSession` is a stable zustand selector (same reference across
+  // renders) so omitting it from the dep array is safe.
+  useEffect(() => {
     return () => {
       clearSession()
     }
-  }, [session, setSession, clearSession])
+  }, [clearSession])
 
   return (
     <div className="min-h-screen h-screen bg-primary text-text-primary font-mono flex flex-col">

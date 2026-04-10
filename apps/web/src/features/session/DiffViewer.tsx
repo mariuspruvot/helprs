@@ -32,8 +32,11 @@ export default function DiffViewer({ session }: DiffViewerProps) {
     const parsed = parseDiff(session.diff)
     return parsed.filter((file) => file.hunks.length > 0)
   }, [session.diff])
+  // Anchor the check to the end of the diff — `includes()` would false-positive
+  // on any file whose contents legitimately contain the marker comment (e.g.
+  // a test fixture that round-trips this exact string).
   const isTruncated = useMemo(
-    () => session.diff.includes(TRUNCATION_MARKER),
+    () => session.diff.trimEnd().endsWith(TRUNCATION_MARKER),
     [session.diff],
   )
 
@@ -52,9 +55,12 @@ export default function DiffViewer({ session }: DiffViewerProps) {
         refractor: refractorAdapter,
         language,
       })
-    } catch {
+    } catch (err) {
       // Defensive: a malformed hunk or unsupported lang should degrade to
-      // plain text, not crash the whole session page.
+      // plain text, not crash the whole session page. Log so CI / local
+      // dev surfaces a regression if `react-diff-view` ever calls a
+      // refractor method that the v4 rename removed.
+      console.warn('[DiffViewer] syntax highlighting disabled — falling back to plain text', err)
       return null
     }
   }, [activeFile])
@@ -63,6 +69,13 @@ export default function DiffViewer({ session }: DiffViewerProps) {
   // TODO: story-3.4 — expose scrollToLine via useImperativeHandle on this ref.
 
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+
+  // Trim stale ref slots when the file count shrinks (e.g. navigating to a
+  // session with fewer files). Without this the array keeps pointing at
+  // detached DOM nodes and `focus()` can target a dead ref.
+  useEffect(() => {
+    tabRefs.current.length = files.length
+  }, [files.length])
 
   // Keep keyboard focus synced with the active tab when the store changes.
   useEffect(() => {
@@ -73,6 +86,10 @@ export default function DiffViewer({ session }: DiffViewerProps) {
 
   const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    // Do not swallow browser navigation / selection shortcuts — Cmd+Arrow
+    // (macOS back/forward), Alt+Arrow (Win/Linux), Shift+Arrow (selection),
+    // Ctrl+Arrow (word jump) must still reach the browser.
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     event.preventDefault()
     const delta = event.key === 'ArrowLeft' ? -1 : 1
     const next = (safeIndex + delta + files.length) % files.length
