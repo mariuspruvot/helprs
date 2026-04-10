@@ -135,3 +135,13 @@ class SqlAlchemySessionRepository:
         if row is not None:
             await self._session.delete(row)
             await self._session.flush()
+
+    async def get_by_id(self, *, session_id: UUID) -> Session | None:
+        """Load a single session by primary key.
+
+        Uses ``AsyncSession.get`` so SQLAlchemy's identity map handles
+        caching within the unit of work. Returns ``None`` for unknown
+        ids. Read-only — does not commit (locked by a dedicated test).
+        """
+        row = await self._session.get(SessionModel, session_id)
+        return _to_domain(row) if row is not None else None

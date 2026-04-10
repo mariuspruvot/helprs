@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus
+from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,8 +57,10 @@ class Session:
     """Domain representation of a comprehension session.
 
     Mutable (not frozen) because ``pr_head_sha``/``pr_title``/``pr_diff_url``
-    are updated on ``pull_request.synchronize``. Story 3.1 will expand this
-    into a proper aggregate with Questions/Answers.
+    are updated on ``pull_request.synchronize``. Story 3.1 expands the
+    aggregate family with ``Question``/``Answer`` siblings, but the
+    ``Session`` shape itself is left untouched — the ``_to_domain`` mapping
+    in ``infrastructure/repositories.py`` depends on the exact field set.
     """
 
     id: UUID
@@ -75,3 +77,36 @@ class Session:
     status: SessionStatus
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(slots=True)
+class Question:
+    """A Socratic question posed during a comprehension session.
+
+    Only a SHA-256 hash of the verbatim text is stored (``text_hash``).
+    The raw question is regenerated on demand by the LLM port and is
+    never persisted — this enforces FR35/NFR14 at the type level: there
+    is no ``text: str`` field for infrastructure to write.
+    """
+
+    id: UUID
+    session_id: UUID
+    number: int  # 1-indexed position in the session (1..N)
+    topic: Topic
+    text_hash: str  # SHA-256 of the verbatim text
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class Answer:
+    """A developer's answer to a ``Question``.
+
+    As with ``Question``, only ``text_hash`` is ever persisted. Latency
+    is tracked for observability / scoring in Epic 4.
+    """
+
+    id: UUID
+    question_id: UUID
+    text_hash: str  # SHA-256 of the verbatim text
+    latency_ms: int
+    created_at: datetime
