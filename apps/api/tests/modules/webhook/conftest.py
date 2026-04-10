@@ -66,6 +66,37 @@ def sample_installation_created_payload():
     }
 
 
+def make_pull_request_payload(action: str = "opened") -> dict:
+    """Minimal pull_request webhook payload for tests."""
+    return {
+        "action": action,
+        "installation": {"id": 12345678},
+        "pull_request": {
+            "number": 42,
+            "title": "Add foo",
+            "diff_url": "https://github.com/acme/repo/pull/42.diff",
+            "head": {"sha": "abc123"},
+        },
+        "repository": {
+            "id": 999,
+            "full_name": "acme/repo",
+            "name": "repo",
+            "owner": {"login": "acme"},
+        },
+        "sender": {"login": "dev-user", "id": 1},
+    }
+
+
+@pytest.fixture
+def pull_request_opened_payload():
+    return make_pull_request_payload("opened")
+
+
+@pytest.fixture
+def pull_request_synchronize_payload():
+    return make_pull_request_payload("synchronize")
+
+
 @pytest.fixture
 def sample_installation_deleted_payload():
     return {
