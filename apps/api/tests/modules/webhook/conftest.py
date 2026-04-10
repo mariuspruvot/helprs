@@ -66,16 +66,28 @@ def sample_installation_created_payload():
     }
 
 
-def make_pull_request_payload(action: str = "opened") -> dict:
-    """Minimal pull_request webhook payload for tests."""
+def make_pull_request_payload(
+    action: str = "opened",
+    labels: list[str] | None = None,
+    pr_number: int = 42,
+    head_sha: str = "abc123",
+    pr_title: str = "Add foo",
+) -> dict:
+    """Minimal pull_request webhook payload for tests.
+
+    Extended in Story 2.2 to carry ``labels`` (for suppression-label
+    coverage) plus override hooks for ``pr_number``/``head_sha``/
+    ``pr_title`` (used in synchronize-after-opened and multi-event tests).
+    """
     return {
         "action": action,
         "installation": {"id": 12345678},
         "pull_request": {
-            "number": 42,
-            "title": "Add foo",
-            "diff_url": "https://github.com/acme/repo/pull/42.diff",
-            "head": {"sha": "abc123"},
+            "number": pr_number,
+            "title": pr_title,
+            "diff_url": f"https://github.com/acme/repo/pull/{pr_number}.diff",
+            "head": {"sha": head_sha},
+            "labels": [{"name": name} for name in (labels or [])],
         },
         "repository": {
             "id": 999,

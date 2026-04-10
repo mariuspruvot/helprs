@@ -7,12 +7,16 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from helprs.core.config import Settings
 from helprs.core.exceptions import ExternalServiceError, ForbiddenError, UnauthorizedError
 from helprs.modules.installation.models import Installation
 from helprs.modules.installation.service import (
     create_installation,
     get_installation_access_token,
     get_installation_by_github_id,
+    mint_installation_token,
+    post_pr_comment,
+    post_pr_comment_with_retry,
     soft_delete_installation,
     verify_admin_permission,
 )
@@ -195,3 +199,197 @@ class TestVerifyAdminPermission:
 
         with pytest.raises(ForbiddenError):
             await verify_admin_permission(user, other_installation, settings)
+
+
+# ---------------------------------------------------------------------------
+# GitHub client helpers — Story 2.2
+# ---------------------------------------------------------------------------
+
+
+def _make_httpx_client_mock(response: MagicMock) -> MagicMock:
+    mock_client = AsyncMock()
+    mock_client.post.return_value = response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+def _fake_settings() -> Settings:
+    # ``GITHUB_APP_PRIVATE_KEY`` is only used through ``create_app_jwt`` which
+    # we mock; a placeholder string is fine here.
+    return Settings(
+        DATABASE_URL="postgresql+asyncpg://x",
+        SECRET_KEY="x",
+        FERNET_KEY="lQFzS7dfbPY3kS9GH7o4g-ykr-J1oz2ZuGsqdbSzNk8=",
+        GITHUB_APP_ID="12345",
+        GITHUB_APP_PRIVATE_KEY="-----BEGIN FAKE-----",
+    )
+
+
+class TestMintInstallationToken:
+    async def test_composes_jwt_and_fetches_token(self):
+        fake_settings = _fake_settings()
+        with (
+            patch(
+                "helprs.modules.installation.service.create_app_jwt",
+                return_value="fake.jwt.token",
+            ) as mock_jwt,
+            patch(
+                "helprs.modules.installation.service.get_installation_access_token",
+                AsyncMock(return_value={"token": "ghs_xyz", "expires_at": "..."}),
+            ) as mock_get_token,
+        ):
+            token = await mint_installation_token(12345678, fake_settings)
+
+        assert token == "ghs_xyz"
+        mock_jwt.assert_called_once_with("12345", "-----BEGIN FAKE-----")
+        mock_get_token.assert_awaited_once_with(12345678, "fake.jwt.token")
+
+
+class TestPostPRComment:
+    async def test_posts_to_correct_url_with_headers(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        mock_client = _make_httpx_client_mock(response)
+
+        with patch(
+            "helprs.modules.installation.service.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            await post_pr_comment(
+                owner="acme",
+                repo="repo",
+                pr_number=42,
+                body="hello",
+                installation_token="ghs_xyz",
+            )
+
+        mock_client.post.assert_awaited_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "https://api.github.com/repos/acme/repo/issues/42/comments"
+        assert call_args.kwargs["json"] == {"body": "hello"}
+        headers = call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer ghs_xyz"
+        assert headers["Accept"] == "application/vnd.github+json"
+        assert headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+class TestPostPRCommentWithRetry:
+    async def test_retries_on_500_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr(
+            "helprs.modules.installation.service.asyncio.sleep",
+            AsyncMock(),
+        )
+
+        attempts = 0
+
+        async def flaky(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                resp = MagicMock()
+                resp.status_code = 503
+                raise httpx.HTTPStatusError("boom", request=MagicMock(), response=resp)
+
+        with patch(
+            "helprs.modules.installation.service.post_pr_comment",
+            side_effect=flaky,
+        ):
+            await post_pr_comment_with_retry(
+                owner="acme",
+                repo="repo",
+                pr_number=42,
+                body="b",
+                installation_token="t",
+            )
+
+        assert attempts == 3
+
+    async def test_retries_on_transport_error(self, monkeypatch):
+        monkeypatch.setattr(
+            "helprs.modules.installation.service.asyncio.sleep",
+            AsyncMock(),
+        )
+
+        calls = 0
+
+        async def flaky(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise httpx.ConnectError("refused")
+
+        with patch(
+            "helprs.modules.installation.service.post_pr_comment",
+            side_effect=flaky,
+        ):
+            await post_pr_comment_with_retry(
+                owner="a",
+                repo="r",
+                pr_number=1,
+                body="b",
+                installation_token="t",
+            )
+        assert calls == 2
+
+    async def test_does_not_retry_on_404(self, monkeypatch):
+        monkeypatch.setattr(
+            "helprs.modules.installation.service.asyncio.sleep",
+            AsyncMock(),
+        )
+
+        calls = 0
+
+        async def always_404(**kwargs):
+            nonlocal calls
+            calls += 1
+            resp = MagicMock()
+            resp.status_code = 404
+            raise httpx.HTTPStatusError("not found", request=MagicMock(), response=resp)
+
+        with (
+            patch(
+                "helprs.modules.installation.service.post_pr_comment",
+                side_effect=always_404,
+            ),
+            pytest.raises(ExternalServiceError),
+        ):
+            await post_pr_comment_with_retry(
+                owner="a",
+                repo="r",
+                pr_number=1,
+                body="b",
+                installation_token="t",
+            )
+        assert calls == 1  # no retries
+
+    async def test_wraps_final_failure_in_external_service_error(self, monkeypatch):
+        monkeypatch.setattr(
+            "helprs.modules.installation.service.asyncio.sleep",
+            AsyncMock(),
+        )
+
+        calls = 0
+
+        async def always_500(**kwargs):
+            nonlocal calls
+            calls += 1
+            resp = MagicMock()
+            resp.status_code = 500
+            raise httpx.HTTPStatusError("oops", request=MagicMock(), response=resp)
+
+        with (
+            patch(
+                "helprs.modules.installation.service.post_pr_comment",
+                side_effect=always_500,
+            ),
+            pytest.raises(ExternalServiceError),
+        ):
+            await post_pr_comment_with_retry(
+                owner="a",
+                repo="r",
+                pr_number=1,
+                body="b",
+                installation_token="t",
+            )
+        assert calls == 3

@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
+    # Frontend base URL used to build user-facing links (e.g. PR-comment session links).
+    # Kept separate from CORS_ORIGINS: that list is for browser security, this single
+    # string is for link composition. See deferred-work.md nice-to-have #11.
+    APP_BASE_URL: str = "http://localhost:5173"
+
     # Environment
     ENVIRONMENT: str = "development"
 

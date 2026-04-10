@@ -6,6 +6,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 os.environ.setdefault("GITHUB_APP_ID", "000000")
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("GITHUB_WEBHOOK_SECRET", "test-webhook-secret")
+os.environ.setdefault("APP_BASE_URL", "http://test.local")
 
 # Generate a valid Fernet key for tests
 from cryptography.fernet import Fernet
