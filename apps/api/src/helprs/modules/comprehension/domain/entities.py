@@ -75,6 +75,11 @@ class Session:
     pr_diff_url: str
     role: SessionRole
     status: SessionStatus
+    # Story 3.3: number of questions this session plans to ask, set at
+    # creation time by ``estimate_question_count``. Zero on legacy rows
+    # created before the Story 3.3 migration — the SSE endpoint falls
+    # back to ``5`` in that case.
+    total_questions: int
     created_at: datetime
     updated_at: datetime
 

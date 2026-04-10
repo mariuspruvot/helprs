@@ -40,6 +40,7 @@ export function makeSession(overrides: Partial<SessionResponse> = {}): SessionRe
     role: 'author',
     status: 'pending',
     question_count: 0,
+    total_questions: 3,
     diff: MULTI_FILE_DIFF,
     created_at: '2026-04-10T00:00:00Z',
     updated_at: '2026-04-10T00:00:00Z',
@@ -52,6 +53,8 @@ export function resetStores() {
     session: null,
     activeFileIndex: 0,
     panelRatio: 0.6,
+    messages: [],
+    streamingQuestion: null,
   })
   useAuthStore.setState({
     accessToken: 'test-token',

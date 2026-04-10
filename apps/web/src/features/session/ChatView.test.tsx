@@ -93,8 +93,9 @@ describe('ChatView — data loading', () => {
     expect(screen.getByTestId('session-header-repo').textContent).toBe('acme/helprs')
     expect(screen.getByTestId('session-header-pr-title').textContent).toBe('Improve caching')
     expect(screen.getByTestId('session-header-role-badge').textContent).toBe('AUTHOR')
+    // Story 3.3 progress indicator: zero committed messages yet, total 3.
     const progress = screen.getByTestId('session-header-progress')
-    expect(progress.textContent).toBe('Questions pending...')
+    expect(progress.textContent).toBe('Question 0 of 3')
     expect(progress.getAttribute('aria-live')).toBe('polite')
     expect(screen.getByTestId('session-header-ai-disclaimer').textContent).toContain(
       'AI-generated content may be inaccurate',

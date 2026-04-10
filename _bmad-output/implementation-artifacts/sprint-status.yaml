@@ -45,7 +45,7 @@
 #   'awaiting-manual-qa', unless invoked with `--skip-manual-qa-gate <reason>`.
 
 generated: 2026-04-09
-last_updated: 2026-04-10 # 3-3 → in-progress (dev-story: question generation + SSE streaming)
+last_updated: 2026-04-11 # 3-3 → review (dev-story complete: question generation + SSE streaming)
 project: helprs
 project_key: NOKEY
 tracking_system: file-system
@@ -114,7 +114,7 @@ development_status:
   # replaced "Story 3.3 backlog" prose with grep-able TODO(story-3.3).
   # make lint && vitest = clean + 24 web tests green (24 = 25 −3 +2).
   3-2-split-view-session-ui-and-diff-viewer: done
-  3-3-question-generation-and-sse-streaming: in-progress
+  3-3-question-generation-and-sse-streaming: review
   3-4-answer-submission-and-feedback-with-code-links: backlog
   3-5-role-adaptation-beyond-diff-and-large-pr-handling: backlog
   epic-3-retrospective: optional

@@ -24,3 +24,9 @@ class StartSessionCommand:
     # field in a frozen dataclass still lets callers mutate labels after
     # construction. Immutable by construction keeps the command safe.
     pr_labels: tuple[str, ...]
+    # Story 3.3: optional PR diff line count, used by
+    # ``StartSessionHandler`` to size the session via
+    # ``estimate_question_count``. ``None`` for legacy callers (existing
+    # webhook-handler tests without an updated fixture) — the handler
+    # falls back to ``5`` questions in that case.
+    pr_diff_line_count: int | None = None

@@ -71,6 +71,7 @@ async def get_session(
         role=session.role,
         status=session.status,
         question_count=question_count,
+        total_questions=session.total_questions,
         diff=diff,
         created_at=session.created_at,
         updated_at=session.updated_at,

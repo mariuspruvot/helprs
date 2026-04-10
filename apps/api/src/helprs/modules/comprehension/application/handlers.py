@@ -29,6 +29,7 @@ from helprs.core.exceptions import (
 from helprs.modules.comprehension.application.commands import StartSessionCommand
 from helprs.modules.comprehension.application.queries import GetSessionQuery, GetSessionResult
 from helprs.modules.comprehension.domain.entities import PRContext, Session
+from helprs.modules.comprehension.domain.services import estimate_question_count
 from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemySessionRepository
 from helprs.modules.installation.service import (
     get_default_suppression_labels,
@@ -126,8 +127,16 @@ class StartSessionHandler:
             pr_diff_url=cmd.pr_diff_url,
         )
 
+        # TODO(story-3.5): replace with role-adaptive + large-PR sizing
+        # (see FR39–FR41). Story 3.3 uses the minimal line-count
+        # heuristic so the end-to-end flow ships first.
+        total_questions = estimate_question_count(cmd.pr_diff_line_count) if cmd.pr_diff_line_count is not None else 5
+
         if len(existing) == 0:
-            author, reviewer = await repo.add_pair(pr_ctx=pr_ctx)
+            author, reviewer = await repo.add_pair(
+                pr_ctx=pr_ctx,
+                total_questions=total_questions,
+            )
             pair: tuple[Session, Session] = (author, reviewer)
             created = True
             comment_needed = True
@@ -156,7 +165,10 @@ class StartSessionHandler:
                 orphan_session_id=str(orphan.id),
             )
             await repo.delete_one(session_id=orphan.id)
-            author, reviewer = await repo.add_pair(pr_ctx=pr_ctx)
+            author, reviewer = await repo.add_pair(
+                pr_ctx=pr_ctx,
+                total_questions=total_questions,
+            )
             pair = (author, reviewer)
             created = True
             comment_needed = True
@@ -259,8 +271,11 @@ class GetSessionHandler:
         #    exceptions".
         installation_token = await mint_installation_token(domain_session.github_installation_id, self._settings)
 
+        # Story 3.3: count persisted questions for the detail response.
+        question_count = await repo.count_questions(session_id=query.session_id)
+
         return GetSessionResult(
             session=domain_session,
             installation_token=installation_token,
-            question_count=0,  # Story 3.3 will count QuestionModel rows here
+            question_count=question_count,
         )

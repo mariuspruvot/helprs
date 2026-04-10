@@ -8,7 +8,12 @@ import structlog
 from fastapi import APIRouter, FastAPI
 
 from helprs.core.config import get_settings
-from helprs.core.database import create_engine, create_session_factory
+from helprs.core.database import (
+    clear_session_factory,
+    create_engine,
+    create_session_factory,
+    set_session_factory,
+)
 from helprs.core.exceptions import DomainError, domain_exception_handler
 from helprs.core.middleware import configure_logging, configure_sentry, setup_middleware
 
@@ -108,8 +113,13 @@ def create_app() -> FastAPI:
         engine = create_engine()
         reaper_task: asyncio.Task | None = None
         try:
+            session_factory = create_session_factory(engine)
             app.state.engine = engine
-            app.state.session_factory = create_session_factory(engine)
+            app.state.session_factory = session_factory
+            # Register the factory for ``get_db_context`` (used by the
+            # SSE stream generator for per-question writes outside the
+            # request-scoped dep graph — Story 3.3).
+            set_session_factory(session_factory)
             app.state.replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
             app.state.replay_tasks = set()
 
@@ -141,6 +151,7 @@ def create_app() -> FastAPI:
             if tracked:
                 await asyncio.gather(*tracked, return_exceptions=True)
 
+            clear_session_factory()
             await engine.dispose()
 
     app = FastAPI(
@@ -160,6 +171,7 @@ def create_app() -> FastAPI:
     api_router = APIRouter(prefix="/api/v1")
 
     from helprs.modules.comprehension.presentation.routers import router as comprehension_router
+    from helprs.modules.comprehension.presentation.sse import sse_router as comprehension_sse_router
     from helprs.modules.identity.router import router as identity_router
     from helprs.modules.installation.router import router as installation_router
     from helprs.modules.webhook.router import router as webhook_router
@@ -168,6 +180,11 @@ def create_app() -> FastAPI:
     api_router.include_router(installation_router)
     api_router.include_router(webhook_router)
     api_router.include_router(comprehension_router)
+    # Story 3.3: SSE streaming for Socratic question generation. Mounted
+    # AFTER the detail router so FastAPI's route matcher considers the
+    # more specific ``/{session_id}/stream`` path alongside the existing
+    # ``/{session_id}`` detail route.
+    api_router.include_router(comprehension_sse_router)
 
     app.include_router(api_router)
 

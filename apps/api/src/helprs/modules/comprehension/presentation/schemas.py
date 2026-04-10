@@ -35,6 +35,9 @@ class SessionResponse(BaseModel):
     role: SessionRole
     status: SessionStatus
     question_count: int
+    # Story 3.3: total number of questions the session plans to ask
+    # (set by ``estimate_question_count`` at session creation time).
+    total_questions: int
     diff: str
     created_at: datetime
     updated_at: datetime

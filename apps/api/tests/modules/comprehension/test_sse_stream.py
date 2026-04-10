@@ -1,0 +1,528 @@
+"""Integration tests for the comprehension SSE endpoint (Story 3.3).
+
+All tests here use ``AsyncClient`` + ``ASGITransport`` — no real
+Anthropic calls, no real server. The LLM stream is mocked by
+dependency-override on ``get_llm_provider`` so the timing / ordering /
+frame-content invariants are deterministic and CI-stable.
+
+Key invariants locked here:
+
+1. Happy path: ``question_token`` frames precede ``question`` frames
+   precede ``done``.
+2. Persistence: after the stream ends, ``questions`` table has N rows
+   where N == ``session.total_questions``, each with a 64-char
+   ``text_hash`` and NO ``text`` column.
+3. First-token-under-1s and first-question-under-3s timing (NFR2/NFR3).
+4. 404 / 403 paths return JSON error responses BEFORE any SSE frame.
+5. LLM failure mid-stream → last frame is ``event: error``.
+6. Missing BYOK → 422 JSON error before any stream frame.
+"""
+
+import asyncio
+import time
+import uuid
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from helprs.core.config import get_settings
+from helprs.core.database import Base, set_session_factory
+from helprs.core.security import create_access_token, fernet_encrypt
+from helprs.main import create_app
+from helprs.modules.comprehension.infrastructure.agents import PydanticAILLMProvider
+from helprs.modules.comprehension.infrastructure.models import QuestionModel, SessionModel
+from helprs.modules.comprehension.presentation.dependencies import get_llm_provider
+from helprs.modules.identity.models import GitHubUser
+from helprs.modules.installation.models import BYOKConfig, Installation
+
+TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
+
+_TEST_GITHUB_USER_ID = 8888
+_TEST_GITHUB_INSTALLATION_ID = 87654321
+
+
+@pytest.fixture
+async def app_with_db(monkeypatch):
+    """App + DB + seeded installation / user / session / BYOK."""
+    get_settings.cache_clear()
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    application = create_app()
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    application.state.session_factory = session_factory
+    # The lifespan never runs under ASGITransport, so we register the
+    # factory directly for ``get_db_context`` to pick up.
+    set_session_factory(session_factory)
+
+    settings = get_settings()
+
+    async with session_factory() as bootstrap:
+        installation = Installation(
+            github_installation_id=_TEST_GITHUB_INSTALLATION_ID,
+            account_login="acme",
+            account_id=55556,
+            account_type="Organization",
+            repository_selection="all",
+            app_slug="helprs",
+            target_type="Organization",
+            permissions={"pull_requests": "write"},
+            events=["pull_request"],
+            suppression_labels=None,
+        )
+        bootstrap.add(installation)
+        await bootstrap.flush()
+
+        byok = BYOKConfig(
+            installation_id=installation.id,
+            encrypted_api_key=fernet_encrypt("sk-ant-fake", settings.FERNET_KEY),
+            key_status="valid",
+            validated_at=datetime.now(UTC),
+            key_hint="...fake",
+        )
+        bootstrap.add(byok)
+
+        user = GitHubUser(
+            github_id=_TEST_GITHUB_USER_ID,
+            github_login="sse_user",
+            email="sse@example.com",
+            avatar_url=None,
+            github_access_token_enc=fernet_encrypt("gho_test_token", settings.FERNET_KEY),
+        )
+        bootstrap.add(user)
+        await bootstrap.flush()
+
+        author = SessionModel(
+            installation_id=installation.id,
+            github_installation_id=_TEST_GITHUB_INSTALLATION_ID,
+            repo_full_name="acme/sseo",
+            repo_owner="acme",
+            repo_name="sseo",
+            pr_number=7,
+            pr_title="Improve foo",
+            pr_head_sha="deadbeef",
+            pr_diff_url="https://github.com/acme/sseo/pull/7.diff",
+            role="author",
+            status="pending",
+            total_questions=3,
+        )
+        bootstrap.add(author)
+        await bootstrap.commit()
+
+        seeded = {
+            "installation_id": installation.id,
+            "user_id": user.id,
+            "author_id": author.id,
+        }
+
+    yield application, session_factory, seeded
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _patch_github_calls(monkeypatch):
+    """Patch mint_installation_token + access check + diff fetch so
+    the endpoint runs with deterministic upstream values.
+
+    The LLM provider is NOT patched here — individual tests override
+    ``get_llm_provider`` via ``app.dependency_overrides`` to script
+    per-test token sequences.
+    """
+    from unittest.mock import AsyncMock
+
+    mint = AsyncMock(return_value="ghs_fake_token")
+    access_list = AsyncMock(return_value=[])
+    diff = AsyncMock(
+        return_value=(
+            "diff --git a/apps/api/foo.py b/apps/api/foo.py\n"
+            "--- a/apps/api/foo.py\n"
+            "+++ b/apps/api/foo.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-def foo(): pass\n"
+            "+def foo(): return 42\n"
+            "diff --git a/apps/web/bar.ts b/apps/web/bar.ts\n"
+            "--- a/apps/web/bar.ts\n"
+            "+++ b/apps/web/bar.ts\n"
+            "@@ -1 +1 @@\n"
+            "-export const bar = 1;\n"
+            "+export const bar = 2;\n"
+        )
+    )
+
+    monkeypatch.setattr(
+        "helprs.modules.comprehension.application.handlers.mint_installation_token",
+        mint,
+    )
+    monkeypatch.setattr(
+        "helprs.modules.comprehension.application.handlers.get_installations_for_user",
+        access_list,
+    )
+    monkeypatch.setattr(
+        "helprs.modules.comprehension.presentation.sse.fetch_pr_diff",
+        diff,
+    )
+    return mint, access_list, diff
+
+
+def _bearer(user_id) -> dict:
+    get_settings.cache_clear()
+    settings = get_settings()
+    token = create_access_token(
+        {"sub": str(user_id), "github_login": "sse_user"},
+        settings.SECRET_KEY,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+class _ScriptedLLM:
+    """Fake ``PydanticAILLMProvider`` that yields a scripted sequence.
+
+    ``questions`` is a list of strings; ``stream_question`` is called
+    once per question and the matching string is yielded character by
+    character so tests can assert token-level ordering. ``delay``
+    optionally introduces an awaitable pause before the first token
+    (used by the NFR3 timing test).
+    """
+
+    def __init__(self, questions: list[str], first_token_delay: float = 0.0) -> None:
+        self.questions = list(questions)
+        self.calls = 0
+        self.first_token_delay = first_token_delay
+        self.api_keys_seen: list[str] = []
+
+    async def stream_question(
+        self,
+        *,
+        pr_diff: str,
+        role,
+        previous_questions,
+        api_key: str,
+    ) -> AsyncIterator[str]:
+        self.api_keys_seen.append(api_key)
+        idx = self.calls
+        self.calls += 1
+        if idx >= len(self.questions):
+            return
+        text = self.questions[idx]
+        if self.first_token_delay:
+            await asyncio.sleep(self.first_token_delay)
+        for ch in text:
+            # Explicit zero-sleep yield so the event loop can ferry
+            # frames to the client between chunks.
+            await asyncio.sleep(0)
+            yield ch
+
+    async def generate_question(self, **kwargs) -> str:
+        return "".join([q async for q in self.stream_question(**kwargs)])
+
+    async def generate_feedback(self, **kwargs) -> str:
+        raise NotImplementedError
+
+
+class _RaisingLLM:
+    """Fake provider that yields one chunk then raises httpx.TimeoutException."""
+
+    async def stream_question(self, **kwargs) -> AsyncIterator[str]:
+        import httpx
+
+        yield "Hel"
+        raise httpx.TimeoutException("upstream timeout")
+
+    async def generate_question(self, **kwargs) -> str:
+        return "Hel"
+
+
+def _override_llm(app, provider) -> None:
+    app.dependency_overrides[get_llm_provider] = lambda: provider
+
+
+def _parse_sse(body: bytes) -> list[tuple[str, dict]]:
+    """Tiny SSE parser for tests. Returns list of (event, data) pairs."""
+    import json
+
+    text = body.decode("utf-8")
+    frames: list[tuple[str, dict]] = []
+    for block in text.split("\n\n"):
+        if not block.strip():
+            continue
+        event_name = None
+        data_line = None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line.removeprefix("event: ").strip()
+            elif line.startswith("data: "):
+                data_line = line.removeprefix("data: ").strip()
+        if event_name and data_line is not None:
+            frames.append((event_name, json.loads(data_line)))
+    return frames
+
+
+class TestHappyPath:
+    async def test_streams_three_questions_then_done(self, app_with_db, _patch_github_calls):
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        scripted = _ScriptedLLM(
+            [
+                "What assumption are you making in apps/api/foo.py?",
+                "Why does apps/web/bar.ts return 2?",
+                "What edge case did you miss?",
+            ]
+        )
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        frames = _parse_sse(resp.content)
+
+        # At least 1 token per question + 1 question frame per question + 1 done.
+        events = [e for (e, _) in frames]
+        assert events.count("question") == 3
+        assert events.count("done") == 1
+        assert events.count("question_token") >= 3
+
+        # Ordering: done is the last frame.
+        assert events[-1] == "done"
+
+        # Each ``question`` frame carries the full text, number, total, refs.
+        question_frames = [d for (e, d) in frames if e == "question"]
+        assert [q["number"] for q in question_frames] == [1, 2, 3]
+        assert all(q["total"] == 3 for q in question_frames)
+        assert question_frames[0]["text"].startswith("What assumption")
+        # File ref extraction picked up apps/api/foo.py in Q1.
+        assert "apps/api/foo.py" in question_frames[0]["file_refs"]
+        assert "apps/web/bar.ts" in question_frames[1]["file_refs"]
+
+        # Done carries the session id + question count.
+        done = [d for (e, d) in frames if e == "done"][0]
+        assert done["question_count"] == 3
+        assert done["session_id"] == str(seeded["author_id"])
+
+        # BYOK key was forwarded to the LLM.
+        assert scripted.api_keys_seen == ["sk-ant-fake"] * 3
+
+    async def test_persists_text_hashes_no_text_column(self, app_with_db, _patch_github_calls):
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        scripted = _ScriptedLLM(["Q1?", "Q2?", "Q3?"])
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 200
+
+        async with session_factory() as s:
+            count = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(QuestionModel)
+                    .where(QuestionModel.session_id == seeded["author_id"])
+                )
+            ).scalar_one()
+            rows = list(
+                (await s.execute(select(QuestionModel).where(QuestionModel.session_id == seeded["author_id"])))
+                .scalars()
+                .all()
+            )
+
+        assert count == 3
+        numbers = sorted(r.number for r in rows)
+        assert numbers == [1, 2, 3]
+        for r in rows:
+            assert len(r.text_hash) == 64
+            # Defensive: no attribute named ``text`` exists on the model.
+            assert not hasattr(r, "text")
+
+
+class TestTiming:
+    async def test_first_question_token_under_1s(self, app_with_db, _patch_github_calls):
+        """NFR3: first token arrives < 1 s after request accepted."""
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        scripted = _ScriptedLLM(["Q?", "Q2?", "Q3?"], first_token_delay=0.05)
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            t0 = time.monotonic()
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+            elapsed = time.monotonic() - t0
+
+        assert resp.status_code == 200
+        frames = _parse_sse(resp.content)
+        # First event in the stream must be a ``question_token``.
+        assert frames[0][0] == "question_token"
+        # Full round-trip under 1 s with mock delay of 50 ms.
+        assert elapsed < 1.0, f"round-trip took {elapsed:.3f}s"
+
+    async def test_first_question_event_under_3s(self, app_with_db, _patch_github_calls):
+        """NFR2: first complete question arrives < 3 s after request."""
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        scripted = _ScriptedLLM(["First question here?", "Q2?", "Q3?"], first_token_delay=0.05)
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            t0 = time.monotonic()
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+            elapsed = time.monotonic() - t0
+
+        assert resp.status_code == 200
+        frames = _parse_sse(resp.content)
+        # The first ``question`` frame should be present.
+        first_question_index = next((i for i, (e, _) in enumerate(frames) if e == "question"), None)
+        assert first_question_index is not None
+        # 3 s budget from AC #6 — plenty of headroom vs the 50 ms mock.
+        assert elapsed < 3.0, f"round-trip took {elapsed:.3f}s"
+
+
+class TestAccessControl:
+    async def test_returns_404_for_unknown_session(self, app_with_db, _patch_github_calls):
+        application, _, seeded = app_with_db
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{uuid.uuid4()}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].startswith("application/json")
+
+    async def test_returns_403_when_user_has_no_access(self, app_with_db, _patch_github_calls):
+        application, _, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+        access_list.return_value = []  # explicit — no installations
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 403
+        assert resp.headers["content-type"].startswith("application/json")
+
+    async def test_returns_401_without_bearer(self, app_with_db):
+        application, _, seeded = app_with_db
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(f"/api/v1/sessions/{seeded['author_id']}/stream")
+        assert resp.status_code == 401
+
+
+class TestBYOKErrors:
+    async def test_missing_byok_returns_422_before_stream(self, app_with_db, _patch_github_calls):
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        # Drop BYOK config.
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+            await s.execute(BYOKConfig.__table__.delete().where(BYOKConfig.installation_id == inst.id))
+            await s.commit()
+        access_list.return_value = [inst]
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        # DomainValidationError → 422
+        assert resp.status_code == 422
+        assert resp.headers["content-type"].startswith("application/json")
+
+
+class TestLLMError:
+    async def test_llm_failure_emits_error_frame(self, app_with_db, _patch_github_calls):
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        _override_llm(application, _RaisingLLM())
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 200  # the stream opened before the error
+        frames = _parse_sse(resp.content)
+        events = [e for (e, _) in frames]
+        assert events[-1] == "error"
+        err_payload = frames[-1][1]
+        assert err_payload["error"] == "TimeoutException"
+        assert err_payload["retryable"] is True
+
+
+class TestSseFrameHelper:
+    def test_sse_frame_encoding(self):
+        from helprs.modules.comprehension.presentation.sse import _sse_frame
+
+        encoded = _sse_frame("question_token", {"token": "hi"})
+        assert encoded.startswith(b"event: question_token\n")
+        assert b'"token": "hi"' in encoded
+        assert encoded.endswith(b"\n\n")
+
+
+class TestProviderKeyHygiene:
+    def test_pydantic_ai_provider_does_not_stash_api_key(self):
+        provider = PydanticAILLMProvider()
+        # The production provider must NOT cache the API key on the
+        # instance — zero-retention is enforced structurally.
+        assert not hasattr(provider, "_api_key")
+        assert "api_key" not in provider.__dict__
