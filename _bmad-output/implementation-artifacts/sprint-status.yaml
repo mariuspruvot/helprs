@@ -1,0 +1,94 @@
+# generated: 2026-04-09
+# last_updated: 2026-04-10 # story 3-1 created (ready-for-dev); epic-3 → in-progress
+# project: helprs
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - awaiting-manual-qa: Code review automated done + patches applied.
+#     Awaiting Project Lead manual smoke test sign-off.
+#     CANNOT transition to `done` until the story's Manual QA Checklist
+#     is signed by the Project Lead. Blocks creation of next story.
+#   - done: Story completed (automated tests + manual QA both signed off)
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Stories transitioning from 'review' to 'done' MUST pass through 'awaiting-manual-qa'.
+#   The code-review workflow HALTs at this state and hands off to the Project Lead
+#   explicitly. Only the Project Lead can set a story to 'done' (see epic-2 retro
+#   action items #1-3, 2026-04-10).
+# - bmad-create-story refuses to create a new story if any story is currently in
+#   'awaiting-manual-qa', unless invoked with `--skip-manual-qa-gate <reason>`.
+
+generated: 2026-04-09
+last_updated: 2026-04-10 # story 3-1 created (ready-for-dev); epic-3 → in-progress
+project: helprs
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 1: GitHub App Installation & Identity
+  epic-1: done
+  1-1-project-scaffolding-and-deployment-infrastructure: done
+  1-2-core-backend-infrastructure: done
+  1-3-github-oauth-and-user-identity: done
+  1-4-github-app-installation-and-webhook-registration: done
+  1-5-byok-configuration-and-admin-settings-ui: done
+  epic-1-retrospective: done
+
+  # Epic 2: Webhook Processing & Session Lifecycle
+  epic-2: done
+  2-1-webhook-reception-and-event-dispatch: done
+  2-2-session-creation-and-pr-comment-posting: done
+  epic-2-retrospective: done
+
+  # Epic 3: Socratic Comprehension Experience
+  epic-3: in-progress
+  3-1-comprehension-domain-model-and-session-api: ready-for-dev
+  3-2-split-view-session-ui-and-diff-viewer: backlog
+  3-3-question-generation-and-sse-streaming: backlog
+  3-4-answer-submission-and-feedback-with-code-links: backlog
+  3-5-role-adaptation-beyond-diff-and-large-pr-handling: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Scoring, Quality Signals & Session Completion
+  epic-4: backlog
+  4-1-comprehension-scoring-and-score-card-ui: backlog
+  4-2-github-status-check-question-reporting-and-post-session-feedback: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Demo Experience & Landing Page
+  epic-5: backlog
+  5-1-demo-session-and-pre-loaded-experience: backlog
+  5-2-landing-page-and-install-conversion: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Billing & Subscriptions
+  epic-6: backlog
+  6-1-billing-model-and-lemon-squeezy-integration: backlog
+  epic-6-retrospective: optional
