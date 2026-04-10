@@ -12,9 +12,18 @@ const CHAT_PANEL_ID = 'session-chat-panel'
 const DIFF_PANEL_ID = 'session-diff-panel'
 
 // NOTE — react-resizable-panels v4 API (`Group`/`Separator`) replaced the
-// v2 `PanelGroup`/`PanelResizeHandle` mentioned in the story. The semantics
-// match: `Separator` still renders with `role="separator"` and handles
-// ArrowLeft/ArrowRight via keyboard out of the box.
+// v2 `PanelGroup`/`PanelResizeHandle` mentioned in the story. v4's
+// `Separator` already honours AC #3 without any custom code: it installs a
+// native DOM `keydown` listener on the separator element and steps the
+// layout by 5% on ArrowLeft / ArrowRight (verified at
+// `node_modules/react-resizable-panels/dist/react-resizable-panels.js`
+// lines 966/970 — the step is hardcoded to `H(t, ±5)`). The library's
+// handler also calls `event.preventDefault()` unconditionally, so Cmd+Arrow
+// / Alt+Arrow / Shift+Arrow passthrough is NOT supported by the library;
+// we do not attempt to work around that here because fighting the library's
+// internal listener via capture-phase `stopImmediatePropagation` is a
+// fragile coupling to v4 internals. Drag still bounds-checks via `minSize`
+// / `maxSize` on the `Panel`s and the store's own `[0.3, 0.8]` clamp.
 export default function SplitLayout({ session }: SplitLayoutProps) {
   const panelRatio = useSessionStore((s) => s.panelRatio)
   const setPanelRatio = useSessionStore((s) => s.setPanelRatio)

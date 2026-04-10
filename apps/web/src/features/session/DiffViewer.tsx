@@ -21,16 +21,56 @@ function fileBasename(file: FileData): string {
   return fullPath.split('/').pop() || fullPath
 }
 
+// A binary delta parses into a FileData with zero hunks, a real path, and
+// `type: 'modify'`. The empty-input placeholder that `parseDiff` also emits
+// has neither hunks nor a meaningful path, so we can distinguish them by
+// checking for a usable path.
+//
+// ⚠️ `gitdiff-parser` technically defines a `file.isBinary` boolean on its
+// File type, but its internal parser NEVER sets it in practice: the branch
+// that does is only reached when the outer loop reads a line starting with
+// "Binary" directly, whereas the inner `simiLoop` (which processes the
+// headers following `diff --git`) aggressively consumes the `Binary files
+// … differ` line without matching any case — verified empirically with
+// `node -e "console.log(require('gitdiff-parser').parse(…).map(f => f.isBinary))"`.
+// Until the upstream parser fixes that, we fall back to the structural
+// check below.
+function hasRealPath(file: FileData): boolean {
+  const newPath = file.newPath && file.newPath !== '/dev/null' ? file.newPath : ''
+  const oldPath = file.oldPath && file.oldPath !== '/dev/null' ? file.oldPath : ''
+  return newPath !== '' || oldPath !== ''
+}
+
+function isBinaryFile(file: FileData): boolean {
+  // Exclude pure renames (`type === 'rename'`) and pure copies (`type ===
+  // 'copy'`) — they also parse with zero hunks + real paths but are clearly
+  // not binary. Mode-only changes (chmod) parse with `type: 'modify'` and
+  // zero hunks, so they WILL be mis-labelled as "Binary file — not
+  // displayed"; this is an accepted edge case (rare in practice, recoverable
+  // mis-label rather than a crash), tracked in `deferred-work.md`.
+  return (
+    file.hunks.length === 0 &&
+    hasRealPath(file) &&
+    file.type !== 'rename' &&
+    file.type !== 'copy'
+  )
+}
+
 export default function DiffViewer({ session }: DiffViewerProps) {
   const activeFileIndex = useSessionStore((s) => s.activeFileIndex)
   const setActiveFile = useSessionStore((s) => s.setActiveFile)
 
   // parseDiff always returns at least one file even for empty/garbage input
-  // (empty path, zero hunks). Treat such placeholders as "no changes" so
-  // the user sees the empty state instead of an empty tab bar.
+  // (empty path, zero hunks). Treat such empty placeholders as "no changes"
+  // so the user sees the empty state instead of an empty tab bar — but
+  // KEEP binary entries (zero hunks + real path + non-rename/copy) so a PR
+  // that only changes images / lockfiles is still discoverable from the tab
+  // list, with a "Binary file — not displayed" placeholder in the panel
+  // body. Pure renames and copies are dropped from the tab list (they have
+  // no content to show anyway).
   const files = useMemo<FileData[]>(() => {
     const parsed = parseDiff(session.diff)
-    return parsed.filter((file) => file.hunks.length > 0)
+    return parsed.filter((file) => file.hunks.length > 0 || isBinaryFile(file))
   }, [session.diff])
   // Anchor the check to the end of the diff — `includes()` would false-positive
   // on any file whose contents legitimately contain the marker comment (e.g.
@@ -160,7 +200,21 @@ export default function DiffViewer({ session }: DiffViewerProps) {
         className="flex-1 min-h-0 overflow-auto bg-surface"
         data-testid="diff-scroll-container"
       >
-        {activeFile && (
+        {activeFile && isBinaryFile(activeFile) && (
+          <div
+            className="h-full w-full flex items-center justify-center p-6"
+            data-testid="diff-binary-placeholder"
+            role="region"
+            aria-label={`Binary file: ${fileDisplayPath(activeFile)}`}
+          >
+            <p className="text-[14px] text-text-muted text-center">
+              Binary file — not displayed.
+              <br />
+              <span className="text-[12px]">{fileDisplayPath(activeFile)}</span>
+            </p>
+          </div>
+        )}
+        {activeFile && !isBinaryFile(activeFile) && (
           <Diff
             key={`${activeFile.oldRevision}-${activeFile.newRevision}-${safeIndex}`}
             viewType="unified"
