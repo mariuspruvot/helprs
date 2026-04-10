@@ -2,6 +2,23 @@ import { useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useAuthStore } from './store'
 import { apiFetch } from '../../shared/api/client'
+import { RETURN_URL_STORAGE_KEY } from './ProtectedRoute'
+
+function readPersistedReturnUrl(): string | null {
+  try {
+    return sessionStorage.getItem(RETURN_URL_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function clearPersistedReturnUrl() {
+  try {
+    sessionStorage.removeItem(RETURN_URL_STORAGE_KEY)
+  } catch {
+    // noop — same fallback policy as write site.
+  }
+}
 
 export default function OAuthCallback() {
   const [searchParams] = useSearchParams()
@@ -28,11 +45,15 @@ export default function OAuthCallback() {
       })
       .then((user) => {
         setUser(user)
-        const destination = returnUrl ?? '/'
+        // The in-memory store was wiped by the OAuth full-page round-trip,
+        // so fall back to sessionStorage (persisted by ProtectedRoute).
+        const destination = returnUrl ?? readPersistedReturnUrl() ?? '/'
         setReturnUrl(null)
+        clearPersistedReturnUrl()
         navigate(destination, { replace: true })
       })
       .catch(() => {
+        clearPersistedReturnUrl()
         navigate('/', { replace: true })
       })
   }, [searchParams, login, setUser, navigate, returnUrl, setReturnUrl])
