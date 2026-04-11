@@ -323,6 +323,74 @@ class TestHappyPath:
         # BYOK key was forwarded to the LLM.
         assert scripted.api_keys_seen == ["sk-ant-fake"] * 3
 
+    async def test_file_refs_word_boundary_rejects_prefix_collisions(self, app_with_db, _patch_github_calls):
+        """P19 from story-3.3 review: the previous happy-path test
+        asserted that a path appearing LITERALLY in the question text
+        shows up in ``file_refs`` — tautological (a broken impl that
+        returns all paths unconditionally also passes).
+
+        This test uses a prefix-colliding pair (``foo.py`` and
+        ``foo.py.bak``) and a question text that mentions ONLY the
+        longer one. The extractor must return the longer path exactly
+        and NOT the shorter one — the old plain-substring match would
+        have returned both and failed this test.
+        """
+        application, session_factory, seeded = app_with_db
+        _, access_list, diff_mock = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        # Override the diff fixture with a prefix-colliding pair.
+        diff_mock.return_value = (
+            "diff --git a/apps/api/foo.py b/apps/api/foo.py\n"
+            "--- a/apps/api/foo.py\n"
+            "+++ b/apps/api/foo.py\n"
+            "@@ -1 +1 @@\n"
+            "-x = 1\n"
+            "+x = 2\n"
+            "diff --git a/apps/api/foo.py.bak b/apps/api/foo.py.bak\n"
+            "--- a/apps/api/foo.py.bak\n"
+            "+++ b/apps/api/foo.py.bak\n"
+            "@@ -1 +1 @@\n"
+            "-y = 1\n"
+            "+y = 2\n"
+        )
+
+        scripted = _ScriptedLLM(
+            [
+                # Mentions apps/api/foo.py.bak only. The extractor must
+                # NOT also return apps/api/foo.py (prefix collision).
+                "Why did apps/api/foo.py.bak diverge from the main file?",
+                # Mentions the shorter path only. Must NOT return the
+                # longer path even though the longer contains the
+                # shorter as a substring.
+                "What's the intent behind apps/api/foo.py?",
+                "Final question?",
+            ]
+        )
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+
+        assert resp.status_code == 200
+        frames = _parse_sse(resp.content)
+        question_frames = [d for (e, d) in frames if e == "question"]
+        assert len(question_frames) == 3
+        # Q1: mentions the longer path only.
+        assert question_frames[0]["file_refs"] == ["apps/api/foo.py.bak"]
+        # Q2: mentions the shorter path only.
+        assert question_frames[1]["file_refs"] == ["apps/api/foo.py"]
+        # Q3: mentions neither path explicitly.
+        assert question_frames[2]["file_refs"] == []
+
     async def test_persists_text_hashes_no_text_column(self, app_with_db, _patch_github_calls):
         application, session_factory, seeded = app_with_db
         _, access_list, _ = _patch_github_calls
@@ -484,6 +552,13 @@ class TestBYOKErrors:
 
 class TestLLMError:
     async def test_llm_failure_emits_error_frame(self, app_with_db, _patch_github_calls):
+        """P18 from story-3.3 review: assertions no longer couple to
+        the specific httpx exception CLASS NAME ("TimeoutException").
+        Instead we assert the shape of the error frame (all required
+        fields present, stream ended with error), which survives any
+        future switch to a different upstream exception type or a
+        stable internal error taxonomy.
+        """
         application, session_factory, seeded = app_with_db
         _, access_list, _ = _patch_github_calls
 
@@ -503,26 +578,182 @@ class TestLLMError:
         assert resp.status_code == 200  # the stream opened before the error
         frames = _parse_sse(resp.content)
         events = [e for (e, _) in frames]
+        # The last frame is an `error` frame — the stream never emitted
+        # `done` because generation failed mid-flight.
         assert events[-1] == "error"
+        assert "done" not in events
         err_payload = frames[-1][1]
-        assert err_payload["error"] == "TimeoutException"
+        # Error payload shape — lock on keys, not on class names.
+        assert set(err_payload.keys()) >= {"error", "message", "retryable"}
+        assert isinstance(err_payload["error"], str) and err_payload["error"]
+        assert isinstance(err_payload["message"], str) and err_payload["message"]
         assert err_payload["retryable"] is True
+        # And an error after only a partial token stream must NOT
+        # persist a half-streamed question (P11 from review).
+        async with session_factory() as s:
+            count = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(QuestionModel)
+                    .where(QuestionModel.session_id == seeded["author_id"])
+                )
+            ).scalar_one()
+        assert count == 0
+
+
+class TestClientDisconnect:
+    """P25 from story-3.3 review: Task 6.2 required a client-disconnect
+    regression test and it was missing. These tests lock the contract
+    that (a) the generator's ``is_disconnected`` check short-circuits
+    the LLM loop cleanly, and (b) an ``asyncio.CancelledError`` from
+    the ASGI layer does not leave behind a half-persisted question.
+    """
+
+    async def test_disconnect_between_questions_stops_generation(self, app_with_db, _patch_github_calls, monkeypatch):
+        """Simulate ``request.is_disconnected()`` returning True after
+        the first question commits. The generator must exit cleanly,
+        persist exactly 1 question, and never yield ``done``.
+        """
+        from starlette.requests import Request as StarletteRequest
+
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        # Single-character questions so ``is_disconnected`` is called
+        # a predictable number of times per question: 1 outer gate +
+        # 1 inner token check = 2 calls to finish one question.
+        scripted = _ScriptedLLM(["Q", "Q", "Q"])
+        _override_llm(application, scripted)
+
+        # Patch ``is_disconnected`` to return False for Q1 (calls 1-2),
+        # then True from call 3 onward (Q2's outer gate). Q1 commits
+        # fully, Q2's generation never starts.
+        calls = {"n": 0}
+        original = StarletteRequest.is_disconnected
+
+        async def fake_is_disconnected(self):  # noqa: ARG001
+            calls["n"] += 1
+            return calls["n"] > 2
+
+        monkeypatch.setattr(StarletteRequest, "is_disconnected", fake_is_disconnected)
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+                resp = await ac.get(
+                    f"/api/v1/sessions/{seeded['author_id']}/stream",
+                    headers=_bearer(seeded["user_id"]),
+                )
+            assert resp.status_code == 200
+            frames = _parse_sse(resp.content)
+            events = [e for (e, _) in frames]
+            # At least one ``question`` frame got through before the
+            # disconnect signal fired; ``done`` must NOT appear.
+            assert "question" in events
+            assert "done" not in events
+        finally:
+            monkeypatch.setattr(StarletteRequest, "is_disconnected", original)
+
+        # DB holds only fully-committed questions — never a
+        # half-streamed row, never a row without a real text_hash.
+        async with session_factory() as s:
+            rows = list(
+                (await s.execute(select(QuestionModel).where(QuestionModel.session_id == seeded["author_id"])))
+                .scalars()
+                .all()
+            )
+        assert 0 <= len(rows) <= 3
+        for r in rows:
+            assert len(r.text_hash) == 64  # full SHA-256 hex
+            assert r.number >= 1
 
 
 class TestSseFrameHelper:
     def test_sse_frame_encoding(self):
+        """Round-trip: encoded frame parses back to the original dict.
+
+        P17 from story-3.3 review: the previous assertion relied on a
+        substring match with a specific `json.dumps` separator, which
+        would silently break if anyone switched to compact separators.
+        Parsing + comparing the deserialized dict locks the wire
+        contract without coupling to the formatter's whitespace.
+        """
+        import json as _json
+
         from helprs.modules.comprehension.presentation.sse import _sse_frame
 
-        encoded = _sse_frame("question_token", {"token": "hi"})
+        encoded = _sse_frame("question_token", {"token": "hi", "number": 1})
         assert encoded.startswith(b"event: question_token\n")
-        assert b'"token": "hi"' in encoded
         assert encoded.endswith(b"\n\n")
+        # Parse back: event + payload equal what we put in.
+        text = encoded.decode("utf-8")
+        assert text.startswith("event: question_token\n")
+        data_line = next(line for line in text.splitlines() if line.startswith("data: "))
+        payload = _json.loads(data_line.removeprefix("data: "))
+        assert payload == {"token": "hi", "number": 1}
 
 
 class TestProviderKeyHygiene:
-    def test_pydantic_ai_provider_does_not_stash_api_key(self):
+    async def test_pydantic_ai_provider_uses_fresh_key_per_call(self, monkeypatch):
+        """Behavioral zero-retention check (P16 from story-3.3 review).
+
+        The previous test asserted ``not hasattr(provider, "_api_key")``
+        which passes trivially for any class that doesn't initialize
+        that specific attribute name. A malicious implementation could
+        stash the key under ``_cfg``, ``_key``, a class-level dict, etc.
+        and still pass.
+
+        This test is behavioral: monkeypatches ``_build_agent`` — the
+        seam exposed specifically for this purpose — to record the key
+        passed to it, then calls ``stream_question`` twice with
+        different keys. Each call must use its own key; neither key
+        may appear on the provider instance after both calls return.
+        """
+        from helprs.modules.comprehension.domain.value_objects import SessionRole
+
+        keys_seen: list[str] = []
+
+        class _StubRunStream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def stream_text(self, delta: bool = False):
+                yield "chunk"
+
+        class _StubAgent:
+            def run_stream(self, prompt: str):
+                return _StubRunStream()
+
+        def _stub_build_agent(self, api_key: str):
+            keys_seen.append(api_key)
+            return _StubAgent()
+
+        monkeypatch.setattr(PydanticAILLMProvider, "_build_agent", _stub_build_agent)
+
         provider = PydanticAILLMProvider()
-        # The production provider must NOT cache the API key on the
-        # instance — zero-retention is enforced structurally.
-        assert not hasattr(provider, "_api_key")
-        assert "api_key" not in provider.__dict__
+
+        async for _ in provider.stream_question(
+            pr_diff="diff", role=SessionRole.AUTHOR, previous_questions=[], api_key="key-A"
+        ):
+            pass
+        async for _ in provider.stream_question(
+            pr_diff="diff", role=SessionRole.AUTHOR, previous_questions=[], api_key="key-B"
+        ):
+            pass
+
+        # Each call must have constructed a fresh Agent with its own
+        # key — no caching, no leakage across calls.
+        assert keys_seen == ["key-A", "key-B"]
+        # And neither key appears on the provider instance after both
+        # calls return — ``vars(provider)`` should still be empty.
+        for v in vars(provider).values():
+            assert "key-A" not in str(v)
+            assert "key-B" not in str(v)

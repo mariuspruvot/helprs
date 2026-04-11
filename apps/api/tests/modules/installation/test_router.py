@@ -88,9 +88,12 @@ class TestListInstallations:
     async def test_returns_user_installations(self, authed_client_with_installation):
         client, installation = authed_client_with_installation
 
-        # Mock GitHub API /user/installations to return our test installation
+        # The fixture's installation is Org-type ("test-org"), so the
+        # refactored ``get_installations_for_user`` will call ``/user/orgs``
+        # to verify membership. Mock that endpoint to claim the test user
+        # belongs to the org.
         mock_response = MagicMock()
-        mock_response.json.return_value = {"installations": [{"id": installation.github_installation_id}]}
+        mock_response.json.return_value = [{"login": "test-org"}]
         mock_response.raise_for_status = MagicMock()
 
         with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:

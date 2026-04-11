@@ -152,12 +152,13 @@ async def stream_session(
             # it in memory for the duration of the stream.
             previous_texts: list[str] = []
 
-            for number in range(already_generated + 1, total + 1):
+            client_gone = False
+            for _loop_number in range(already_generated + 1, total + 1):
                 # Give up early if the client went away (back button,
                 # tab close). Checked every loop iteration so we
                 # stop minting LLM tokens the user cannot see.
                 if await request.is_disconnected():
-                    await logger.ainfo("sse_stream_client_disconnected", number=number)
+                    await logger.ainfo("sse_stream_client_disconnected", number=_loop_number)
                     return
 
                 question_id = str(uuid.uuid4())
@@ -168,16 +169,41 @@ async def stream_session(
                     previous_questions=previous_texts,
                     api_key=api_key,
                 ):
+                    # P10: check disconnect inside the token loop so we
+                    # stop streaming LLM tokens immediately when the
+                    # client goes away, not just between questions.
+                    # This matters because a single question can burn
+                    # thousands of BYOK-billed tokens.
+                    if await request.is_disconnected():
+                        await logger.ainfo(
+                            "sse_stream_client_disconnected_mid_token",
+                            number=_loop_number,
+                            tokens_streamed=len(parts),
+                        )
+                        client_gone = True
+                        break
                     parts.append(token)
                     yield _sse_frame(
                         "question_token",
                         {
                             "question_id": question_id,
                             "token": token,
-                            "number": number,
+                            "number": _loop_number,
                             "total": total,
                         },
                     )
+
+                if client_gone:
+                    # Do NOT persist a half-streamed question. The
+                    # next reconnection (if any) will start fresh from
+                    # ``already_generated`` which the DB still reports.
+                    return
+
+                # P11: reject empty LLM output rather than persisting a
+                # row with ``sha256("")``. An empty question is never a
+                # legitimate outcome — surface it as an error frame.
+                if not parts:
+                    raise RuntimeError("LLM yielded no tokens for question")
 
                 text = "".join(parts)
                 text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -186,7 +212,11 @@ async def stream_session(
                 # Fresh short-lived session per commit — the
                 # request-scoped ``db`` is intentionally NOT reused.
                 async with get_db_context() as tx:
-                    await SqlAlchemySessionRepository(tx).append_question(
+                    # P8: use the DB-assigned number from append_question
+                    # rather than the Python loop variable. Under concurrent
+                    # streams the assigned number may diverge from the loop
+                    # variable (see two-tab scenario in review findings D1).
+                    persisted = await SqlAlchemySessionRepository(tx).append_question(
                         session_id=session_id,
                         topic=Topic.ARCHITECTURE,  # TODO(story-3.5): topic selection
                         text_hash=text_hash,
@@ -199,23 +229,31 @@ async def stream_session(
                     {
                         "question_id": question_id,
                         "text": text,
-                        "number": number,
+                        "number": persisted.number,
                         "total": total,
                         "file_refs": file_refs,
                     },
                 )
                 await logger.ainfo(
                     "sse_stream_question_committed",
-                    number=number,
+                    number=persisted.number,
                     total=total,
                     file_refs_count=len(file_refs),
                 )
 
+            # P9: report the actual persisted count rather than the
+            # target ``total``. Opens a fresh short-lived session so
+            # we don't reach back into ``db`` after the DB phase.
+            async with get_db_context() as tx:
+                actual_count = await SqlAlchemySessionRepository(tx).count_questions(
+                    session_id=session_id,
+                )
+
             yield _sse_frame(
                 "done",
-                {"session_id": session_id_str, "question_count": total},
+                {"session_id": session_id_str, "question_count": actual_count},
             )
-            await logger.ainfo("sse_stream_done", total=total)
+            await logger.ainfo("sse_stream_done", question_count=actual_count, total=total)
 
         except asyncio.CancelledError:
             # Client disconnect surfaced via task cancellation — log

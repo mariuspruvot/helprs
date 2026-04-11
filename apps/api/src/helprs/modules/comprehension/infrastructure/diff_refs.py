@@ -62,15 +62,39 @@ def parse_diff_file_paths(diff: str) -> list[str]:
 def extract_file_refs(diff: str, text: str) -> list[str]:
     """Return the list of file paths from ``diff`` mentioned in ``text``.
 
-    Matching is a plain substring check — cheap, unambiguous, and
-    good enough for UX-DR6's "highlight if the question mentions a
-    file" behaviour. A future Story 3.5 may replace this with an
-    LLM-side tool-call that emits references structurally.
+    Matching uses path-character-aware boundaries so that:
+
+    * ``foo.py`` does NOT match a question mentioning ``foo.py.bak``
+      (the trailing ``.bak`` would extend the path — a separate file)
+    * ``foo.py`` DOES match a sentence ending in ``foo.py.`` (the
+      trailing period is sentence punctuation, not a path extension)
+    * ``src/foo.ts`` does NOT accidentally match a bare ``foo.ts`` in
+      some other directory
+    * ``bar.py`` does NOT match ``bar.pyramid`` (``r`` extends the
+      name into a different identifier)
 
     Order follows diff order so the frontend's "first reference"
-    lookup is deterministic.
+    lookup is deterministic. A future Story 3.5 may replace this
+    with an LLM-side tool-call that emits references structurally.
     """
     if not text or not diff:
         return []
     paths = parse_diff_file_paths(diff)
-    return [p for p in paths if p in text]
+    refs: list[str] = []
+    for path in paths:
+        # Left boundary ``(?<![\w/.-])``: the position must not be
+        # preceded by a path-component character (including ``.`` and
+        # ``/``) so we don't match the tail of a longer path.
+        #
+        # Right boundary ``(?![\w/-])``: the position must not be
+        # followed by a word/slash/dash character (extending the name
+        # or adding another path segment).
+        #
+        # Right boundary ``(?!\.\w)``: the position must not be
+        # followed by ``.<wordchar>`` — this is the key asymmetry that
+        # lets ``foo.py`` match ``foo.py.`` (sentence period) but NOT
+        # ``foo.py.bak`` (path extension).
+        pattern = rf"(?<![\w/.-]){re.escape(path)}(?![\w/-])(?!\.\w)"
+        if re.search(pattern, text):
+            refs.append(path)
+    return refs

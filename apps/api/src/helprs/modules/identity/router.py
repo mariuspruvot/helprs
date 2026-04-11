@@ -20,7 +20,12 @@ from helprs.modules.identity.service import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
-OAUTH_SCOPES = "read:user,user:email"
+# ``read:org`` is required so ``get_installations_for_user`` can call
+# ``GET /user/orgs`` to verify membership for Org-type installs (see
+# ``installation/service.py::get_installations_for_user``). User-type
+# installs do not need it. Added 2026-04-11 alongside the Epic-1
+# ``/user/installations`` regression fix surfaced by Story 3-3 QA.
+OAUTH_SCOPES = "read:user,user:email,read:org"
 
 
 @router.get("/github")

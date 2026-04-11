@@ -7,11 +7,29 @@
  * about the payload shape — callers wire each event into whatever store
  * or local state they want.
  *
- * Auth: the JWT lives in an httpOnly cookie, so `withCredentials: true` on
- * the EventSource is sufficient. We never put the token in the URL.
+ * Auth: `EventSource` cannot send custom headers, so the access JWT
+ * is appended to the URL as a `?access_token=` query parameter by the
+ * caller (see `ChatPanel.tsx`). The backend's `get_current_user`
+ * accepts the token from either the `Authorization` header or this
+ * query param. `withCredentials: true` is still set so any CORS+cookie
+ * needs (e.g. CSRF) keep working, but auth itself is via the URL token.
+ * Discovered + fixed during Story 3-3 manual QA on 2026-04-11 — the
+ * earlier "JWT lives in a cookie" comment was an unverified assumption.
  *
- * Reconnection: on `readyState === CLOSED`, wait `min(16000, 500 * 2^n)` ms
- * then reopen. `attempt` resets to 0 on a successful `open`.
+ * Reconnection policy (P1/P2/P3 from story-3.3 review):
+ *
+ * - On `readyState === CLOSED` from a native error, wait
+ *   `min(16000, 500 * 2^n)` ms then reopen. `attempt` resets to 0 on a
+ *   successful `open`.
+ * - A server-framed `event: error` frame fires `onError({kind:'server'})`
+ *   and marks the stream terminal — NO reconnect. The server has already
+ *   told us the stream is over.
+ * - A server-framed `event: done` frame also marks the stream terminal.
+ *   Otherwise the browser fires `error` with `readyState === CLOSED` as
+ *   soon as the backend closes the connection after `done`, and the
+ *   reconnect loop would re-invoke the whole pipeline indefinitely.
+ * - On unmount / `enabled=false`, the pending reconnect timer is
+ *   cleared and the scheduled callback refuses to run.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -50,30 +68,29 @@ export interface UseSSEOptions {
 const INITIAL_BACKOFF_MS = 500
 const MAX_BACKOFF_MS = 16_000
 
+type HandlersRef = {
+  onQuestionToken?: UseSSEOptions['onQuestionToken']
+  onQuestion?: UseSSEOptions['onQuestion']
+  onDone?: UseSSEOptions['onDone']
+  onError?: UseSSEOptions['onError']
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
 export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
-  const {
-    url,
-    enabled = true,
-    onQuestionToken,
-    onQuestion,
-    onDone,
-    onError,
-  } = options
+  const { url, enabled = true, onQuestionToken, onQuestion, onDone, onError } = options
 
   const [status, setStatus] = useState<SSEStatus>('idle')
 
-  // Refs so handler identity churn does not tear down + recreate the
-  // EventSource on every re-render. The effect depends only on `url`
-  // and `enabled`.
-  const onQuestionTokenRef = useRef(onQuestionToken)
-  const onQuestionRef = useRef(onQuestion)
-  const onDoneRef = useRef(onDone)
-  const onErrorRef = useRef(onError)
-
-  onQuestionTokenRef.current = onQuestionToken
-  onQuestionRef.current = onQuestion
-  onDoneRef.current = onDone
-  onErrorRef.current = onError
+  // P4: refs are updated inside an effect (not in the render body) so
+  // React 18 concurrent renders that are discarded cannot leave the
+  // open EventSource pointing at torn-down handler identities.
+  const handlersRef = useRef<HandlersRef>({})
+  useEffect(() => {
+    handlersRef.current = { onQuestionToken, onQuestion, onDone, onError }
+  }, [onQuestionToken, onQuestion, onDone, onError])
 
   useEffect(() => {
     if (!enabled) {
@@ -85,12 +102,17 @@ export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let attempt = 0
     let closedByCaller = false
+    // P1/P2: once the server has told us the stream is over (either via
+    // ``event: done`` or ``event: error``), the hook stops reconnecting.
+    // The native ``error`` event that fires immediately after the
+    // backend closes the connection must be ignored.
+    let terminal = false
 
-    const safeParse = (raw: string): unknown | undefined => {
+    const safeParse = (raw: string): unknown => {
       try {
         return JSON.parse(raw)
       } catch {
-        onErrorRef.current?.({
+        handlersRef.current.onError?.({
           kind: 'parse',
           message: 'Failed to parse SSE frame as JSON',
           payload: raw,
@@ -99,89 +121,160 @@ export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
       }
     }
 
+    const scheduleReconnect = () => {
+      if (closedByCaller || terminal) return
+      const delay = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * 2 ** attempt)
+      attempt += 1
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        // P3: re-check the terminal/caller flags inside the timer
+        // callback so an unmount or a late ``done`` frame that landed
+        // while the timer was pending wins.
+        if (closedByCaller || terminal) return
+        open()
+      }, delay)
+    }
+
     const open = () => {
+      // P3: close any previous EventSource before reassigning so the
+      // browser releases its listeners + network resources rather than
+      // accumulating zombies across reconnects.
+      if (source) {
+        source.close()
+        source = null
+      }
+
       setStatus('connecting')
+      let next: EventSource
       try {
-        source = new EventSource(url, { withCredentials: true })
+        next = new EventSource(url, { withCredentials: true })
       } catch (err) {
-        onErrorRef.current?.({
+        handlersRef.current.onError?.({
           kind: 'network',
           message: err instanceof Error ? err.message : 'EventSource constructor failed',
         })
         setStatus('error')
         return
       }
+      source = next
 
-      source.addEventListener('open', () => {
+      next.addEventListener('open', () => {
         attempt = 0
         setStatus('open')
       })
 
-      source.addEventListener('question_token', (event: MessageEvent) => {
+      next.addEventListener('question_token', (event: MessageEvent) => {
         const parsed = safeParse(event.data)
-        if (!parsed || typeof parsed !== 'object') return
-        const obj = parsed as {
-          question_id?: string
-          token?: string
-          number?: number
-          total?: number
-        }
+        if (!isRecord(parsed)) return
+        const { question_id, token, number, total } = parsed
         if (
-          typeof obj.question_id === 'string' &&
-          typeof obj.token === 'string' &&
-          typeof obj.number === 'number' &&
-          typeof obj.total === 'number'
+          typeof question_id === 'string' &&
+          typeof token === 'string' &&
+          typeof number === 'number' &&
+          typeof total === 'number'
         ) {
-          onQuestionTokenRef.current?.({
-            questionId: obj.question_id,
-            token: obj.token,
-            number: obj.number,
-            total: obj.total,
+          handlersRef.current.onQuestionToken?.({
+            questionId: question_id,
+            token,
+            number,
+            total,
           })
         }
       })
 
-      source.addEventListener('question', (event: MessageEvent) => {
+      next.addEventListener('question', (event: MessageEvent) => {
         const parsed = safeParse(event.data)
-        if (!parsed || typeof parsed !== 'object') return
-        onQuestionRef.current?.(
-          parsed as Parameters<NonNullable<UseSSEOptions['onQuestion']>>[0],
-        )
+        if (!isRecord(parsed)) return
+        // P5: validate the payload shape before forwarding. Previously
+        // this branch cast `parsed` straight to the callback type, so
+        // a frame missing ``file_refs`` crashed the caller on
+        // ``.length``. Now we fail soft via ``onError({kind:'server'})``
+        // and keep the stream alive.
+        const { question_id, text, number, total, file_refs } = parsed
+        if (
+          typeof question_id !== 'string' ||
+          typeof text !== 'string' ||
+          typeof number !== 'number' ||
+          typeof total !== 'number' ||
+          !Array.isArray(file_refs) ||
+          !file_refs.every((ref): ref is string => typeof ref === 'string')
+        ) {
+          handlersRef.current.onError?.({
+            kind: 'server',
+            message: 'Malformed `question` frame: missing or wrong-typed fields',
+            payload: parsed,
+          })
+          return
+        }
+        handlersRef.current.onQuestion?.({
+          question_id,
+          text,
+          number,
+          total,
+          file_refs,
+        })
       })
 
-      source.addEventListener('done', (event: MessageEvent) => {
+      next.addEventListener('done', (event: MessageEvent) => {
         const parsed = safeParse(event.data)
-        if (!parsed || typeof parsed !== 'object') return
-        const obj = parsed as { session_id?: string; question_count?: number }
-        if (typeof obj.session_id === 'string' && typeof obj.question_count === 'number') {
-          onDoneRef.current?.({
-            sessionId: obj.session_id,
-            questionCount: obj.question_count,
+        if (!isRecord(parsed)) return
+        const { session_id, question_count } = parsed
+        if (typeof session_id === 'string' && typeof question_count === 'number') {
+          // P2: mark the stream terminal BEFORE firing the callback so
+          // the native ``error`` event that follows the backend's
+          // connection close cannot schedule a reconnect.
+          terminal = true
+          if (source) {
+            source.close()
+            source = null
+          }
+          setStatus('closed')
+          handlersRef.current.onDone?.({
+            sessionId: session_id,
+            questionCount: question_count,
           })
         }
       })
 
-      source.addEventListener('error', (event: Event) => {
-        // Server-framed error (SSE `event: error` frame arrives as a
-        // MessageEvent with `.data`).
-        if ('data' in event && typeof (event as MessageEvent).data === 'string') {
+      next.addEventListener('error', (event: Event) => {
+        // Distinguish a server-framed `event: error` frame (which
+        // arrives as a MessageEvent carrying JSON) from a native error
+        // (connection drop — no `data`).
+        const isServerFramed =
+          'data' in event && typeof (event as MessageEvent).data === 'string'
+
+        if (isServerFramed) {
           const parsed = safeParse((event as MessageEvent).data)
-          onErrorRef.current?.({
+          // P1: a server-framed error ends the stream. We notify the
+          // caller and mark terminal so the subsequent native `error`
+          // from the backend's connection close does NOT schedule a
+          // reconnect. Reconnect storms on non-transient failures
+          // (missing BYOK, schema drift) are the worst offenders here.
+          terminal = true
+          if (source) {
+            source.close()
+            source = null
+          }
+          setStatus('closed')
+          handlersRef.current.onError?.({
             kind: 'server',
             message: 'Server-reported stream error',
             payload: parsed,
           })
+          return
         }
 
-        // EventSource native error — connection dropped. Schedule a
-        // reconnect with exponential backoff UNLESS the caller already
-        // tore us down (unmount / enabled=false toggle).
-        if (source && source.readyState === EventSource.CLOSED) {
+        // Native error path — EventSource dropped the connection.
+        // Reconnect unless the caller has torn us down or the server
+        // already told us the stream is over.
+        if (next.readyState === EventSource.CLOSED) {
           setStatus('closed')
-          if (!closedByCaller) {
-            const delay = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * 2 ** attempt)
-            attempt += 1
-            reconnectTimer = setTimeout(open, delay)
+          if (!closedByCaller && !terminal) {
+            handlersRef.current.onError?.({
+              kind: 'network',
+              message: 'EventSource connection closed',
+            })
+            scheduleReconnect()
           }
         } else {
           setStatus('error')
@@ -195,9 +288,11 @@ export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
       closedByCaller = true
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
+        reconnectTimer = null
       }
       if (source) {
         source.close()
+        source = null
       }
       setStatus('closed')
     }

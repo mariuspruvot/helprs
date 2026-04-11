@@ -1,6 +1,6 @@
 import { useAuthStore } from '../../features/auth/store'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 let isRefreshing = false
 let refreshPromise: Promise<string | null> | null = null

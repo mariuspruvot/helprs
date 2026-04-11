@@ -274,7 +274,38 @@ async def get_installation_by_github_id(session: AsyncSession, github_installati
 
 
 async def get_installations_for_user(session: AsyncSession, user, settings: Settings) -> list[Installation]:
-    """Get installations the user has access to via the GitHub API."""
+    """Get installations the user has access to.
+
+    GitHub's ``GET /user/installations`` only works with tokens issued by a
+    GitHub App's user-authorization OAuth flow — it 403s for tokens issued
+    by a separate OAuth App, even when the user owns the install. We use
+    an OAuth App for login (see ``identity/router.py``), so we cannot rely
+    on that endpoint. Instead we replicate the access semantics locally:
+
+    * **User-type installs**: the user has access iff
+      ``installation.account_id == user.github_id`` (they own the account
+      the App is installed on). No outbound call needed.
+    * **Org-type installs**: the user has access iff they're a member of
+      the org. We check via ``GET /user/orgs`` (requires ``read:org`` scope
+      in the OAuth App's authorization). The call is skipped entirely if
+      no Org-type installs exist in the DB.
+
+    Discovered as a P0 regression during Story 3-3 manual QA on 2026-04-11
+    — Epic 1's ``/user/installations`` design was never end-to-end tested
+    because the manual-QA gate had been bypassed for stories 1-3, 1-4,
+    and 1-5.
+    """
+    result = await session.execute(select(Installation).where(Installation.deleted_at.is_(None)))
+    all_installs = list(result.scalars().all())
+    if not all_installs:
+        return []
+
+    user_installs = [i for i in all_installs if i.account_type == "User" and i.account_id == user.github_id]
+    org_installs = [i for i in all_installs if i.account_type == "Organization"]
+
+    if not org_installs:
+        return user_installs
+
     try:
         github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
     except InvalidToken as e:
@@ -283,7 +314,7 @@ async def get_installations_for_user(session: AsyncSession, user, settings: Sett
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{GITHUB_API_BASE}/user/installations",
+                f"{GITHUB_API_BASE}/user/orgs",
                 headers={
                     "Authorization": f"Bearer {github_token}",
                     "Accept": "application/vnd.github+json",
@@ -298,18 +329,9 @@ async def get_installations_for_user(session: AsyncSession, user, settings: Sett
             raise UnauthorizedError("GitHub token is invalid or revoked") from e
         raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
 
-    user_installation_ids = {inst["id"] for inst in resp.json().get("installations", [])}
-
-    if not user_installation_ids:
-        return []
-
-    result = await session.execute(
-        select(Installation).where(
-            Installation.github_installation_id.in_(user_installation_ids),
-            Installation.deleted_at.is_(None),
-        )
-    )
-    return list(result.scalars().all())
+    user_org_logins = {org["login"].lower() for org in resp.json() if isinstance(org, dict) and org.get("login")}
+    accessible_org_installs = [i for i in org_installs if i.account_login.lower() in user_org_logins]
+    return user_installs + accessible_org_installs
 
 
 async def verify_admin_permission(user, installation: Installation, settings: Settings) -> bool:

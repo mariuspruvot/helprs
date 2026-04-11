@@ -13,7 +13,7 @@ structlog at ``debug`` level (gated by env) instead.
 
 import uuid
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from helprs.core.database import Base
@@ -60,12 +60,14 @@ class SessionModel(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     # Story 3.3: count of questions the session plans to ask (set once at
     # session creation time by ``StartSessionHandler`` using
-    # ``estimate_question_count``). ``server_default='0'`` is critical —
-    # existing rows must get a value during the backfill migration.
+    # ``estimate_question_count``). The migration uses a transient
+    # ``server_default='0'`` to backfill existing rows, then drops it
+    # so the application layer is the only source of truth. The
+    # Python-side ``default=0`` is kept as a belt-and-braces fallback
+    # for tests that build sessions without specifying a value.
     total_questions: Mapped[int] = mapped_column(
         Integer,
         default=0,
-        server_default="0",
         nullable=False,
     )
 
@@ -82,6 +84,11 @@ class QuestionModel(Base):
     ``SqlAlchemySessionRepository.append_question`` uses a
     ``SELECT ... FOR UPDATE`` lock on the sessions row to make the
     per-session number assignment atomic under concurrent streams.
+
+    Note: no separate single-column index on ``session_id`` — the unique
+    constraint above already builds a B-tree whose leftmost column is
+    ``session_id``, which covers both ``WHERE session_id = ?`` lookups
+    and the ``ORDER BY number`` scan used by ``list_questions``.
     """
 
     __tablename__ = "questions"
@@ -91,7 +98,6 @@ class QuestionModel(Base):
             "number",
             name="uq_questions_session_number",
         ),
-        Index("ix_questions_session_id", "session_id"),
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(

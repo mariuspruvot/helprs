@@ -25,6 +25,11 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     # ---- sessions.total_questions (additive, nullable=False + default) ----
+    # The server_default is used ONLY to backfill existing rows during the
+    # ADD COLUMN. We drop it immediately afterward (P13 from story-3.3
+    # review) so the application layer is the only source of truth for
+    # this value — forgetting to set ``total_questions`` in an INSERT
+    # should fail loud, not silently land at 0.
     op.add_column(
         "sessions",
         sa.Column(
@@ -34,8 +39,14 @@ def upgrade() -> None:
             server_default=sa.text("0"),
         ),
     )
+    op.alter_column("sessions", "total_questions", server_default=None)
 
     # ---- questions table -------------------------------------------------
+    # Note (P14): no separate ``ix_questions_session_id`` index is
+    # created — the UniqueConstraint on ``(session_id, number)`` already
+    # builds a B-tree whose leftmost column is ``session_id``, which
+    # covers both ``WHERE session_id = ?`` lookups and the
+    # ``ORDER BY number`` scan used by ``list_questions``.
     op.create_table(
         "questions",
         sa.Column("session_id", sa.Uuid(), nullable=False),
@@ -67,15 +78,8 @@ def upgrade() -> None:
             name="uq_questions_session_number",
         ),
     )
-    op.create_index(
-        "ix_questions_session_id",
-        "questions",
-        ["session_id"],
-        unique=False,
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_questions_session_id", table_name="questions")
     op.drop_table("questions")
     op.drop_column("sessions", "total_questions")

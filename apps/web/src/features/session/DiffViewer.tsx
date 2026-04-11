@@ -1,10 +1,19 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Diff, Hunk, parseDiff, tokenize } from 'react-diff-view'
 import type { FileData, HunkTokens } from 'react-diff-view'
-import 'react-diff-view/style/index.css'
+// Library CSS is imported in `main.tsx` BEFORE `index.css` so our
+// dark-mode `--diff-*` overrides win the cascade. Do not import it here
+// — it would re-import after `index.css` and revert the overrides.
 import { useSessionStore } from './store'
 import { languageFromPath, refractorAdapter } from './refractorSetup'
 import type { SessionResponse } from './types'
+
+// AC #11 (story 3.3): how long the active file tab stays highlighted
+// after a question commit cites its file. The CSS transition is half
+// of this so the fade-in + fade-out are both visible.
+const FILE_HIGHLIGHT_DURATION_MS = 600
+const FILE_HIGHLIGHT_TRANSITION_MS = 300
+const FILE_HIGHLIGHT_COLOR = '#007aff'
 
 interface DiffViewerProps {
   session: SessionResponse
@@ -59,6 +68,20 @@ function isBinaryFile(file: FileData): boolean {
 export default function DiffViewer({ session }: DiffViewerProps) {
   const activeFileIndex = useSessionStore((s) => s.activeFileIndex)
   const setActiveFile = useSessionStore((s) => s.setActiveFile)
+  const highlightFileTrigger = useSessionStore((s) => s.highlightFileTrigger)
+  const [isHighlighted, setIsHighlighted] = useState(false)
+
+  // AC #11: fires a short-lived highlight on the active file tab
+  // every time ``highlightFileTrigger`` ticks (ChatPanel calls
+  // ``highlightActiveFile`` on question commit). Keyboard nav /
+  // click nav use ``setActiveFile`` which does NOT tick the trigger,
+  // so this only fires for commit-driven highlights.
+  useEffect(() => {
+    if (highlightFileTrigger === 0) return
+    setIsHighlighted(true)
+    const id = setTimeout(() => setIsHighlighted(false), FILE_HIGHLIGHT_DURATION_MS)
+    return () => clearTimeout(id)
+  }, [highlightFileTrigger])
 
   // parseDiff always returns at least one file even for empty/garbage input
   // (empty path, zero hunks). Treat such empty placeholders as "no changes"
@@ -170,6 +193,18 @@ export default function DiffViewer({ session }: DiffViewerProps) {
           const isActive = index === safeIndex
           const label = fileBasename(file)
           const title = fileDisplayPath(file)
+          // AC #11: when ``isHighlighted`` is true and this tab is
+          // the active one, override the border-bottom-color to the
+          // accent-blue #007aff with a 300 ms transition. The
+          // transition is declared unconditionally so both the
+          // fade-in and fade-out animate smoothly.
+          const highlighted = isActive && isHighlighted
+          const activeStyle: React.CSSProperties | undefined = isActive
+            ? {
+                transition: `border-bottom-color ${FILE_HIGHLIGHT_TRANSITION_MS}ms ease-in-out`,
+                borderBottomColor: highlighted ? FILE_HIGHLIGHT_COLOR : undefined,
+              }
+            : undefined
           return (
             <button
               key={`${file.oldRevision}-${file.newRevision}-${index}`}
@@ -179,10 +214,13 @@ export default function DiffViewer({ session }: DiffViewerProps) {
               role="tab"
               type="button"
               aria-selected={isActive}
+              aria-current={highlighted ? 'true' : undefined}
+              data-highlighted={highlighted ? 'true' : undefined}
               tabIndex={isActive ? 0 : -1}
               title={title}
               onClick={() => setActiveFile(index)}
               onKeyDown={onTabKeyDown}
+              style={activeStyle}
               className={`px-3 flex items-center whitespace-nowrap text-[14px] ${
                 isActive
                   ? 'font-bold text-text-primary border-b-2 border-accent'
