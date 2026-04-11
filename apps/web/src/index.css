@@ -88,3 +88,48 @@
   --radius-default: 4px;
   --radius-input: 6px;
 }
+
+/*
+ * react-diff-view dark-mode override.
+ *
+ * The library ships a light-theme stylesheet (pale green / pale red
+ * backgrounds with `color: initial`). On the dark surface the inherited
+ * page text colour stays light, so light text on light backgrounds is
+ * unreadable. We override the CSS custom properties the library exposes
+ * with values keyed to our dark theme.
+ *
+ * Discovered + fixed during Story 3-3 manual QA on 2026-04-11. The
+ * underlying bug belongs to Story 3-2's DiffViewer integration but was
+ * never caught because Story 3-2's manual QA was bypassed.
+ */
+:root {
+  --diff-background-color: var(--color-surface);
+  --diff-text-color: var(--color-text-primary);
+  --diff-selection-background-color: rgba(0, 122, 255, 0.35);
+  --diff-selection-text-color: var(--color-text-primary);
+
+  /* Inserted lines: dark green tint, light text. */
+  --diff-gutter-insert-background-color: #1f3a23;
+  --diff-gutter-insert-text-color: var(--color-text-primary);
+  --diff-code-insert-background-color: #142a17;
+  --diff-code-insert-text-color: var(--color-text-primary);
+  --diff-code-insert-edit-background-color: #2a5c33;
+  --diff-code-insert-edit-text-color: var(--color-text-primary);
+
+  /* Deleted lines: dark red tint, light text. */
+  --diff-gutter-delete-background-color: #4a1f22;
+  --diff-gutter-delete-text-color: var(--color-text-primary);
+  --diff-code-delete-background-color: #2e1416;
+  --diff-code-delete-text-color: var(--color-text-primary);
+  --diff-code-delete-edit-background-color: #6d2a2f;
+  --diff-code-delete-edit-text-color: var(--color-text-primary);
+
+  /* Selected line highlight (cursor / link target). */
+  --diff-gutter-selected-background-color: #3a3528;
+  --diff-gutter-selected-text-color: var(--color-text-primary);
+  --diff-code-selected-background-color: #3a3528;
+  --diff-code-selected-text-color: var(--color-text-primary);
+
+  /* Omit gutter line (visual divider for skipped hunks). */
+  --diff-omit-gutter-line-color: var(--color-warning);
+}

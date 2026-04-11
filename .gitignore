@@ -22,6 +22,10 @@ apps/web/dist/
 .env.local
 .env.*.local
 
+# Local docker compose overrides (may contain secrets like GitHub App private keys for local dev)
+docker-compose.override.yml
+docker-compose.override.yaml
+
 # IDE
 .idea/
 .vscode/

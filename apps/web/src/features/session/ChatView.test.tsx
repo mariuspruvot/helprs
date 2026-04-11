@@ -3,8 +3,11 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 // apiFetch is the only network seam — mock it for every ChatView test.
+// API_BASE is also exported (used by ChatPanel to build the SSE URL),
+// so the mock must include it or imports of it will be undefined.
 vi.mock('../../shared/api/client', () => ({
   apiFetch: vi.fn(),
+  API_BASE: 'http://localhost:8000',
 }))
 
 // react-resizable-panels relies on ResizeObserver and layout measurements that

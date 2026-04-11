@@ -11,6 +11,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
+import { useAuthStore } from '../auth/store'
 import ChatPanel from './ChatPanel'
 import { useSessionStore } from './store'
 import { makeSession, resetStores } from './__testUtils'
@@ -29,6 +30,10 @@ vi.mock('../../shared/hooks/useSSE', () => {
 
 beforeEach(() => {
   resetStores()
+  // ChatPanel reads accessToken from the auth store to build the SSE
+  // URL. Seed it so SSE is enabled in every test (except those that
+  // explicitly test the disabled-on-completed-session branch).
+  useAuthStore.setState({ accessToken: 'jwt-test', isAuthenticated: true })
   lastSSEProps = null
 })
 
@@ -46,7 +51,12 @@ describe('ChatPanel', () => {
     const session = makeSession({ id: 'sess-42' })
     render(<ChatPanel session={session} />)
     expect(lastSSEProps).not.toBeNull()
-    expect(lastSSEProps?.url).toBe('/api/v1/sessions/sess-42/stream')
+    // ChatPanel builds an absolute URL with the access token in the
+    // query string (EventSource cannot send custom headers, so the
+    // backend's `get_current_user` falls back to `?access_token=`).
+    expect(lastSSEProps?.url).toBe(
+      'http://localhost:8000/api/v1/sessions/sess-42/stream?access_token=jwt-test',
+    )
     expect(lastSSEProps?.enabled).toBe(true)
   })
 

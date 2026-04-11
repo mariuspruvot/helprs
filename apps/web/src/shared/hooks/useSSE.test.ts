@@ -178,7 +178,7 @@ describe('useSSE', () => {
 
   it('schedules a reconnection after a network failure', () => {
     vi.useFakeTimers()
-    renderHook(() => useSSE({ url: '/sse' }))
+    renderHook(() => useSSE({ url: '/api/v1/sessions/abc/stream' }))
     expect(ShimEventSource.instances).toHaveLength(1)
     const first = ShimEventSource.instances[0]!
     act(() => {
@@ -188,6 +188,99 @@ describe('useSSE', () => {
     act(() => {
       vi.advanceTimersByTime(500)
     })
+    // P20 from story-3.3 review: assert the reconnect targets the
+    // SAME URL with the SAME `withCredentials` setting. The old
+    // assertion only checked instance count, which would pass even
+    // if the reconnect hit the wrong URL or dropped cookie auth.
     expect(ShimEventSource.instances.length).toBeGreaterThanOrEqual(2)
+    const second = ShimEventSource.instances[1]!
+    expect(second.url).toBe(first.url)
+    expect(second.withCredentials).toBe(true)
+    // And the first instance was closed before the second opened
+    // (P3 — no zombie EventSource).
+    expect(first.closed).toBe(true)
+  })
+
+  it('does not reconnect after a server-framed `error` frame (P1/P2)', () => {
+    vi.useFakeTimers()
+    const onError = vi.fn()
+    renderHook(() => useSSE({ url: '/sse', onError }))
+    expect(ShimEventSource.instances).toHaveLength(1)
+    const first = ShimEventSource.instances[0]!
+
+    // Dispatch a server-framed error via a MessageEvent (event.data
+    // is a JSON string — our shim's dispatch() creates a MessageEvent
+    // for the 'error' type too so the hook's data-presence check fires).
+    act(() => {
+      first.dispatch('error', JSON.stringify({ error: 'boom', retryable: false }))
+    })
+
+    // onError fired with kind=server.
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server' }),
+    )
+
+    // Now simulate the backend closing the connection after the
+    // error frame — which in a real browser fires a native `error`
+    // event with readyState === CLOSED. The hook MUST NOT reconnect.
+    act(() => {
+      first.fail()
+    })
+    act(() => {
+      vi.advanceTimersByTime(60_000)
+    })
+    // Still exactly one instance — no zombie reconnect.
+    expect(ShimEventSource.instances).toHaveLength(1)
+  })
+
+  it('does not reconnect after a `done` frame (P2)', () => {
+    vi.useFakeTimers()
+    const onDone = vi.fn()
+    renderHook(() => useSSE({ url: '/sse', onDone }))
+    expect(ShimEventSource.instances).toHaveLength(1)
+    const first = ShimEventSource.instances[0]!
+
+    act(() => {
+      first.dispatch(
+        'done',
+        JSON.stringify({ session_id: 's1', question_count: 3 }),
+      )
+    })
+    expect(onDone).toHaveBeenCalledWith({ sessionId: 's1', questionCount: 3 })
+
+    // Server closes the connection after done → native error fires.
+    act(() => {
+      first.fail()
+    })
+    act(() => {
+      vi.advanceTimersByTime(60_000)
+    })
+    // No reconnect — the hook marked the stream terminal on `done`.
+    expect(ShimEventSource.instances).toHaveLength(1)
+  })
+
+  it('forwards a malformed `question` frame as a server-kind error (P5)', () => {
+    const onQuestion = vi.fn()
+    const onError = vi.fn()
+    renderHook(() => useSSE({ url: '/sse', onQuestion, onError }))
+    const es = ShimEventSource.instances[0]!
+
+    // Missing `file_refs` → old code crashed the caller on .length.
+    act(() => {
+      es.dispatch(
+        'question',
+        JSON.stringify({
+          question_id: 'q1',
+          text: 'Why?',
+          number: 1,
+          total: 3,
+        }),
+      )
+    })
+    // Caller is never invoked with a bad payload.
+    expect(onQuestion).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server' }),
+    )
   })
 })

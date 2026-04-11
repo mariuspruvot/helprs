@@ -45,7 +45,7 @@
 #   'awaiting-manual-qa', unless invoked with `--skip-manual-qa-gate <reason>`.
 
 generated: 2026-04-09
-last_updated: 2026-04-11 # 3-3 → review (dev-story complete: question generation + SSE streaming)
+last_updated: 2026-04-11 # 3-3 → done after live manual QA session (Project Lead Marius). 20/26 checklist items checked, 6/26 explicitly skipped with rationale (Option 3 scoping). Session surfaced + fixed: 1 Epic 1 regression (get_installations_for_user / OAuth scopes), 1 Story 3-3 SSE auth wiring (3 compounding bugs), 1 Story 3-2 dark-mode contrast. 4 deferred follow-ups filed. 259 backend + 57 frontend tests green after fixes.
 project: helprs
 project_key: NOKEY
 tracking_system: file-system
@@ -114,7 +114,21 @@ development_status:
   # replaced "Story 3.3 backlog" prose with grep-able TODO(story-3.3).
   # make lint && vitest = clean + 24 web tests green (24 = 25 −3 +2).
   3-2-split-view-session-ui-and-diff-viewer: done
-  3-3-question-generation-and-sse-streaming: review
+  # Manual QA completed 2026-04-11 by Project Lead. 20/26 items checked,
+  # 6 explicitly skipped per Option 3 scoping (rationale documented in
+  # the story file's "Manual QA Results" section). QA session surfaced
+  # AND fixed 3 bugs: (1) Epic 1 regression — get_installations_for_user
+  # called /user/installations which 403s for OAuth-App tokens; refactored
+  # to use local DB + /user/orgs and added read:org scope; (2) Story 3-3
+  # SSE auth wiring — useSSE doc claimed cookie auth but JWT was in
+  # memory; ChatPanel built relative URL; get_current_user only read
+  # header; fixed via query-param fallback + absolute URL. (3) Story 3-2
+  # dark-mode CSS — react-diff-view default theme unreadable on dark
+  # surface; overrode --diff-* CSS vars + reordered import cascade.
+  # 4 deferred follow-ups filed (no SSE replay on resume, StrictMode
+  # double-mount rollback, misleading "Connection lost" for 4xx,
+  # markdown tokenize warning). NONE of these block 3-3 done.
+  3-3-question-generation-and-sse-streaming: done
   3-4-answer-submission-and-feedback-with-code-links: backlog
   3-5-role-adaptation-beyond-diff-and-large-pr-handling: backlog
   epic-3-retrospective: optional

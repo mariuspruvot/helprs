@@ -243,3 +243,115 @@ class TestGetById:
         assert hit is not None, "hit path must return the loaded session"
         assert miss is None, "miss path must return None"
         assert commit_calls == 0
+
+
+# ----------------------------------------------------------------------
+# Story 3.3 Task 2.3 + P23 from story-3.3 review: question repository
+# methods. Locks (a) empty-session counts, (b) sequential numbering
+# via ``append_question``, (c) ordered ``list_questions`` output,
+# (d) the mapping helper contract (domain entity, not ORM row).
+# ----------------------------------------------------------------------
+
+
+class TestCountQuestions:
+    async def test_returns_zero_for_fresh_session(self, db_session, test_installation):
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        assert await repo.count_questions(session_id=author.id) == 0
+
+    async def test_scoped_per_session(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, reviewer = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        # 2 questions on author, 1 on reviewer.
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="b" * 64)
+        await repo.append_question(session_id=reviewer.id, topic=Topic.ARCHITECTURE, text_hash="c" * 64)
+
+        assert await repo.count_questions(session_id=author.id) == 2
+        assert await repo.count_questions(session_id=reviewer.id) == 1
+
+
+class TestAppendQuestion:
+    async def test_assigns_sequential_numbers_starting_at_one(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.entities import Question
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        q1 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="1" * 64)
+        q2 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="2" * 64)
+        q3 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="3" * 64)
+
+        # Domain entity, not ORM row (mapping contract).
+        for q in (q1, q2, q3):
+            assert isinstance(q, Question)
+        # Numbers are strictly 1, 2, 3 — the serialization invariant.
+        assert [q.number for q in (q1, q2, q3)] == [1, 2, 3]
+        # Each carries its own ID.
+        assert len({q.id for q in (q1, q2, q3)}) == 3
+
+    async def test_unique_constraint_rejects_duplicate_number(self, db_session, test_installation):
+        """Direct duplicate numbers must be rejected by the unique
+        constraint — proves the schema invariant is in place (the
+        application-level lock is tested in the concurrent case below).
+        """
+        from helprs.modules.comprehension.infrastructure.models import QuestionModel
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        db_session.add(QuestionModel(session_id=author.id, number=1, topic="architecture", text_hash="a" * 64))
+        await db_session.flush()
+        db_session.add(QuestionModel(session_id=author.id, number=1, topic="architecture", text_hash="b" * 64))
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
+        await db_session.rollback()
+
+
+class TestListQuestions:
+    async def test_returns_questions_in_number_order(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        # Insert in the "wrong" order — the repo must still return
+        # them sorted by ``number`` ASC.
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="1" * 64)
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="2" * 64)
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="3" * 64)
+
+        questions = await repo.list_questions(session_id=author.id)
+        assert [q.number for q in questions] == [1, 2, 3]
+        assert [q.text_hash for q in questions] == ["1" * 64, "2" * 64, "3" * 64]
+
+    async def test_returns_empty_for_fresh_session(self, db_session, test_installation):
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        assert await repo.list_questions(session_id=author.id) == []

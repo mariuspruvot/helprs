@@ -9,10 +9,18 @@ export interface SessionUIState {
   // Story 3.3: committed chat messages + the in-flight streaming question.
   messages: ChatMessage[]
   streamingQuestion: ChatMessage | null
+  // Story 3.3 (AC #11): monotonic counter that ticks every time a
+  // question commit cites a file. DiffViewer watches this and flashes
+  // the active file tab's bottom border to #007aff for ~600ms with a
+  // 300ms fade, without coupling to the tab-click / keyboard-nav code
+  // paths (which must NOT flash). Starts at 0 so the initial render
+  // does not trigger a bogus flash.
+  highlightFileTrigger: number
 
   setSession: (s: SessionResponse | null) => void
   clearSession: () => void
   setActiveFile: (index: number) => void
+  highlightActiveFile: (index: number) => void
   setPanelRatio: (n: number) => void
 
   // Story 3.3: chat-message mutations. Kept as explicit actions (not a
@@ -37,6 +45,7 @@ export const useSessionStore = create<SessionUIState>((set) => ({
   panelRatio: 0.6,
   messages: [],
   streamingQuestion: null,
+  highlightFileTrigger: 0,
 
   setSession: (s) => set({ session: s, activeFileIndex: 0 }),
   clearSession: () =>
@@ -46,8 +55,18 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       panelRatio: 0.6,
       messages: [],
       streamingQuestion: null,
+      highlightFileTrigger: 0,
     }),
   setActiveFile: (index) => set({ activeFileIndex: index }),
+  // AC #11: selects the file AND ticks the highlight counter so the
+  // DiffViewer flashes the tab. Used by ChatPanel on question commit;
+  // user-driven nav (click / arrow keys) keeps using ``setActiveFile``
+  // so it never triggers the flash.
+  highlightActiveFile: (index) =>
+    set((state) => ({
+      activeFileIndex: index,
+      highlightFileTrigger: state.highlightFileTrigger + 1,
+    })),
   setPanelRatio: (n) => set({ panelRatio: clampPanelRatio(n) }),
 
   // First call with a given questionId creates a streamingQuestion with
@@ -84,8 +103,21 @@ export const useSessionStore = create<SessionUIState>((set) => ({
   // authoritative text + file refs from the server's `event: question`
   // payload. Using the server text (not the token concatenation)
   // protects against any normalization the backend might do.
+  //
+  // P15 (story-3.3 review): dedupe on `question_id`. If the SSE stream
+  // ever replays a question we've already committed (e.g. after a
+  // reconnect where the server resumed from its own snapshot rather
+  // than ours), we replace the existing row in place instead of
+  // appending a duplicate. Progress indicators and scroll position
+  // stay sane, and the committed text is always the latest server
+  // payload.
   commitStreamingQuestion: (payload) =>
     set((state) => {
+      const existingIndex = state.messages.findIndex((m) => m.id === payload.question_id)
+      const createdAt =
+        existingIndex >= 0
+          ? state.messages[existingIndex]!.createdAt
+          : state.streamingQuestion?.createdAt ?? new Date().toISOString()
       const committed: ChatMessage = {
         id: payload.question_id,
         kind: 'ai_question',
@@ -93,11 +125,15 @@ export const useSessionStore = create<SessionUIState>((set) => ({
         total: payload.total,
         text: payload.text,
         fileRefs: payload.file_refs,
-        createdAt: state.streamingQuestion?.createdAt ?? new Date().toISOString(),
+        createdAt,
         isStreaming: false,
       }
+      const messages =
+        existingIndex >= 0
+          ? state.messages.map((m, i) => (i === existingIndex ? committed : m))
+          : [...state.messages, committed]
       return {
-        messages: [...state.messages, committed],
+        messages,
         streamingQuestion: null,
       }
     }),
