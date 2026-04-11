@@ -16,6 +16,7 @@ const fixture: SessionResponse = {
   diff: '',
   created_at: '2026-04-10T00:00:00Z',
   updated_at: '2026-04-10T00:00:00Z',
+  progress: [],
 }
 
 beforeEach(() => {
@@ -25,6 +26,8 @@ beforeEach(() => {
     panelRatio: 0.6,
     messages: [],
     streamingQuestion: null,
+    streamingFeedback: null,
+    answerInputDisabled: false,
   })
 })
 
@@ -145,5 +148,106 @@ describe('useSessionStore', () => {
     expect(state.session).toBe(fixture)
     expect(state.messages).toEqual([])
     expect(state.streamingQuestion).toBeNull()
+  })
+
+  // ====================================================================
+  // Story 3.4: answer + feedback actions
+  // ====================================================================
+
+  test('appendUserAnswer pushes a user_answer message immediately', () => {
+    useSessionStore.getState().appendUserAnswer('q1', 'Because of caching.', 1, 3)
+    const state = useSessionStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0]?.id).toBe('q1::answer')
+    expect(state.messages[0]?.kind).toBe('user_answer')
+    expect(state.messages[0]?.text).toBe('Because of caching.')
+    expect(state.messages[0]?.questionNumber).toBe(1)
+  })
+
+  test('appendUserAnswer is idempotent on duplicate calls', () => {
+    useSessionStore.getState().appendUserAnswer('q1', 'first', 1, 3)
+    useSessionStore.getState().appendUserAnswer('q1', 'second', 1, 3)
+    const state = useSessionStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0]?.text).toBe('first')
+  })
+
+  test('appendFeedbackToken accumulates streamingFeedback by answerId', () => {
+    useSessionStore.getState().appendFeedbackToken('a1', 'q1', 'Good')
+    useSessionStore.getState().appendFeedbackToken('a1', 'q1', ' point')
+    useSessionStore.getState().appendFeedbackToken('a1', 'q1', '!')
+    const state = useSessionStore.getState()
+    expect(state.streamingFeedback?.id).toBe('a1')
+    expect(state.streamingFeedback?.text).toBe('Good point!')
+    expect(state.streamingFeedback?.kind).toBe('ai_feedback_streaming')
+    expect(state.streamingFeedback?.isStreaming).toBe(true)
+  })
+
+  test('commitStreamingFeedback moves streamingFeedback into messages', () => {
+    useSessionStore.getState().appendFeedbackToken('a1', 'q1', 'partial')
+    useSessionStore.getState().commitStreamingFeedback({
+      answer_id: 'a1',
+      question_id: 'q1',
+      text: 'See `retry.ts:5` for context.',
+      score: null,
+      gaps: [],
+    })
+    const state = useSessionStore.getState()
+    expect(state.streamingFeedback).toBeNull()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0]?.id).toBe('a1')
+    expect(state.messages[0]?.kind).toBe('ai_feedback')
+    expect(state.messages[0]?.text).toBe('See `retry.ts:5` for context.')
+    expect(state.messages[0]?.isStreaming).toBe(false)
+  })
+
+  test('commitStreamingFeedback dedupes on answer_id (P15 pattern)', () => {
+    // First commit lands.
+    useSessionStore.getState().commitStreamingFeedback({
+      answer_id: 'a1',
+      question_id: 'q1',
+      text: 'first',
+      score: null,
+      gaps: [],
+    })
+    // Replay arrives — must REPLACE the existing message, not append.
+    useSessionStore.getState().commitStreamingFeedback({
+      answer_id: 'a1',
+      question_id: 'q1',
+      text: 'second',
+      score: null,
+      gaps: [],
+    })
+    const state = useSessionStore.getState()
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0]?.text).toBe('second')
+  })
+
+  test('setAnswerInputDisabled toggles the lock', () => {
+    expect(useSessionStore.getState().answerInputDisabled).toBe(false)
+    useSessionStore.getState().setAnswerInputDisabled(true)
+    expect(useSessionStore.getState().answerInputDisabled).toBe(true)
+    useSessionStore.getState().setAnswerInputDisabled(false)
+    expect(useSessionStore.getState().answerInputDisabled).toBe(false)
+  })
+
+  test('clearSession wipes Story 3.4 streamingFeedback + answerInputDisabled', () => {
+    useSessionStore.setState({
+      streamingFeedback: {
+        id: 'a1',
+        kind: 'ai_feedback_streaming',
+        questionNumber: 1,
+        total: 3,
+        text: 'partial',
+        fileRefs: [],
+        createdAt: '2026-04-10T00:00:00Z',
+        isStreaming: true,
+      },
+      answerInputDisabled: true,
+    })
+    useSessionStore.getState().clearSession()
+    const state = useSessionStore.getState()
+    expect(state.streamingFeedback).toBeNull()
+    expect(state.answerInputDisabled).toBe(false)
   })
 })

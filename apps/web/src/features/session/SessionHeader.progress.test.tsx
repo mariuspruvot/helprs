@@ -1,8 +1,13 @@
 /**
- * Progress indicator in SessionHeader — Story 3.3 wiring.
+ * Progress indicator in SessionHeader.
+ *
+ * Story 3.4 changed the semantics: the counter now reflects COMPLETED
+ * CYCLES (ai_feedback messages) rather than just questions, because a
+ * cycle is "complete" only once feedback has shipped. A question that
+ * has been asked but not yet answered does NOT advance the counter.
  *
  * Asserts the string shape `"Question X of N"` where X is the count
- * of committed `ai_question` messages in the session store and N is
+ * of `ai_feedback` messages in the session store and N is
  * `session.total_questions`. The `aria-live="polite"` wrapper from
  * Story 3.2 must still be present.
  */
@@ -27,6 +32,32 @@ function committedQuestion(id: string, number: number, total: number): ChatMessa
   }
 }
 
+function userAnswer(questionId: string, number: number, total: number): ChatMessage {
+  return {
+    id: `${questionId}::answer`,
+    kind: 'user_answer',
+    questionNumber: number,
+    total,
+    text: 'Because.',
+    fileRefs: [],
+    createdAt: '2026-04-10T00:00:00Z',
+    isStreaming: false,
+  }
+}
+
+function feedback(answerId: string, number: number, total: number): ChatMessage {
+  return {
+    id: answerId,
+    kind: 'ai_feedback',
+    questionNumber: number,
+    total,
+    text: 'Good.',
+    fileRefs: [],
+    createdAt: '2026-04-10T00:00:00Z',
+    isStreaming: false,
+  }
+}
+
 beforeEach(() => {
   resetStores()
 })
@@ -36,11 +67,15 @@ afterEach(() => {
 })
 
 describe('SessionHeader progress indicator', () => {
-  test('renders "Question 2 of 5" when two questions are committed', () => {
+  test('renders "Question 2 of 5" when two FEEDBACK cycles are completed', () => {
     useSessionStore.setState({
       messages: [
         committedQuestion('q1', 1, 5),
+        userAnswer('q1', 1, 5),
+        feedback('a1', 1, 5),
         committedQuestion('q2', 2, 5),
+        userAnswer('q2', 2, 5),
+        feedback('a2', 2, 5),
       ],
     })
     render(<SessionHeader session={makeSession({ total_questions: 5 })} />)
@@ -49,7 +84,21 @@ describe('SessionHeader progress indicator', () => {
     expect(progress.getAttribute('aria-live')).toBe('polite')
   })
 
-  test('renders "Question 0 of 3" when no questions are committed yet', () => {
+  test('Story 3.4: a question without feedback does NOT advance the counter', () => {
+    useSessionStore.setState({
+      messages: [
+        committedQuestion('q1', 1, 3),
+        userAnswer('q1', 1, 3),
+        feedback('a1', 1, 3),
+        // Q2 has been asked but not answered yet — counter stays at 1.
+        committedQuestion('q2', 2, 3),
+      ],
+    })
+    render(<SessionHeader session={makeSession({ total_questions: 3 })} />)
+    expect(screen.getByTestId('session-header-progress').textContent).toBe('Question 1 of 3')
+  })
+
+  test('renders "Question 0 of 3" when no questions have been answered yet', () => {
     render(<SessionHeader session={makeSession({ total_questions: 3 })} />)
     const progress = screen.getByTestId('session-header-progress')
     expect(progress.textContent).toBe('Question 0 of 3')
@@ -61,13 +110,13 @@ describe('SessionHeader progress indicator', () => {
     expect(progress.textContent).toBe('Questions pending...')
   })
 
-  test('streamingQuestion does NOT count toward committed total', () => {
+  test('streamingFeedback does NOT count toward completed cycles', () => {
     useSessionStore.setState({
-      messages: [committedQuestion('q1', 1, 3)],
-      streamingQuestion: {
-        id: 'q2',
-        kind: 'ai_question_streaming',
-        questionNumber: 2,
+      messages: [committedQuestion('q1', 1, 3), userAnswer('q1', 1, 3)],
+      streamingFeedback: {
+        id: 'a1',
+        kind: 'ai_feedback_streaming',
+        questionNumber: 1,
         total: 3,
         text: 'partial...',
         fileRefs: [],
@@ -76,6 +125,6 @@ describe('SessionHeader progress indicator', () => {
       },
     })
     render(<SessionHeader session={makeSession({ total_questions: 3 })} />)
-    expect(screen.getByTestId('session-header-progress').textContent).toBe('Question 1 of 3')
+    expect(screen.getByTestId('session-header-progress').textContent).toBe('Question 0 of 3')
   })
 })

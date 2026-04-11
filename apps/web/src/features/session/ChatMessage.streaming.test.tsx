@@ -60,4 +60,21 @@ describe('ChatMessage streaming (default branch)', () => {
     const { getByTestId } = render(<ChatMessage message={msg} />)
     expect(getByTestId('chat-message').textContent).toContain('AI question 2 of 5')
   })
+
+  // Story 3.4 P16 (code-review A10): streaming branch for ai_feedback.
+  test('renders partial feedback text while isStreaming is true', () => {
+    const msg: ChatMessageType = {
+      id: 'a1',
+      kind: 'ai_feedback_streaming',
+      questionNumber: 1,
+      total: 3,
+      text: 'Good ans',
+      fileRefs: [],
+      createdAt: '2026-04-11T00:00:00Z',
+      isStreaming: true,
+    }
+    const { getByTestId } = render(<ChatMessage message={msg} />)
+    expect(getByTestId('chat-message-body').textContent).toContain('Good ans')
+    expect(getByTestId('chat-message').textContent).toContain('AI feedback')
+  })
 })

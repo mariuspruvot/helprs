@@ -14,11 +14,13 @@ back cleanly. This is deliberately the opposite of the webhook repository
 from uuid import UUID
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from helprs.modules.comprehension.domain.entities import PRContext, Question, Session
+from helprs.core.exceptions import DomainValidationError
+from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Session
 from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic
-from helprs.modules.comprehension.infrastructure.models import QuestionModel, SessionModel
+from helprs.modules.comprehension.infrastructure.models import AnswerModel, QuestionModel, SessionModel
 
 
 def _to_domain(row: SessionModel) -> Session:
@@ -59,6 +61,22 @@ def _to_domain_question(row: QuestionModel) -> Question:
         number=row.number,
         topic=Topic(row.topic),
         text_hash=row.text_hash,
+        created_at=row.created_at,
+    )
+
+
+def _to_domain_answer(row: AnswerModel) -> Answer:
+    """Map an ORM ``AnswerModel`` row to a domain ``Answer``.
+
+    Story 3.4: mirror of ``_to_domain_question``. Same hash-only
+    privacy rule — the verbatim answer text never lives in either the
+    ORM row or the domain entity (FR35/NFR14).
+    """
+    return Answer(
+        id=row.id,
+        question_id=row.question_id,
+        text_hash=row.text_hash,
+        latency_ms=row.latency_ms,
         created_at=row.created_at,
     )
 
@@ -244,3 +262,82 @@ class SqlAlchemySessionRepository:
         await self._session.flush()
         await self._session.refresh(row)
         return _to_domain_question(row)
+
+    # ------------------------------------------------------------------
+    # Story 3.4: answer persistence
+    # ------------------------------------------------------------------
+
+    async def get_question_by_number(
+        self,
+        *,
+        session_id: UUID,
+        number: int,
+    ) -> Question | None:
+        """Single-row lookup of a question by its 1-indexed ``number``.
+
+        Returns ``None`` for unknown numbers; the POST handler maps
+        that to 404. Read-only — does not commit.
+        """
+        result = await self._session.execute(
+            select(QuestionModel)
+            .where(
+                QuestionModel.session_id == session_id,
+                QuestionModel.number == number,
+            )
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        return _to_domain_question(row) if row is not None else None
+
+    async def count_answers(self, *, session_id: UUID) -> int:
+        """Count answers persisted across the session's questions.
+
+        Joined query so the SSE GET stream can compute "the next
+        un-answered question number" without holding a stale snapshot
+        of the questions table.
+        """
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(AnswerModel)
+            .join(QuestionModel, AnswerModel.question_id == QuestionModel.id)
+            .where(QuestionModel.session_id == session_id)
+        )
+        return int(result.scalar_one())
+
+    async def append_answer(
+        self,
+        *,
+        question_id: UUID,
+        text_hash: str,
+        latency_ms: int,
+    ) -> Answer:
+        """Insert a new answer row.
+
+        The DB-level ``UniqueConstraint('question_id')`` enforces
+        "exactly one answer per question". On collision the
+        ``IntegrityError`` is translated to ``DomainValidationError``
+        so the POST handler can map it to 409 with a clean error
+        code.
+
+        Story 3.4 P3 (code-review): the insert is wrapped in an
+        explicit savepoint (``begin_nested``) so a duplicate collision
+        only rolls back the failed insert — NOT the surrounding
+        request-scoped transaction (which may contain earlier reads
+        or writes the caller still needs).
+        """
+        savepoint = await self._session.begin_nested()
+        try:
+            row = AnswerModel(
+                question_id=question_id,
+                text_hash=text_hash,
+                latency_ms=latency_ms,
+            )
+            self._session.add(row)
+            await self._session.flush()
+        except IntegrityError as exc:
+            await savepoint.rollback()
+            raise DomainValidationError("answer already submitted for question") from exc
+        else:
+            await savepoint.commit()
+        await self._session.refresh(row)
+        return _to_domain_answer(row)

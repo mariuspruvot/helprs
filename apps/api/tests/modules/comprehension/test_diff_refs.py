@@ -149,3 +149,10 @@ class TestExtractFileRefs:
         assert extract_file_refs(diff, "import bar.pyramid somewhere") == []
         assert extract_file_refs(diff, "foobar.python modules") == []
         assert extract_file_refs(diff, "bar.py") == ["bar.py"]
+
+
+# Story 3.4: code-link detection (``path:line`` → clickable) is now a
+# frontend-only concern. The backend no longer parses feedback text;
+# ``ChatMessage.tsx`` walks the rendered markdown and matches inline
+# code refs against ``DiffFilePathsContext``. See code-review decision
+# D2 in the story file for the rationale.

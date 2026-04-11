@@ -27,7 +27,11 @@ from helprs.core.exceptions import (
     NotFoundError,
 )
 from helprs.modules.comprehension.application.commands import StartSessionCommand
-from helprs.modules.comprehension.application.queries import GetSessionQuery, GetSessionResult
+from helprs.modules.comprehension.application.queries import (
+    GetSessionQuery,
+    GetSessionResult,
+    QuestionProgressEntry,
+)
 from helprs.modules.comprehension.domain.entities import PRContext, Session
 from helprs.modules.comprehension.domain.services import estimate_question_count
 from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemySessionRepository
@@ -274,8 +278,28 @@ class GetSessionHandler:
         # Story 3.3: count persisted questions for the detail response.
         question_count = await repo.count_questions(session_id=query.session_id)
 
+        # Story 3.4: build the per-question progress array for the
+        # frontend's resume UX. Questions are dense-numbered (1, 2, 3,
+        # ...) and answers are submitted in order (enforced by
+        # ``append_question`` and the unique-per-question constraint
+        # on ``answers``), so it suffices to mark the first
+        # ``answered_count`` entries as ``answered`` and the rest as
+        # ``in_flight`` (only one in-flight question exists at a time
+        # — the current one being asked).
+        questions = await repo.list_questions(session_id=query.session_id)
+        answered_count = await repo.count_answers(session_id=query.session_id)
+        progress = tuple(
+            QuestionProgressEntry(
+                number=q.number,
+                status="answered" if i < answered_count else "in_flight",
+                topic=q.topic.value,
+            )
+            for i, q in enumerate(questions)
+        )
+
         return GetSessionResult(
             session=domain_session,
             installation_token=installation_token,
             question_count=question_count,
+            progress=progress,
         )

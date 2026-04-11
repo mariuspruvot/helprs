@@ -44,6 +44,7 @@ export function makeSession(overrides: Partial<SessionResponse> = {}): SessionRe
     diff: MULTI_FILE_DIFF,
     created_at: '2026-04-10T00:00:00Z',
     updated_at: '2026-04-10T00:00:00Z',
+    progress: [],
     ...overrides,
   }
 }
@@ -55,6 +56,8 @@ export function resetStores() {
     panelRatio: 0.6,
     messages: [],
     streamingQuestion: null,
+    streamingFeedback: null,
+    answerInputDisabled: false,
   })
   useAuthStore.setState({
     accessToken: 'test-token',

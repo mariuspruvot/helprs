@@ -29,16 +29,16 @@ const ROLE_BADGE: Record<SessionRole, RoleBadgeStyle> = {
 // for the exact rgba()/hex role badge tones which are load-bearing per UX.
 export default function SessionHeader({ session }: SessionHeaderProps) {
   const badge = ROLE_BADGE[session.role]
-  // Story 3.3: committed questions live in the store as chat messages
-  // with kind 'ai_question'. We count those (not the streamingQuestion)
-  // so the progress indicator only ticks forward on commit — not on
-  // every token arrival. The total comes from session.total_questions.
-  const committedQuestions = useSessionStore((s) =>
-    s.messages.filter((m) => m.kind === 'ai_question').length,
+  // Story 3.4: count COMPLETED CYCLES (ai_feedback messages) rather
+  // than just questions. A question that has been asked but not yet
+  // answered does NOT advance the counter. The cycle is "complete"
+  // only once feedback has shipped.
+  const completedCycles = useSessionStore((s) =>
+    s.messages.filter((m) => m.kind === 'ai_feedback').length,
   )
   const progressLabel =
     session.total_questions > 0
-      ? `Question ${committedQuestions} of ${session.total_questions}`
+      ? `Question ${completedCycles} of ${session.total_questions}`
       : 'Questions pending...'
 
   return (

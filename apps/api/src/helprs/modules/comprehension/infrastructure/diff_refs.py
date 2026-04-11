@@ -11,7 +11,7 @@ a GitHub REST client (I/O); this is pure string parsing. Mixing them
 muddies the single-responsibility line and makes unit testing the
 parser harder.
 
-Smarter extraction via LLM tool-calls is deferred to Story 3.4/3.5.
+Smarter extraction via LLM tool-calls is deferred to Story 3.5.
 """
 
 import re

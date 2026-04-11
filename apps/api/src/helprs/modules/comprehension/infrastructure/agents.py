@@ -63,6 +63,37 @@ The question should:
 Do not answer the question. Do not provide hints. Do not critique; just ask."""
 
 
+# TODO(story-3.5): role-adaptive feedback prompt with author/reviewer
+# branching, beyond-diff probing. TODO(story-4.1): structured-output
+# format for per-question score + gap extraction. The Story 3.4 scaffold
+# below is intentionally minimal — it just yields conversational coaching
+# with inline `path:line` references for the frontend's CodeLink.
+FEEDBACK_SYSTEM_PROMPT = """\
+You are a Socratic code reviewer giving feedback on a developer's answer
+to a question about their pull request.
+
+Your feedback should:
+- BEGIN by acknowledging what was correct or insightful in the answer
+  (1-2 sentences). This is non-negotiable: every answer deserves
+  recognition before any gap is identified.
+- THEN identify the specific gap(s) in the developer's understanding.
+  Be precise. Reference the relevant file and line number using the
+  format `<path>:<line>` (for example: `apps/api/src/foo.py:47`).
+  Use inline code formatting for these references so the frontend
+  can render them as clickable links.
+- Stay focused on the SPECIFIC question that was asked. Do not
+  introduce new topics. Do not pile on additional questions.
+- Use a calm, conversational tone. You are coaching, not grading.
+- Be brief: 3-6 sentences total. The developer should be able to read
+  and act on the feedback in under 30 seconds.
+
+Do NOT score the answer numerically. Do NOT label the answer "correct"
+or "incorrect" — describe what was right and what was missed instead.
+Do NOT ask follow-up questions; the next question is generated
+separately.\
+"""
+
+
 class NullLLMProvider:
     """Placeholder ``LLMProvider`` that raises on every call.
 
@@ -93,12 +124,31 @@ class NullLLMProvider:
     ) -> str:
         raise NotImplementedError("LLMProvider is wired in Story 3.3")
 
+    async def stream_feedback(
+        self,
+        *,
+        question_text: str,
+        answer_text: str,
+        pr_diff: str,
+        role: SessionRole,
+        api_key: str,
+    ) -> AsyncIterator[str]:
+        """Story 3.4 P15: must be an async generator so calling code
+        that does ``async for chunk in provider.stream_feedback(...)``
+        gets a consistent shape between the Null stub and the real
+        ``PydanticAILLMProvider``.
+        """
+        raise NotImplementedError("LLMProvider is wired in Story 3.3")
+        if False:  # pragma: no cover — make this an async generator
+            yield ""
+
     async def generate_feedback(
         self,
         *,
-        question: str,
-        answer: str,
+        question_text: str,
+        answer_text: str,
         pr_diff: str,
+        role: SessionRole,
         api_key: str,
     ) -> str:
         raise NotImplementedError("LLMProvider is wired in Story 3.3")
@@ -157,15 +207,54 @@ class PydanticAILLMProvider:
             parts.append(chunk)
         return "".join(parts)
 
+    async def stream_feedback(
+        self,
+        *,
+        question_text: str,
+        answer_text: str,
+        pr_diff: str,
+        role: SessionRole,
+        api_key: str,
+    ) -> AsyncIterator[str]:
+        """Yield feedback text deltas as Claude evaluates the answer.
+
+        Story 3.4 production path. ``_build_feedback_agent`` is the
+        seam tests monkeypatch — kept distinct from ``_build_agent``
+        so the question and feedback agents can be faked
+        independently. Same fresh-Agent-per-call zero-retention rule
+        as ``stream_question`` (FR34).
+        """
+        agent = self._build_feedback_agent(api_key)
+        prompt = self._render_feedback_prompt(
+            question_text=question_text,
+            answer_text=answer_text,
+            pr_diff=pr_diff,
+            role=role,
+        )
+        async with agent.run_stream(prompt) as result:
+            async for chunk in result.stream_text(delta=True):
+                yield chunk
+
     async def generate_feedback(
         self,
         *,
-        question: str,
-        answer: str,
+        question_text: str,
+        answer_text: str,
         pr_diff: str,
+        role: SessionRole,
         api_key: str,
     ) -> str:
-        raise NotImplementedError("Feedback generation is Story 3.4")
+        """Non-streaming convenience — consume ``stream_feedback`` fully."""
+        parts: list[str] = []
+        async for chunk in self.stream_feedback(
+            question_text=question_text,
+            answer_text=answer_text,
+            pr_diff=pr_diff,
+            role=role,
+            api_key=api_key,
+        ):
+            parts.append(chunk)
+        return "".join(parts)
 
     # ------------------------------------------------------------------
     # Internals — kept narrow so tests can monkeypatch ``_build_agent``
@@ -208,4 +297,39 @@ class PydanticAILLMProvider:
             f"Previous questions you already asked (do not repeat):\n"
             f"{previous_block}\n\n"
             "Ask the next Socratic question."
+        )
+
+    def _build_feedback_agent(self, api_key: str) -> Agent:
+        """Construct a fresh feedback ``Agent`` with the per-call key.
+
+        Distinct seam from ``_build_agent`` (the question agent) so
+        unit tests can monkeypatch the feedback path independently.
+        Same zero-retention rule: fresh ``Agent`` per call, never
+        cached on the instance.
+        """
+        model = AnthropicModel(
+            _ANTHROPIC_MODEL_ID,
+            provider=AnthropicProvider(api_key=api_key),
+        )
+        return Agent(model, system_prompt=FEEDBACK_SYSTEM_PROMPT)
+
+    def _render_feedback_prompt(
+        self,
+        *,
+        question_text: str,
+        answer_text: str,
+        pr_diff: str,
+        role: SessionRole,
+    ) -> str:
+        """Render the per-call feedback user prompt.
+
+        Story 3.4 minimal scaffold — Story 3.5/4.1 may extend with
+        role-specific framing and structured-output formats.
+        """
+        return (
+            f"Role: {role.value}\n\n"
+            f"PR diff:\n{pr_diff}\n\n"
+            f"The question you asked was:\n{question_text}\n\n"
+            f"The developer answered:\n{answer_text}\n\n"
+            "Give your feedback now."
         )

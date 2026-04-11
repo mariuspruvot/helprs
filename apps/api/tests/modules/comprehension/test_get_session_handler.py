@@ -91,8 +91,45 @@ class TestHappyPath:
         assert result.session.status is SessionStatus.PENDING
         assert result.installation_token == "ghs_test_token"
         assert result.question_count == 0
+        # Story 3.4: empty progress array for a session with no questions yet.
+        assert result.progress == ()
         mint.assert_awaited_once_with(12345678, settings)
         access_list.assert_awaited_once()
+
+    async def test_progress_array_marks_answered_vs_in_flight(
+        self, db_session, test_installation, settings, patch_github
+    ):
+        """Story 3.4 / Task 9: 3 questions exist, 2 are answered →
+        progress is [answered, answered, in_flight].
+        """
+        from helprs.modules.comprehension.domain.value_objects import Topic
+
+        _mint, access_list = patch_github
+        access_list.return_value = [test_installation]
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+        user = await _seed_user(db_session, github_id=777)
+
+        # 3 questions, 2 answers (questions 1 and 2 answered).
+        q1 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+        q2 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="b" * 64)
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="c" * 64)
+
+        await repo.append_answer(question_id=q1.id, text_hash="1" * 64, latency_ms=100)
+        await repo.append_answer(question_id=q2.id, text_hash="2" * 64, latency_ms=200)
+
+        handler = GetSessionHandler(db_session, settings)
+        result = await handler.handle(GetSessionQuery(session_id=author.id, requesting_user=user))
+
+        assert result.question_count == 3
+        assert len(result.progress) == 3
+        statuses = [p.status for p in result.progress]
+        numbers = [p.number for p in result.progress]
+        assert statuses == ["answered", "answered", "in_flight"]
+        assert numbers == [1, 2, 3]
+        # Topic is the serialized enum value (string), not the enum.
+        assert all(p.topic == "architecture" for p in result.progress)
 
     async def test_access_check_runs_exactly_once(self, db_session, test_installation, settings, patch_github):
         """Guard against N+1 on the FR26 check."""
