@@ -1,9 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Diff, Hunk, parseDiff, tokenize } from 'react-diff-view'
-import type { FileData, HunkTokens } from 'react-diff-view'
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import {
+  Diff,
+  Hunk,
+  computeNewLineNumber,
+  computeOldLineNumber,
+  parseDiff,
+  tokenize,
+} from 'react-diff-view'
+import type { ChangeData, FileData, HunkTokens } from 'react-diff-view'
 // Library CSS is imported in `main.tsx` BEFORE `index.css` so our
 // dark-mode `--diff-*` overrides win the cascade. Do not import it here
 // — it would re-import after `index.css` and revert the overrides.
+import { useReducedMotion } from '../../shared/hooks/useReducedMotion'
+import { useDiffViewerHandleRefSlot } from './codeLinkContext'
 import { useSessionStore } from './store'
 import { languageFromPath, refractorAdapter } from './refractorSetup'
 import type { SessionResponse } from './types'
@@ -15,8 +31,26 @@ const FILE_HIGHLIGHT_DURATION_MS = 600
 const FILE_HIGHLIGHT_TRANSITION_MS = 300
 const FILE_HIGHLIGHT_COLOR = '#007aff'
 
+// Story 3.4 (AC #12): how long a clicked code-link's row stays
+// highlighted with the accent overlay before fading.
+const LINE_HIGHLIGHT_DURATION_MS = 1500
+
 interface DiffViewerProps {
   session: SessionResponse
+}
+
+/**
+ * Story 3.4: imperative API exposed via `forwardRef` so the chat
+ * panel's CodeLink buttons can drive a scroll + highlight on the
+ * diff side without prop-drilling DOM refs.
+ */
+export interface DiffViewerHandle {
+  /** Switch to ``file`` and scroll its line into view + flash a highlight. */
+  scrollTo: (file: string, line: number) => void
+  /** Apply a subtle hover preview on ``file:line`` (no scroll). */
+  preview: (file: string, line: number) => void
+  /** Clear any active hover preview. */
+  clearPreview: () => void
 }
 
 const TRUNCATION_MARKER = '<!-- truncated: diff exceeded 1 MB -->'
@@ -30,20 +64,6 @@ function fileBasename(file: FileData): string {
   return fullPath.split('/').pop() || fullPath
 }
 
-// A binary delta parses into a FileData with zero hunks, a real path, and
-// `type: 'modify'`. The empty-input placeholder that `parseDiff` also emits
-// has neither hunks nor a meaningful path, so we can distinguish them by
-// checking for a usable path.
-//
-// ⚠️ `gitdiff-parser` technically defines a `file.isBinary` boolean on its
-// File type, but its internal parser NEVER sets it in practice: the branch
-// that does is only reached when the outer loop reads a line starting with
-// "Binary" directly, whereas the inner `simiLoop` (which processes the
-// headers following `diff --git`) aggressively consumes the `Binary files
-// … differ` line without matching any case — verified empirically with
-// `node -e "console.log(require('gitdiff-parser').parse(…).map(f => f.isBinary))"`.
-// Until the upstream parser fixes that, we fall back to the structural
-// check below.
 function hasRealPath(file: FileData): boolean {
   const newPath = file.newPath && file.newPath !== '/dev/null' ? file.newPath : ''
   const oldPath = file.oldPath && file.oldPath !== '/dev/null' ? file.oldPath : ''
@@ -51,12 +71,6 @@ function hasRealPath(file: FileData): boolean {
 }
 
 function isBinaryFile(file: FileData): boolean {
-  // Exclude pure renames (`type === 'rename'`) and pure copies (`type ===
-  // 'copy'`) — they also parse with zero hunks + real paths but are clearly
-  // not binary. Mode-only changes (chmod) parse with `type: 'modify'` and
-  // zero hunks, so they WILL be mis-labelled as "Binary file — not
-  // displayed"; this is an accepted edge case (rare in practice, recoverable
-  // mis-label rather than a crash), tracked in `deferred-work.md`.
   return (
     file.hunks.length === 0 &&
     hasRealPath(file) &&
@@ -65,11 +79,37 @@ function isBinaryFile(file: FileData): boolean {
   )
 }
 
-export default function DiffViewer({ session }: DiffViewerProps) {
+/**
+ * Story 3.4: stable per-row anchor id used by ``scrollTo``.
+ *
+ * For unified diffs we prefer the NEW line number (which is what the
+ * LLM most often cites), falling back to the OLD line number for
+ * delete changes that have no new-side mapping. The id is namespaced
+ * with ``helprs-line-`` so it cannot collide with any consumer-set
+ * anchor.
+ */
+function makeAnchorID(change: ChangeData): string {
+  const newLine = computeNewLineNumber(change)
+  if (newLine > 0) {
+    return `helprs-line-new-${newLine}`
+  }
+  const oldLine = computeOldLineNumber(change)
+  if (oldLine > 0) {
+    return `helprs-line-old-${oldLine}`
+  }
+  return ''
+}
+
+const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer(
+  { session },
+  ref,
+) {
   const activeFileIndex = useSessionStore((s) => s.activeFileIndex)
   const setActiveFile = useSessionStore((s) => s.setActiveFile)
+  const highlightActiveFile = useSessionStore((s) => s.highlightActiveFile)
   const highlightFileTrigger = useSessionStore((s) => s.highlightFileTrigger)
   const [isHighlighted, setIsHighlighted] = useState(false)
+  const reducedMotion = useReducedMotion()
 
   // AC #11: fires a short-lived highlight on the active file tab
   // every time ``highlightFileTrigger`` ticks (ChatPanel calls
@@ -119,17 +159,16 @@ export default function DiffViewer({ session }: DiffViewerProps) {
         language,
       })
     } catch (err) {
-      // Defensive: a malformed hunk or unsupported lang should degrade to
-      // plain text, not crash the whole session page. Log so CI / local
-      // dev surfaces a regression if `react-diff-view` ever calls a
-      // refractor method that the v4 rename removed.
       console.warn('[DiffViewer] syntax highlighting disabled — falling back to plain text', err)
       return null
     }
   }, [activeFile])
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  // TODO: story-3.4 — expose scrollToLine via useImperativeHandle on this ref.
+  // Track timeouts so a rapid second scrollTo cancels the first highlight
+  // before its 1.5 s timer expires.
+  const highlightTimeoutRef = useRef<number | null>(null)
+  const previewedRowRef = useRef<HTMLElement | null>(null)
 
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
@@ -147,11 +186,120 @@ export default function DiffViewer({ session }: DiffViewerProps) {
     }
   }, [safeIndex])
 
+  // Story 3.4 (AC #12): imperative scroll-to-line + hover preview API.
+  // Built once via useMemo so the same object can be:
+  //   1. exposed via useImperativeHandle for the forwardRef caller
+  //   2. registered in the optional CodeLinkActions context slot so
+  //      CodeLink buttons elsewhere in the tree can dispatch to it
+  //      without prop drilling
+  const handleRefSlot = useDiffViewerHandleRefSlot()
+  const handle = useMemo<DiffViewerHandle>(
+    () => ({
+      scrollTo: (file, line) => {
+        const targetIndex = files.findIndex((f) => fileDisplayPath(f) === file)
+        if (targetIndex === -1) {
+          console.warn(`[DiffViewer] scrollTo: file not in diff: ${file}`)
+          return
+        }
+        if (targetIndex !== safeIndex) {
+          // Tab switch + flash so the user notices the change.
+          highlightActiveFile(targetIndex)
+        }
+        // Story 3.4 P6 (code-review E12+E13):
+        //   * Look up the row via ``scrollContainerRef.current.querySelector``
+        //     (scoped) rather than ``document.getElementById`` so two
+        //     DiffViewer instances in the same DOM (StrictMode double-mount
+        //     or parallel layouts during a viewport transition) don't
+        //     collide on the same anchor id.
+        //   * Retry across up to 3 rAFs to give react-diff-view time to
+        //     render the newly-activated file's hunks. A single rAF
+        //     can lose the race on large diffs under React 18 concurrent
+        //     scheduling.
+        const newSelector = `#helprs-line-new-${line}`
+        const oldSelector = `#helprs-line-old-${line}`
+
+        let attempts = 0
+        const MAX_ATTEMPTS = 3
+        const tryLocate = () => {
+          const container = scrollContainerRef.current
+          if (!container) return
+          const row =
+            (container.querySelector(newSelector) as HTMLElement | null) ??
+            (container.querySelector(oldSelector) as HTMLElement | null)
+          if (!row) {
+            attempts += 1
+            if (attempts < MAX_ATTEMPTS) {
+              requestAnimationFrame(tryLocate)
+              return
+            }
+            console.warn(`[DiffViewer] scrollTo: line ${line} not found in ${file}`)
+            return
+          }
+          row.scrollIntoView({
+            behavior: reducedMotion ? 'instant' : 'smooth',
+            block: 'center',
+          })
+          row.classList.add('diff-line-highlight')
+          if (highlightTimeoutRef.current !== null) {
+            window.clearTimeout(highlightTimeoutRef.current)
+          }
+          highlightTimeoutRef.current = window.setTimeout(() => {
+            row.classList.remove('diff-line-highlight')
+            highlightTimeoutRef.current = null
+          }, LINE_HIGHLIGHT_DURATION_MS)
+        }
+        requestAnimationFrame(tryLocate)
+      },
+      preview: (file, line) => {
+        const targetIndex = files.findIndex((f) => fileDisplayPath(f) === file)
+        if (targetIndex === -1 || targetIndex !== safeIndex) {
+          // Only preview rows visible in the current file — switching
+          // tabs on hover would be jarring.
+          return
+        }
+        const container = scrollContainerRef.current
+        if (!container) return
+        const newSelector = `#helprs-line-new-${line}`
+        const oldSelector = `#helprs-line-old-${line}`
+        const row =
+          (container.querySelector(newSelector) as HTMLElement | null) ??
+          (container.querySelector(oldSelector) as HTMLElement | null)
+        if (!row) return
+        if (previewedRowRef.current && previewedRowRef.current !== row) {
+          previewedRowRef.current.classList.remove('diff-line-preview')
+        }
+        row.classList.add('diff-line-preview')
+        previewedRowRef.current = row
+      },
+      clearPreview: () => {
+        if (previewedRowRef.current) {
+          previewedRowRef.current.classList.remove('diff-line-preview')
+          previewedRowRef.current = null
+        }
+      },
+    }),
+    [files, safeIndex, highlightActiveFile, reducedMotion],
+  )
+
+  useImperativeHandle(ref, () => handle, [handle])
+
+  // Register the imperative handle into the optional context slot so
+  // CodeLink buttons elsewhere in the tree can dispatch to it. The
+  // ref slot is null when DiffViewer is rendered outside a
+  // DiffViewerHandleRefContext.Provider (e.g. unit tests), in which
+  // case the registration is a no-op.
+  useEffect(() => {
+    if (!handleRefSlot) return
+    handleRefSlot.current = handle
+    return () => {
+      if (handleRefSlot.current === handle) {
+        handleRefSlot.current = null
+      }
+    }
+  }, [handleRefSlot, handle])
+
   const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-    // Do not swallow browser navigation / selection shortcuts — Cmd+Arrow
-    // (macOS back/forward), Alt+Arrow (Win/Linux), Shift+Arrow (selection),
-    // Ctrl+Arrow (word jump) must still reach the browser.
     if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     event.preventDefault()
     const delta = event.key === 'ArrowLeft' ? -1 : 1
@@ -193,11 +341,6 @@ export default function DiffViewer({ session }: DiffViewerProps) {
           const isActive = index === safeIndex
           const label = fileBasename(file)
           const title = fileDisplayPath(file)
-          // AC #11: when ``isHighlighted`` is true and this tab is
-          // the active one, override the border-bottom-color to the
-          // accent-blue #007aff with a 300 ms transition. The
-          // transition is declared unconditionally so both the
-          // fade-in and fade-out animate smoothly.
           const highlighted = isActive && isHighlighted
           const activeStyle: React.CSSProperties | undefined = isActive
             ? {
@@ -259,6 +402,7 @@ export default function DiffViewer({ session }: DiffViewerProps) {
             diffType={activeFile.type}
             hunks={activeFile.hunks}
             tokens={tokens}
+            generateAnchorID={makeAnchorID}
           >
             {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
           </Diff>
@@ -266,4 +410,6 @@ export default function DiffViewer({ session }: DiffViewerProps) {
       </div>
     </div>
   )
-}
+})
+
+export default DiffViewer

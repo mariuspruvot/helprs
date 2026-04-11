@@ -6,14 +6,28 @@ Story 3.1 adds ``GetSessionQuery`` and ``GetSessionResult`` for the
 consistency with existing CQRS patterns in the module.
 """
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from helprs.modules.comprehension.domain.entities import Session
 
 if TYPE_CHECKING:
     from helprs.modules.identity.models import GitHubUser
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionProgressEntry:
+    """Per-question resume entry — `(number, status, topic)`.
+
+    Story 3.4: returned in ``GetSessionResult.progress`` so the router
+    can map it through to the response. Plain dataclass (not Pydantic)
+    so the application layer stays free of presentation imports.
+    """
+
+    number: int
+    status: Literal["answered", "in_flight"]
+    topic: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +67,15 @@ class GetSessionResult:
     session: Session
     installation_token: str
     question_count: int
+    # Story 3.4: per-question progress for the resume-from-reload UX.
+    # Tuple keeps the dataclass frozen-friendly. Empty for sessions
+    # whose question stream has not started yet.
+    progress: tuple[QuestionProgressEntry, ...] = field(default_factory=tuple)
 
     def __repr__(self) -> str:  # pragma: no cover — debug aid
         return (
             f"GetSessionResult(session={self.session!r}, "
             f"installation_token='<redacted>', "
-            f"question_count={self.question_count})"
+            f"question_count={self.question_count}, "
+            f"progress=<{len(self.progress)} entries>)"
         )

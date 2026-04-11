@@ -4,7 +4,20 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from helprs.core.database import Base
+from helprs.modules.comprehension.presentation.answer_pubsub import reset_answer_pubsub
 from helprs.modules.installation.models import Installation
+
+
+@pytest.fixture(autouse=True)
+def _reset_answer_pubsub_between_tests():
+    """Story 3.4: clear in-process question-text + answer-signal registries
+    between tests so a stash from one test cannot be observed by another.
+    Autouse so individual tests do not need to remember it.
+    """
+    reset_answer_pubsub()
+    yield
+    reset_answer_pubsub()
+
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
 

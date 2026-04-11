@@ -22,6 +22,7 @@ import pytest
 
 from helprs.modules.comprehension.domain.value_objects import SessionRole
 from helprs.modules.comprehension.infrastructure.agents import (
+    FEEDBACK_SYSTEM_PROMPT,
     QUESTION_SYSTEM_PROMPT,
     NullLLMProvider,
     PydanticAILLMProvider,
@@ -162,7 +163,124 @@ class TestNullProviderStillRaises:
         with pytest.raises(NotImplementedError):
             await provider.generate_question(pr_diff="", role=SessionRole.AUTHOR, previous_questions=[], api_key="")
 
+    async def test_stream_feedback_raises(self):
+        """Story 3.4 P15: NullLLMProvider.stream_feedback is an async
+        generator matching the real provider's shape. The raise fires
+        when the caller iterates, not when it calls the method.
+        """
+        provider = NullLLMProvider()
+        gen = provider.stream_feedback(
+            question_text="",
+            answer_text="",
+            pr_diff="",
+            role=SessionRole.AUTHOR,
+            api_key="",
+        )
+        with pytest.raises(NotImplementedError):
+            async for _ in gen:
+                pass
+
     async def test_generate_feedback_raises(self):
         provider = NullLLMProvider()
         with pytest.raises(NotImplementedError):
-            await provider.generate_feedback(question="", answer="", pr_diff="", api_key="")
+            await provider.generate_feedback(
+                question_text="",
+                answer_text="",
+                pr_diff="",
+                role=SessionRole.AUTHOR,
+                api_key="",
+            )
+
+
+# ----------------------------------------------------------------------
+# Story 3.4 Task 3.7: feedback agent tests. Mirror of TestStreamQuestion
+# but exercises the ``_build_feedback_agent`` seam so the question and
+# feedback paths can be faked independently.
+# ----------------------------------------------------------------------
+
+
+class TestStreamFeedback:
+    async def test_yields_chunks_in_order(self, monkeypatch):
+        provider = PydanticAILLMProvider()
+        monkeypatch.setattr(
+            PydanticAILLMProvider,
+            "_build_feedback_agent",
+            lambda self, api_key: _StubAgent(["Good ", "point ", "but...", " line 47?"]),
+        )
+
+        chunks: list[str] = []
+        async for c in provider.stream_feedback(
+            question_text="Why X?",
+            answer_text="Because Y.",
+            pr_diff="diff",
+            role=SessionRole.AUTHOR,
+            api_key="sk-x",
+        ):
+            chunks.append(c)
+
+        assert chunks == ["Good ", "point ", "but...", " line 47?"]
+        assert "".join(chunks) == "Good point but... line 47?"
+
+    async def test_fresh_feedback_agent_per_call(self, monkeypatch):
+        """Zero-retention: ``_build_feedback_agent`` invoked once per call,
+        and the API key is forwarded to it each time without caching.
+        """
+        call_count = {"n": 0}
+        keys_seen: list[str] = []
+
+        def build(self, api_key: str):
+            call_count["n"] += 1
+            keys_seen.append(api_key)
+            return _StubAgent(["chunk"])
+
+        monkeypatch.setattr(PydanticAILLMProvider, "_build_feedback_agent", build)
+
+        provider = PydanticAILLMProvider()
+        for key in ("sk-1", "sk-2", "sk-3"):
+            async for _c in provider.stream_feedback(
+                question_text="q",
+                answer_text="a",
+                pr_diff="d",
+                role=SessionRole.REVIEWER,
+                api_key=key,
+            ):
+                pass
+
+        assert call_count["n"] == 3
+        assert keys_seen == ["sk-1", "sk-2", "sk-3"]
+
+
+class TestGenerateFeedback:
+    async def test_returns_concatenation_of_stream(self, monkeypatch):
+        monkeypatch.setattr(
+            PydanticAILLMProvider,
+            "_build_feedback_agent",
+            lambda self, api_key: _StubAgent(["Nice ", "catch."]),
+        )
+        provider = PydanticAILLMProvider()
+
+        text = await provider.generate_feedback(
+            question_text="q",
+            answer_text="a",
+            pr_diff="d",
+            role=SessionRole.AUTHOR,
+            api_key="sk-x",
+        )
+        assert text == "Nice catch."
+
+
+class TestRenderFeedbackPrompt:
+    def test_surfaces_role_question_answer_and_diff(self):
+        provider = PydanticAILLMProvider()
+        prompt = provider._render_feedback_prompt(
+            question_text="QUESTION_BODY",
+            answer_text="ANSWER_BODY",
+            pr_diff="DIFF_BODY",
+            role=SessionRole.AUTHOR,
+        )
+        assert "Role: author" in prompt
+        assert "QUESTION_BODY" in prompt
+        assert "ANSWER_BODY" in prompt
+        assert "DIFF_BODY" in prompt
+        # System prompt sits on the Agent, not on the per-call prompt.
+        assert FEEDBACK_SYSTEM_PROMPT not in prompt

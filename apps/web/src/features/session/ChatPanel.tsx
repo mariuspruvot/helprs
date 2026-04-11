@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuthStore } from '../auth/store'
 import { API_BASE } from '../../shared/api/client'
 import { useSSE, type SSEError } from '../../shared/hooks/useSSE'
-import ChatMessage from './ChatMessage'
+import { consumeSSEStream } from '../../shared/hooks/parseSSE'
+import AnswerInput from './AnswerInput'
+import ChatMessage, { DiffFilePathsContext } from './ChatMessage'
 import { useSessionStore } from './store'
-import type { SessionResponse } from './types'
+import type { ChatMessage as ChatMessageType, FeedbackPayload, SessionResponse } from './types'
 
 interface ChatPanelProps {
   session: SessionResponse
@@ -44,10 +46,6 @@ function parseDiffFilePaths(diff: string): string[] {
     push(match[2])
   }
 
-  // Fall back on `+++ b/...` / `--- a/...` headers. Run these
-  // unconditionally so `diff --git`-less diffs still populate the list
-  // AND so we pick up any paths that the `diff --git` branch failed to
-  // surface (e.g. the parent regex skipped an odd rename encoding).
   const plusHeaderRegex = /^\+\+\+ b\/(.+?)$/gm
   while ((match = plusHeaderRegex.exec(diff)) !== null) {
     push(match[1])
@@ -61,34 +59,47 @@ function parseDiffFilePaths(diff: string): string[] {
 }
 
 /**
- * ChatPanel — the left panel of the split view.
+ * Story 3.4: ``submitAnswer`` POSTs to the answer SSE endpoint via
+ * ``fetch`` (EventSource is GET-only). Reads the response body as a
+ * ReadableStream and dispatches each parsed SSE frame into the store
+ * via the action callbacks the caller passes in.
  *
- * Story 3.3 replaces the Story 3.2 placeholder with a live chat
- * message list driven by Server-Sent Events. Key behaviours:
- *
- * - Opens a single SSE stream on mount (closed on unmount).
- * - Renders each committed message + the in-flight streaming message.
- * - Calls `setActiveFile` when a committed question references files.
- * - Auto-scrolls to bottom on each token append UNLESS the user has
- *   scrolled up manually (no "Jump to latest" button — that's out of
- *   scope for 3.3).
- * - Shows the "Waiting for the first question..." placeholder until
- *   either a streaming message or a committed message exists.
- * - Falls back to an inline error banner on stream errors.
+ * Defined inline rather than extracted because it consumes a closure
+ * over the store actions and the timeout banner state, and inlining
+ * keeps the data flow obvious. If it grows past ~80 lines, extract.
  */
+
 export default function ChatPanel({ session }: ChatPanelProps) {
   const messages = useSessionStore((s) => s.messages)
   const streamingQuestion = useSessionStore((s) => s.streamingQuestion)
+  const streamingFeedback = useSessionStore((s) => s.streamingFeedback)
+  const answerInputDisabled = useSessionStore((s) => s.answerInputDisabled)
   const appendQuestionToken = useSessionStore((s) => s.appendQuestionToken)
   const commitStreamingQuestion = useSessionStore((s) => s.commitStreamingQuestion)
   const highlightActiveFile = useSessionStore((s) => s.highlightActiveFile)
+  const appendUserAnswer = useSessionStore((s) => s.appendUserAnswer)
+  const appendFeedbackToken = useSessionStore((s) => s.appendFeedbackToken)
+  const commitStreamingFeedback = useSessionStore((s) => s.commitStreamingFeedback)
+  const setAnswerInputDisabled = useSessionStore((s) => s.setAnswerInputDisabled)
+  const resetForNewSession = useSessionStore((s) => s.resetForNewSession)
 
   const [sseError, setSseError] = useState<string | null>(null)
+  // Story 3.4: AC #14 transient banners. Local state — these are
+  // ephemeral hints, not durable session state, so they don't belong
+  // in the store.
+  const [feedbackHint, setFeedbackHint] = useState<string | null>(null)
 
   const diffFilePaths = useMemo(() => parseDiffFilePaths(session.diff), [session.diff])
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const autoScrollRef = useRef(true)
+  // Track timeout ids so a new submission cancels prior banners.
+  const hintTimeoutsRef = useRef<{ first?: number; second?: number }>({})
+  // Story 3.4 P23 (code-review): abort the in-flight POST + its SSE
+  // reader when the component unmounts (route change). Without this
+  // the fetch keeps running, the SSE reader keeps pumping into a
+  // global store for a component that no longer exists.
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current
@@ -103,7 +114,88 @@ export default function ChatPanel({ session }: ChatPanelProps) {
     if (autoScrollRef.current) {
       el.scrollTop = el.scrollHeight
     }
-  }, [messages.length, streamingQuestion?.text])
+  }, [messages.length, streamingQuestion?.text, streamingFeedback?.text])
+
+  // Story 3.4 (AC #7 / Task 18): seed placeholder messages from
+  // ``session.progress`` on first render of the panel for this
+  // session. The verbatim text is intentionally absent from each
+  // entry — FR35/NFR14 means we cannot show past content on resume.
+  // The frontend renders past cycles as compact "(text not retained)"
+  // placeholders; the SSE stream takes over for the in-flight question.
+  //
+  // Guarded by an empty-messages check + a session-id ref so the
+  // seed only happens once per session.
+  //
+  // Story 3.4 v1.2.0 (code-review F3): when ``session.id`` changes
+  // from a previously-seeded one, call ``resetForNewSession`` FIRST
+  // to wipe the module-level store. Without this, the old session's
+  // messages / streamingQuestion / streamingFeedback /
+  // answerInputDisabled would leak into the new session's render,
+  // and the ``if (messages.length > 0)`` fast-path below would
+  // silently skip seeding — so the user would see session A's chat
+  // on session B's page until the next SSE frame arrived.
+  const seededForSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (seededForSessionRef.current === session.id) return
+    if (seededForSessionRef.current !== null) {
+      // We previously seeded a DIFFERENT session and are now switching
+      // — wipe the stale per-session state before re-seeding.
+      resetForNewSession()
+    } else if (messages.length > 0) {
+      // First seed attempt for this panel instance, but the store
+      // already contains messages (e.g. a previous ChatPanel mount
+      // left state behind). Treat as already-seeded to preserve the
+      // pre-v1.2.0 behaviour on the first mount.
+      seededForSessionRef.current = session.id
+      return
+    }
+    const placeholders: ChatMessageType[] = []
+    const total = session.total_questions || session.progress.length
+    // Use the session's own ``updated_at`` as the placeholder timestamp
+    // — keeps relative ordering stable without embedding a build-time
+    // literal in the bundle (B13+E24 from code-review).
+    const placeholderTime = session.updated_at ?? new Date(0).toISOString()
+    for (const entry of session.progress) {
+      if (entry.status !== 'answered') continue
+      const questionId = `resume-q-${entry.number}`
+      placeholders.push({
+        id: questionId,
+        kind: 'ai_question',
+        questionNumber: entry.number,
+        total,
+        text: '_(question text not retained)_',
+        fileRefs: [],
+        createdAt: placeholderTime,
+        isStreaming: false,
+      })
+      placeholders.push({
+        id: `${questionId}::answer`,
+        kind: 'user_answer',
+        questionNumber: entry.number,
+        total,
+        text: '_(answer text not retained)_',
+        fileRefs: [],
+        createdAt: placeholderTime,
+        isStreaming: false,
+      })
+      placeholders.push({
+        id: `resume-f-${entry.number}`,
+        kind: 'ai_feedback',
+        questionNumber: entry.number,
+        total,
+        text: '_(feedback text not retained)_',
+        fileRefs: [],
+        createdAt: placeholderTime,
+        isStreaming: false,
+      })
+    }
+    if (placeholders.length > 0) {
+      // Push directly via setState so we don't reset the store's
+      // other Story 3.4 fields.
+      useSessionStore.setState((state) => ({ messages: [...state.messages, ...placeholders] }))
+    }
+    seededForSessionRef.current = session.id
+  }, [session, messages.length, resetForNewSession])
 
   const handleQuestionToken = useCallback(
     (payload: { questionId: string; token: string; number: number; total: number }) => {
@@ -122,11 +214,6 @@ export default function ChatPanel({ session }: ChatPanelProps) {
     }) => {
       commitStreamingQuestion(payload)
       if (payload.file_refs.length > 0) {
-        // AC #11: switch to the first referenced file AND trigger the
-        // 300ms accent-blue highlight flash on its tab. Using
-        // ``highlightActiveFile`` (instead of ``setActiveFile``)
-        // deliberately ticks the store's highlight counter — that is
-        // the signal DiffViewer listens to for the visual flash.
         const firstRef = payload.file_refs.find((ref) => diffFilePaths.includes(ref))
         if (firstRef) {
           const index = diffFilePaths.indexOf(firstRef)
@@ -140,10 +227,6 @@ export default function ChatPanel({ session }: ChatPanelProps) {
   )
 
   const handleError = useCallback((err: SSEError) => {
-    // P6: every error kind now surfaces something to the user. Parse
-    // errors used to be silently dropped, which made production
-    // debugging blind. We log parse errors (rare — they indicate a
-    // server-side JSON drift) in addition to the banner.
     if (err.kind === 'server') {
       setSseError('The question stream reported an error. Please retry.')
     } else if (err.kind === 'network') {
@@ -177,56 +260,333 @@ export default function ChatPanel({ session }: ChatPanelProps) {
     onError: handleError,
   })
 
+  // ----- Story 3.4: answer submission --------------------------------
+
+  const clearHintTimeouts = useCallback(() => {
+    if (hintTimeoutsRef.current.first !== undefined) {
+      window.clearTimeout(hintTimeoutsRef.current.first)
+    }
+    if (hintTimeoutsRef.current.second !== undefined) {
+      window.clearTimeout(hintTimeoutsRef.current.second)
+    }
+    hintTimeoutsRef.current = {}
+  }, [])
+
+  // Compute the current question (the most recent ``ai_question`` that
+  // does NOT yet have a matching ``ai_feedback`` with the same
+  // ``questionNumber``). Used by the submit handler to pair the answer
+  // with the right question.
+  //
+  // Story 3.4 v1.2.0 (code-review F4): the previous implementation
+  // just returned the last ``ai_question`` regardless of whether its
+  // feedback had committed. Between the ``feedback`` frame committing
+  // for Q_n and Q_{n+1}'s first token arriving, it pointed at Q_n —
+  // so a submit in that window could send the user's next answer
+  // with ``question_number: n``. Now we iterate once, track the
+  // ``questionNumber``s that already have feedback, and pick the
+  // highest unanswered one.
+  const currentQuestion = useMemo(() => {
+    const answeredNumbers = new Set<number>()
+    for (const m of messages) {
+      if (m.kind === 'ai_feedback') {
+        answeredNumbers.add(m.questionNumber)
+      }
+    }
+    let unanswered: ChatMessageType | null = null
+    for (const m of messages) {
+      if (m.kind === 'ai_question' && !answeredNumbers.has(m.questionNumber)) {
+        unanswered = m
+      }
+    }
+    return unanswered
+  }, [messages])
+
+  const currentQuestionNumber = currentQuestion?.questionNumber ?? 0
+  const currentQuestionId = currentQuestion?.id ?? null
+
+  const submitAnswer = useCallback(
+    async (text: string) => {
+      if (!accessToken || !currentQuestionId || currentQuestionNumber <= 0) {
+        return
+      }
+      // 1. Optimistic UI: push user_answer + lock the input.
+      appendUserAnswer(currentQuestionId, text, currentQuestionNumber, session.total_questions)
+      setAnswerInputDisabled(true)
+      setSseError(null)
+      setFeedbackHint(null)
+      clearHintTimeouts()
+
+      // AC #14: 5 s + 15 s timeouts. Cleared on first feedback_token
+      // / feedback / error. The 15 s hint shows a warning banner but
+      // does NOT re-enable the input — that would let the user stack a
+      // second POST while the first stream is still draining (B29+E22
+      // from code-review). The input only re-enables on a ``done`` or
+      // ``error`` frame, or on fetch-level failure below.
+      hintTimeoutsRef.current.first = window.setTimeout(() => {
+        setFeedbackHint('Taking a moment to think...')
+      }, 5000)
+      hintTimeoutsRef.current.second = window.setTimeout(() => {
+        setFeedbackHint('Still waiting — the server is slower than expected.')
+      }, 15000)
+
+      // Story 3.4 v1.2.0 (code-review F5): abort any still-in-flight
+      // controller from a prior submit before creating a new one.
+      // Previously the ref was only cleared on unmount, so a
+      // re-submission left the previous controller dangling — if its
+      // consumeSSEStream reader hadn't exhausted, the reader leaked.
+      if (abortControllerRef.current !== null) {
+        abortControllerRef.current.abort()
+      }
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+      try {
+        const url = `${API_BASE}/api/v1/sessions/${session.id}/answers`
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            question_number: currentQuestionNumber,
+            text,
+          }),
+          signal: controller.signal,
+        })
+        if (!response.ok || !response.body) {
+          // 4xx / 5xx — surface the error and re-enable the input.
+          clearHintTimeouts()
+          setAnswerInputDisabled(false)
+
+          // Story 3.4 kick-back fix (BLOCKER #2): the backend
+          // distinguishes ``answer_out_of_order`` from
+          // ``answer_already_submitted`` (both 409). Parse the
+          // structured error code from the JSON body so we can show
+          // an accurate message instead of mapping every 409 to
+          // "already answered" — that lie was the user-visible
+          // symptom on 2026-04-11 manual QA, where an in-order POST
+          // for an unanswered Q1 surfaced as "already answered"
+          // because the frontend hardcoded the string for any 409.
+          let errorCode: string | null = null
+          try {
+            const errBody = (await response.clone().json()) as {
+              detail?: { error?: string }
+            }
+            errorCode = errBody?.detail?.error ?? null
+          } catch {
+            // Non-JSON body — fall back to status-based defaults.
+          }
+
+          // Story 3.4 v1.2.0 (code-review F23): roll back the
+          // optimistic ``user_answer`` bubble on error paths where
+          // the backend did NOT persist the answer row. Leaving the
+          // dangling bubble in chat is misleading (the user believes
+          // they submitted something the server then ignored) and
+          // makes retries produce two ``user_answer`` rows for the
+          // same cycle. ``answer_already_submitted`` is the one 409
+          // code where the backend DID persist (the row already
+          // existed from a prior submission), so we keep the bubble
+          // in that case.
+          const answerWasNotPersisted =
+            (response.status === 404 && errorCode === 'question_not_found') ||
+            (response.status === 409 && errorCode === 'answer_out_of_order') ||
+            (response.status === 409 && errorCode === 'session_completed') ||
+            (response.status === 422 &&
+              errorCode === 'question_text_unavailable_after_restart') ||
+            response.status >= 500
+          if (answerWasNotPersisted) {
+            const optimisticId = `${currentQuestionId}::answer`
+            useSessionStore.setState((state) => ({
+              messages: state.messages.filter((m) => m.id !== optimisticId),
+            }))
+          }
+
+          if (response.status === 404) {
+            if (errorCode === 'question_not_found') {
+              setSseError('That question is no longer available. Try refreshing.')
+            } else {
+              setSseError('Session not found. Please refresh.')
+            }
+          } else if (response.status === 409) {
+            if (errorCode === 'answer_out_of_order') {
+              setSseError(
+                'Please answer questions in order. Refresh the page to resync the chat.',
+              )
+            } else if (errorCode === 'answer_already_submitted') {
+              setSseError('That question has already been answered.')
+            } else if (errorCode === 'session_completed') {
+              setSseError('This session is already complete.')
+            } else {
+              setSseError('That question has already been answered.')
+            }
+          } else if (response.status === 422) {
+            if (errorCode === 'question_text_unavailable_after_restart') {
+              setSseError(
+                'This question expired after a server restart. Refresh the page to regenerate it.',
+              )
+            } else {
+              setSseError('Your answer was rejected. Please try again.')
+            }
+          } else {
+            setSseError(`Submission failed (${response.status}). Please retry.`)
+          }
+          return
+        }
+
+        const reader = response.body.getReader()
+        await consumeSSEStream(reader, {
+          onEvent: (event, data) => {
+            // First token / feedback / error clears the hint timers.
+            clearHintTimeouts()
+            setFeedbackHint(null)
+            if (event === 'feedback_token') {
+              const payload = data as {
+                answer_id: string
+                question_id: string
+                token: string
+              }
+              appendFeedbackToken(payload.answer_id, payload.question_id, payload.token)
+            } else if (event === 'feedback') {
+              const payload = data as FeedbackPayload
+              commitStreamingFeedback(payload)
+            } else if (event === 'done') {
+              setAnswerInputDisabled(false)
+            } else if (event === 'error') {
+              const payload = data as { error: string; message: string; retryable?: boolean }
+              setSseError(payload.message ?? 'Feedback stream failed.')
+              setAnswerInputDisabled(false)
+            }
+          },
+          onError: (err) => {
+            console.warn('[submitAnswer] parse error', err)
+          },
+        })
+      } catch (err) {
+        // Story 3.4 v1.2.0 (code-review F5): distinguish intentional
+        // aborts (unmount or re-submit) from real network failures.
+        // Previously every AbortError surfaced as a "Reconnecting..."
+        // banner, so navigating away mid-stream and returning would
+        // show a confusing banner despite nothing actually needing
+        // reconnection.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          clearHintTimeouts()
+          // Leave ``answerInputDisabled`` alone — unmount does not
+          // need to touch it, and a re-submit has already set it to
+          // ``true`` for the new in-flight request. Do NOT set an
+          // error banner.
+          return
+        }
+        clearHintTimeouts()
+        setAnswerInputDisabled(false)
+        setSseError('Reconnecting...')
+        console.warn('[submitAnswer] fetch failed', err)
+      } finally {
+        // Story 3.4 v1.2.0 (code-review F5): clear the ref only if it
+        // still points to OUR controller — a re-submit inside the
+        // same render cycle will have already replaced it.
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null
+        }
+      }
+    },
+    [
+      accessToken,
+      appendFeedbackToken,
+      appendUserAnswer,
+      clearHintTimeouts,
+      commitStreamingFeedback,
+      currentQuestionId,
+      currentQuestionNumber,
+      session.id,
+      session.total_questions,
+      setAnswerInputDisabled,
+    ],
+  )
+
+  // Cleanup the timers + abort any in-flight answer POST on unmount.
+  useEffect(() => {
+    return () => {
+      clearHintTimeouts()
+      abortControllerRef.current?.abort()
+      abortControllerRef.current = null
+    }
+  }, [clearHintTimeouts])
+
   const hasContent = messages.length > 0 || streamingQuestion !== null
 
+  // Disable the input if there's no committed question yet.
+  const inputDisabledFinal = answerInputDisabled || currentQuestionNumber === 0
+
   return (
-    <div
-      className="h-full w-full bg-primary flex flex-col overflow-hidden"
-      data-testid="chat-panel"
-    >
+    <DiffFilePathsContext.Provider value={diffFilePaths}>
       <div
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto flex flex-col"
+        className="h-full w-full bg-primary flex flex-col overflow-hidden"
+        data-testid="chat-panel"
       >
-        <div className="max-w-[720px] w-full mx-auto px-4 py-6 flex-1 flex flex-col">
-          {sseError && (
-            <div
-              role="alert"
-              data-testid="chat-error-banner"
-              className="text-[13px] text-text-secondary"
-              style={{
-                padding: 12,
-                marginBottom: 16,
-                borderRadius: 8,
-                backgroundColor: 'rgba(255, 69, 58, 0.15)',
-                color: '#ff453a',
-              }}
-            >
-              {sseError}
-            </div>
-          )}
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto flex flex-col"
+        >
+          <div className="max-w-[720px] w-full mx-auto px-4 py-6 flex-1 flex flex-col">
+            {sseError && (
+              <div
+                role="alert"
+                data-testid="chat-error-banner"
+                className="text-[13px] text-text-secondary"
+                style={{
+                  padding: 12,
+                  marginBottom: 16,
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(255, 69, 58, 0.15)',
+                  color: '#ff453a',
+                }}
+              >
+                {sseError}
+              </div>
+            )}
 
-          {!hasContent && (
-            <div className="flex-1 flex items-center justify-center">
-              <p className="text-[14px] text-text-muted" data-testid="chat-placeholder">
-                Waiting for the first question...
-              </p>
-            </div>
-          )}
+            {feedbackHint && (
+              <div
+                role="status"
+                data-testid="feedback-hint-banner"
+                className="text-[13px] text-text-muted"
+                style={{
+                  padding: 12,
+                  marginBottom: 16,
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                }}
+              >
+                {feedbackHint}
+              </div>
+            )}
 
-          {hasContent && (
-            <div data-testid="chat-message-list">
-              {messages.map((m) => (
-                <ChatMessage key={m.id} message={m} />
-              ))}
-              {streamingQuestion && (
-                <ChatMessage key={streamingQuestion.id} message={streamingQuestion} />
-              )}
-            </div>
-          )}
+            {!hasContent && (
+              <div className="flex-1 flex items-center justify-center">
+                <p className="text-[14px] text-text-muted" data-testid="chat-placeholder">
+                  Waiting for the first question...
+                </p>
+              </div>
+            )}
+
+            {hasContent && (
+              <div data-testid="chat-message-list">
+                {messages.map((m) => (
+                  <ChatMessage key={m.id} message={m} />
+                ))}
+                {streamingQuestion && (
+                  <ChatMessage key={streamingQuestion.id} message={streamingQuestion} />
+                )}
+                {streamingFeedback && (
+                  <ChatMessage key={streamingFeedback.id} message={streamingFeedback} />
+                )}
+              </div>
+            )}
+          </div>
         </div>
+        <AnswerInput disabled={inputDisabledFinal} onSubmit={submitAnswer} />
       </div>
-    </div>
+    </DiffFilePathsContext.Provider>
   )
 }

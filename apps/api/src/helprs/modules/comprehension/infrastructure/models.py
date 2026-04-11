@@ -110,3 +110,44 @@ class QuestionModel(Base):
     # privacy promise of helPRs — do NOT add a ``text`` column alongside
     # this, even "temporarily".
     text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class AnswerModel(Base):
+    """A developer's answer to a ``QuestionModel``.
+
+    Story 3.4: metadata-only persistence layer for answers, mirror of
+    ``QuestionModel``. **There is no ``text`` column** — FR35/NFR14
+    forbid persisting verbatim answer text. Only the SHA-256
+    ``text_hash`` is persisted alongside the ``latency_ms`` observability
+    hook (Epic 4 scoring).
+
+    The ``UniqueConstraint`` on ``question_id`` enforces "exactly one
+    answer per question" at the DB level — concurrent double-submits
+    surface as ``IntegrityError`` which the repository translates to
+    ``DomainValidationError`` so the POST endpoint can map it to 409.
+    No separate single-column index on ``question_id`` is needed: the
+    unique constraint already builds a B-tree on that column (mirror of
+    Story 3-3's ``questions`` table decision).
+    """
+
+    __tablename__ = "answers"
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            name="uq_answers_question_id",
+        ),
+    )
+
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("questions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # SHA-256 hex digest (64 chars). Same hash-only privacy rule as
+    # ``QuestionModel`` — do NOT add a ``text`` column.
+    text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Wall-clock milliseconds between question commit (``Question.created_at``)
+    # and answer POST receipt. Observability hook for Epic 4 scoring;
+    # Story 3.4 itself does not consume the value. ``BigInteger`` rather
+    # than ``Integer`` so a tab left open for ≥25 days (Integer overflow
+    # at 2**31-1 ms ≈ 24.85 d) does not 500 the POST.
+    latency_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)

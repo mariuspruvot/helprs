@@ -133,3 +133,21 @@
   /* Omit gutter line (visual divider for skipped hunks). */
   --diff-omit-gutter-line-color: var(--color-warning);
 }
+
+/*
+ * Story 3.4 (UX-DR5/UX-DR6): inline highlight + hover preview applied
+ * by ``DiffViewer.scrollTo`` / ``DiffViewer.preview`` to a specific
+ * ``<tr>`` rendered by ``react-diff-view``. The highlight uses a
+ * translucent accent blue overlay so the underlying syntax-highlighted
+ * code stays legible. Targeting the row only (not its children) keeps
+ * the line-number gutter unaffected.
+ */
+.diff-line.diff-line-highlight {
+  background-color: rgba(0, 122, 255, 0.15);
+  transition: background-color 200ms ease-in-out;
+}
+
+.diff-line.diff-line-preview {
+  background-color: rgba(0, 122, 255, 0.08);
+  transition: background-color 100ms ease-in-out;
+}

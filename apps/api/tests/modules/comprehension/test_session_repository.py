@@ -355,3 +355,116 @@ class TestListQuestions:
         author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
 
         assert await repo.list_questions(session_id=author.id) == []
+
+
+# ----------------------------------------------------------------------
+# Story 3.4: answer repository methods. Locks (a) get_question_by_number,
+# (b) count_answers join semantics, (c) append_answer happy path,
+# (d) the unique constraint translation to DomainValidationError on
+# double-submit.
+# ----------------------------------------------------------------------
+
+
+class TestGetQuestionByNumber:
+    async def test_returns_question_for_known_number(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.entities import Question
+        from helprs.modules.comprehension.domain.value_objects import Topic
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        q1 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+        q2 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="b" * 64)
+
+        loaded = await repo.get_question_by_number(session_id=author.id, number=2)
+        assert isinstance(loaded, Question)
+        assert loaded.id == q2.id
+        assert loaded.number == 2
+        assert loaded.text_hash == "b" * 64
+        # Sanity: number=1 still resolves too.
+        loaded_first = await repo.get_question_by_number(session_id=author.id, number=1)
+        assert loaded_first is not None
+        assert loaded_first.id == q1.id
+
+    async def test_returns_none_for_unknown_number(self, db_session, test_installation):
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        result = await repo.get_question_by_number(session_id=author.id, number=99)
+        assert result is None
+
+    async def test_does_not_cross_sessions(self, db_session, test_installation):
+        """Question 1 of session A must not be returned for session B."""
+        from helprs.modules.comprehension.domain.value_objects import Topic
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, reviewer = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+
+        # Reviewer has no questions yet — number 1 must miss.
+        assert await repo.get_question_by_number(session_id=reviewer.id, number=1) is None
+
+
+class TestCountAnswers:
+    async def test_returns_zero_for_session_without_answers(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.value_objects import Topic
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        # Even with questions present, count_answers must be 0.
+        await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+        assert await repo.count_answers(session_id=author.id) == 0
+
+    async def test_counts_answers_joined_by_question(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.value_objects import Topic
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, reviewer = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        q1 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+        q2 = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="b" * 64)
+        rq1 = await repo.append_question(session_id=reviewer.id, topic=Topic.ARCHITECTURE, text_hash="r" * 64)
+
+        await repo.append_answer(question_id=q1.id, text_hash="1" * 64, latency_ms=100)
+        await repo.append_answer(question_id=q2.id, text_hash="2" * 64, latency_ms=200)
+        await repo.append_answer(question_id=rq1.id, text_hash="3" * 64, latency_ms=300)
+
+        assert await repo.count_answers(session_id=author.id) == 2
+        assert await repo.count_answers(session_id=reviewer.id) == 1
+
+
+class TestAppendAnswer:
+    async def test_happy_path_persists_row_and_returns_domain_entity(self, db_session, test_installation):
+        from helprs.modules.comprehension.domain.entities import Answer
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.models import AnswerModel
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+        q = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+
+        ans = await repo.append_answer(question_id=q.id, text_hash="h" * 64, latency_ms=1234)
+
+        assert isinstance(ans, Answer)
+        assert not isinstance(ans, AnswerModel)
+        assert ans.question_id == q.id
+        assert ans.text_hash == "h" * 64
+        assert ans.latency_ms == 1234
+        assert ans.id is not None
+        assert ans.created_at is not None
+
+    async def test_double_submit_raises_domain_validation_error(self, db_session, test_installation):
+        """The unique constraint must surface as DomainValidationError, not IntegrityError."""
+        from helprs.core.exceptions import DomainValidationError
+        from helprs.modules.comprehension.domain.value_objects import Topic
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+        q = await repo.append_question(session_id=author.id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+
+        await repo.append_answer(question_id=q.id, text_hash="h" * 64, latency_ms=100)
+
+        with pytest.raises(DomainValidationError, match="answer already submitted"):
+            await repo.append_answer(question_id=q.id, text_hash="g" * 64, latency_ms=200)

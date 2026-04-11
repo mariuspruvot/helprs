@@ -2,28 +2,40 @@
 
 Story 3.1 adds only the detail response schema — there are no request
 schemas for a plain GET. Story 3.3 introduces streaming event schemas
-alongside ``sse.py``.
+alongside ``sse.py``. Story 3.4 adds the answer-submission request +
+the resume-progress sub-schemas.
 """
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus
+
+
+class QuestionProgress(BaseModel):
+    """Per-question progress entry returned in ``SessionResponse.progress``.
+
+    Story 3.4: drives the frontend's resume-from-reload experience.
+    The verbatim text is intentionally absent — FR35/NFR14 means we
+    cannot show past content on resume. The frontend renders past
+    cycles as compact "(text not retained)" placeholders.
+    """
+
+    number: int
+    status: Literal["answered", "in_flight"]
+    topic: str  # serialized ``Topic`` enum value
 
 
 class SessionResponse(BaseModel):
     """Serialized shape of ``GET /api/v1/sessions/{id}``.
 
     ``diff`` is fetched in memory from GitHub on every request and is
-    NEVER persisted server-side (NFR13). ``question_count`` is
-    hardcoded to ``0`` in Story 3.1 — Story 3.3 populates it once
-    questions start landing in the DB.
-
-    ``role`` and ``status`` are typed as ``StrEnum`` so Pydantic
-    validates them at serialization time — a future typo in a new
-    enum value fails fast instead of shipping silently.
+    NEVER persisted server-side (NFR13). Story 3.4 extends the shape
+    with ``progress`` so the frontend knows how many cycles have
+    already been answered when reopening the session.
     """
 
     id: UUID
@@ -41,3 +53,33 @@ class SessionResponse(BaseModel):
     diff: str
     created_at: datetime
     updated_at: datetime
+    # Story 3.4: per-question progress for resume support.
+    progress: list[QuestionProgress]
+
+
+class SubmitAnswerRequest(BaseModel):
+    """Body of ``POST /api/v1/sessions/{id}/answers``.
+
+    Story 3.4: ``question_number`` is the 1-indexed position of the
+    question being answered (resolved server-side to ``question_id``
+    via ``get_question_by_number``). ``text`` is the verbatim answer
+    body — bounded to 1..8000 chars to reject empty submissions and
+    abusive payloads. The text is hashed (SHA-256) before persisting;
+    the verbatim string never touches disk.
+
+    The validator below rejects whitespace-only and zero-width-only
+    payloads that slip past ``min_length=1`` (e.g. ``"   "``,
+    ``"\\u200b"``). Trimmed length must be ≥ 1.
+    """
+
+    question_number: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("text")
+    @classmethod
+    def _reject_blank(cls, v: str) -> str:
+        # Strip ASCII whitespace + common zero-width / BOM code points.
+        stripped = v.strip().strip("\u200b\u200c\u200d\ufeff")
+        if not stripped:
+            raise ValueError("text must not be blank or whitespace-only")
+        return v

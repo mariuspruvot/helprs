@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useParams } from 'react-router'
 import { SessionFetchError } from './api'
 import { useSession } from './useSession'
@@ -8,6 +8,12 @@ import SplitLayout from './SplitLayout'
 import TabbedLayout from './TabbedLayout'
 import MobileLayout from './MobileLayout'
 import { useViewport } from '../../shared/hooks/useViewport'
+import {
+  CodeLinkActionsContext,
+  DiffViewerHandleRefContext,
+  useStableCodeLinkActions,
+} from './codeLinkContext'
+import type { DiffViewerHandle } from './DiffViewer'
 import type { SessionResponse } from './types'
 
 interface ErrorScreenProps {
@@ -64,6 +70,12 @@ function LoadedLayout({ session }: LoadedLayoutProps) {
   const setSession = useSessionStore((s) => s.setSession)
   const clearSession = useSessionStore((s) => s.clearSession)
 
+  // Story 3.4: shared handle slot wired into the CodeLinkActions
+  // context. DiffViewer registers itself on mount; CodeLink buttons
+  // inside ChatMessage dispatch into the same slot via the context.
+  const diffHandleRef = useRef<DiffViewerHandle | null>(null)
+  const codeLinkActions = useStableCodeLinkActions(diffHandleRef)
+
   // Sync the store with the current session on every new SessionResponse
   // identity (e.g. after a background refetch). Do NOT put clearSession in
   // this effect's cleanup — React-Query refetches produce a new object
@@ -85,14 +97,18 @@ function LoadedLayout({ session }: LoadedLayoutProps) {
   }, [clearSession])
 
   return (
-    <div className="min-h-screen h-screen bg-primary text-text-primary font-mono flex flex-col">
-      <SessionHeader session={session} />
-      <div className="flex-1 min-h-0">
-        {viewport === 'desktop' && <SplitLayout session={session} />}
-        {viewport === 'tablet' && <TabbedLayout session={session} />}
-        {viewport === 'mobile' && <MobileLayout session={session} />}
-      </div>
-    </div>
+    <DiffViewerHandleRefContext.Provider value={diffHandleRef}>
+      <CodeLinkActionsContext.Provider value={codeLinkActions}>
+        <div className="min-h-screen h-screen bg-primary text-text-primary font-mono flex flex-col">
+          <SessionHeader session={session} />
+          <div className="flex-1 min-h-0">
+            {viewport === 'desktop' && <SplitLayout session={session} />}
+            {viewport === 'tablet' && <TabbedLayout session={session} />}
+            {viewport === 'mobile' && <MobileLayout session={session} />}
+          </div>
+        </div>
+      </CodeLinkActionsContext.Provider>
+    </DiffViewerHandleRefContext.Provider>
   )
 }
 

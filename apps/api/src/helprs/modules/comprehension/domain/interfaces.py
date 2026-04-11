@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.entities import PRContext, Question, Session
+from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Session
 from helprs.modules.comprehension.domain.value_objects import SessionRole, Topic
 
 
@@ -110,6 +110,55 @@ class SessionRepository(Protocol):
         """
         ...
 
+    # ------------------------------------------------------------------
+    # Story 3.4: answer persistence (metadata-only — hash, never text)
+    # ------------------------------------------------------------------
+
+    async def get_question_by_number(
+        self,
+        *,
+        session_id: UUID,
+        number: int,
+    ) -> Question | None:
+        """Single-row lookup of a question by its 1-indexed ``number``.
+
+        Used by the answer-submission POST handler to resolve a
+        ``(session_id, number)`` pair from the URL/body to the actual
+        ``question_id`` it must persist the answer against. Returns
+        ``None`` for unknown numbers; the handler maps that to 404.
+        """
+        ...
+
+    async def count_answers(self, *, session_id: UUID) -> int:
+        """Return the number of answers persisted across the session's questions.
+
+        Used by the SSE GET stream to compute "the next un-answered
+        question number" on resume — closing the deferred bug from
+        Story 3-3 manual QA where reopening a session whose questions
+        were all persisted-but-unanswered would emit ``done`` instead
+        of advancing the loop.
+        """
+        ...
+
+    async def append_answer(
+        self,
+        *,
+        question_id: UUID,
+        text_hash: str,
+        latency_ms: int,
+    ) -> Answer:
+        """Persist a new answer for the given question.
+
+        The DB-level ``UniqueConstraint('question_id')`` enforces
+        "exactly one answer per question". On collision the
+        implementation translates the ``IntegrityError`` to
+        ``DomainValidationError`` so the POST handler can map it to
+        409. Flushes but does NOT commit — the caller (the request-
+        scoped ``db`` for the POST handler's DB phase) owns the
+        transaction boundary.
+        """
+        ...
+
 
 class LLMProvider(Protocol):
     """Port for LLM calls.
@@ -153,11 +202,39 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def stream_feedback(
+        self,
+        *,
+        question_text: str,
+        answer_text: str,
+        pr_diff: str,
+        role: SessionRole,
+        api_key: str,
+    ) -> AsyncIterator[str]:
+        """Yield feedback text deltas as Claude evaluates the answer.
+
+        Story 3.4 production path. Each yielded value is a partial
+        chunk (``delta=True``). The caller accumulates these into the
+        full feedback text before extracting code refs and emitting
+        the authoritative ``event: feedback`` SSE frame. The
+        fresh-Agent-per-call rule applies just like
+        ``stream_question`` — ``api_key`` is a function argument and
+        is never stashed on the provider instance (zero-retention,
+        FR34).
+        """
+        ...
+
     async def generate_feedback(
         self,
         *,
-        question: str,
-        answer: str,
+        question_text: str,
+        answer_text: str,
         pr_diff: str,
+        role: SessionRole,
         api_key: str,
-    ) -> str: ...
+    ) -> str:
+        """Non-streaming convenience: consume ``stream_feedback`` fully
+        and return the concatenated text. Kept symmetric with
+        ``generate_question``.
+        """
+        ...

@@ -19,6 +19,7 @@ Key invariants locked here:
 """
 
 import asyncio
+import hashlib
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -127,6 +128,28 @@ async def app_with_db(monkeypatch):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _skip_answer_polling(monkeypatch):
+    """Story 3.3 happy-path tests predate Story 3.4's pause-loop and
+    never POST answers — so the new polling wait would hang forever.
+    This fixture short-circuits ``_wait_for_answer_count`` to return
+    immediately for those tests.
+
+    **NEW tests that exercise the pause-loop MUST opt out** by
+    using the ``_real_answer_polling`` fixture below (which resets
+    the monkeypatch so the real DB-polling implementation runs and
+    is driven by actual POST traffic). ``TestPauseLoopResume`` and
+    ``test_answer_submission.TestGetStreamAdvancesOnAnswer`` opt out.
+    """
+    from helprs.modules.comprehension.presentation import sse as sse_module
+
+    async def _no_wait(*, session_id, target, request):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(sse_module, "_wait_for_answer_count", _no_wait)
+    return _no_wait
 
 
 @pytest.fixture(autouse=True)
@@ -757,3 +780,165 @@ class TestProviderKeyHygiene:
         for v in vars(provider).values():
             assert "key-A" not in str(v)
             assert "key-B" not in str(v)
+
+
+class TestReconnectReplay:
+    """Story 3.4 kick-back regression (2026-04-11 manual QA BLOCKER #1).
+
+    Reconnecting to an SSE stream for a session that has existing
+    UNANSWERED questions must REPLAY those questions, not regenerate
+    new ones at ``max(number) + 1``. The original v1.1.0 pause-loop
+    rewrite preserved this property only for the FIRST connection;
+    every subsequent connection blindly called ``append_question`` and
+    advanced the question cursor without an answer ever being
+    submitted, which is the exact regression Project Lead manual QA
+    surfaced. The fix is in ``stream_session``: snapshot
+    ``list_questions`` in the DB phase and take the replay branch
+    when ``existing_by_number[_loop_number]`` is set.
+    """
+
+    async def test_reconnect_replays_existing_q1_does_not_generate_q2(self, app_with_db, _patch_github_calls):
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+        from helprs.modules.comprehension.presentation.answer_pubsub import (
+            stash_question_text,
+        )
+
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        # Pre-seed Q1 in the DB AND in the in-memory registry, mimicking
+        # a prior SSE connection that committed Q1 and then disconnected
+        # before any answer landed.
+        original_q1_text = "What's the assumption you made in foo.py?"
+        async with session_factory() as s:
+            repo = SqlAlchemySessionRepository(s)
+            q1 = await repo.append_question(
+                session_id=seeded["author_id"],
+                topic=Topic.ARCHITECTURE,
+                text_hash=hashlib.sha256(original_q1_text.encode()).hexdigest(),
+            )
+            await s.commit()
+        stash_question_text(seeded["author_id"], q1.id, original_q1_text)
+        original_q1_id = str(q1.id)
+
+        # Override the LLM with a sentinel for slot 1 — if it ever gets
+        # called for Q1, the test fails because Q1 was supposed to be
+        # replayed from the registry. Slots 2 and 3 hold the legitimate
+        # generation responses.
+        scripted = _ScriptedLLM(
+            [
+                "REGENERATED_BUG_Q1_SHOULD_NOT_APPEAR",
+                "Why does bar.ts return 2?",
+                "What edge case did you miss?",
+            ]
+        )
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+
+        assert resp.status_code == 200
+        frames = _parse_sse(resp.content)
+        question_frames = [d for (e, d) in frames if e == "question"]
+        assert len(question_frames) == 3
+
+        # Q1 must be the REPLAY (same question_id as the pre-seeded
+        # row, original text, NOT the LLM sentinel).
+        assert question_frames[0]["number"] == 1
+        assert question_frames[0]["text"] == original_q1_text
+        assert question_frames[0]["question_id"] == original_q1_id
+        assert "REGENERATED_BUG" not in question_frames[0]["text"]
+
+        # Q2 / Q3 are fresh generation, so they DO come from the LLM.
+        assert question_frames[1]["number"] == 2
+        assert question_frames[2]["number"] == 3
+
+        # Critically: the LLM was called only TWICE (for Q2 and Q3).
+        # If the bug regressed, ``stream_question`` would have been
+        # called THREE times because Q1 would have been regenerated.
+        assert scripted.calls == 2
+
+        # And the DB still has exactly 3 question rows — replay must
+        # not produce a duplicate Q1 row at number=4 or anywhere else.
+        async with session_factory() as s:
+            db_count = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(QuestionModel)
+                    .where(QuestionModel.session_id == seeded["author_id"])
+                )
+            ).scalar_one()
+            db_numbers = sorted(
+                r.number
+                for r in (await s.execute(select(QuestionModel).where(QuestionModel.session_id == seeded["author_id"])))
+                .scalars()
+                .all()
+            )
+        assert db_count == 3
+        assert db_numbers == [1, 2, 3]
+
+    async def test_reconnect_with_cold_registry_emits_error(self, app_with_db, _patch_github_calls):
+        """Companion case: a question exists in the DB but the in-memory
+        text registry was cleared (server restart between connections).
+        The stream must emit a structured ``error`` frame rather than
+        ploughing on with stale assumptions.
+        """
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+        from helprs.modules.comprehension.presentation.answer_pubsub import (
+            reset_answer_pubsub,
+        )
+
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        # Q1 exists in the DB but NOT in the registry.
+        async with session_factory() as s:
+            repo = SqlAlchemySessionRepository(s)
+            await repo.append_question(
+                session_id=seeded["author_id"],
+                topic=Topic.ARCHITECTURE,
+                text_hash="a" * 64,
+            )
+            await s.commit()
+        reset_answer_pubsub()
+
+        scripted = _ScriptedLLM(["should not be reached"])
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+
+        assert resp.status_code == 200
+        frames = _parse_sse(resp.content)
+        events = [e for (e, _) in frames]
+        assert "error" in events
+        # The error frame is the LAST one (we return immediately).
+        assert events[-1] == "error"
+        err = next(d for (e, d) in frames if e == "error")
+        assert err["error"] == "question_text_unavailable_after_restart"
+        # The LLM was never called: nothing was generated.
+        assert scripted.calls == 0
