@@ -71,6 +71,8 @@ from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemyS
 from helprs.modules.comprehension.presentation.answer_pubsub import (
     clear_session,
     get_question_text,
+    is_feedback_committed,
+    mark_feedback_committed,
     stash_question_text,
 )
 from helprs.modules.comprehension.presentation.dependencies import get_llm_provider
@@ -111,13 +113,30 @@ async def _wait_for_answer_count(
     target: int,
     request: Request,
 ) -> None:
-    """Poll ``count_answers`` until it reaches ``target``.
+    """Poll ``count_answers`` AND the feedback-committed signal until
+    both reach ``target``.
 
-    The DB is the single source of truth — cheaper and more correct
-    than racing an in-memory event (see module docstring D1 note).
+    The DB is the authoritative source for "is the answer persisted",
+    but ``count_answers`` alone is NOT sufficient to gate the
+    pause-loop on "advance to Q_next now": the POST /answers endpoint
+    commits the ``AnswerModel`` row BEFORE it starts streaming
+    feedback (Story 3.4 P2 — so a mid-stream disconnect does not lose
+    the user's answer). If the pause-loop only waits on
+    ``count_answers``, it unblocks milliseconds after the POST commits
+    and starts emitting Q_next tokens while F_current is still being
+    streamed on the POST response. The client renders in SSE frame
+    order, so the UI becomes Q/A/Q_next/F instead of Q/A/F/Q_next
+    (manual QA BLOCKER #4, 2026-04-11).
+
+    v1.3.0 fix: also gate on ``is_feedback_committed(session_id,
+    target)`` — the POST's generator sets this flag immediately after
+    yielding the authoritative ``feedback`` frame. The DB condition
+    still runs first (its rising edge is the common case and is
+    cheap), the in-memory flag is checked second; returning requires
+    BOTH to hold.
+
     Raises ``_AnswerTimeoutError`` after ``_ANSWER_TIMEOUT_SECONDS``;
-    raises ``_ClientDisconnectedError`` if the client goes away. On happy
-    path, returns as soon as ``count_answers(session_id) >= target``.
+    raises ``_ClientDisconnectedError`` if the client goes away.
 
     Story 3.4 v1.2.0 (code-review F7): ordering + clock hardening.
     (a) Check ``is_disconnected`` BEFORE the DB poll so a client that
@@ -143,7 +162,10 @@ async def _wait_for_answer_count(
         except TimeoutError:
             # Slow DB poll — treat as "no progress yet" and loop.
             current = -1
-        if current >= target:
+        # Both conditions must hold: the row is in the DB AND the POST
+        # generator has yielded its ``feedback`` frame (v1.3.0
+        # BLOCKER #4). The second check is in-process and cheap.
+        if current >= target and is_feedback_committed(session_id, target):
             return
         await asyncio.sleep(_ANSWER_POLL_INTERVAL_SECONDS)
 
@@ -675,6 +697,12 @@ async def submit_answer(
                         tokens_streamed=len(parts),
                     )
                     # Answer is already persisted; nothing to roll back.
+                    # Story 3.4 v1.3.0 (BLOCKER #4 edge case): mark the
+                    # feedback committed so the GET pause-loop is free
+                    # to advance if another client reopens the stream.
+                    # Without this, an abandoned mid-stream POST would
+                    # deadlock the session until the 30-min timeout.
+                    mark_feedback_committed(session_id, question_number)
                     return
                 parts.append(token)
                 yield _sse_frame(
@@ -706,6 +734,16 @@ async def submit_answer(
                 },
             )
 
+            # Story 3.4 v1.3.0 (BLOCKER #4): signal the pause-loop that
+            # THIS question's feedback is now fully on the wire. The GET
+            # stream's ``_wait_for_answer_count`` gates advancement on
+            # this flag AND on ``count_answers``, so Q_next will not
+            # start streaming until F_current has been yielded in full.
+            # Ordering is load-bearing: mark AFTER the yield, BEFORE
+            # ``done``, so the mark-committed happens while the client
+            # is guaranteed to have seen the feedback frame.
+            mark_feedback_committed(session_id, question_number)
+
             yield _sse_frame(
                 "done",
                 {"question_number": question_number, "answer_id": answer_id_str},
@@ -717,10 +755,19 @@ async def submit_answer(
             )
 
         except asyncio.CancelledError:
+            # Story 3.4 v1.3.0 (BLOCKER #4 edge case): same reasoning as
+            # the disconnect-mid-token branch — mark the feedback
+            # committed so a reconnecting GET stream can advance.
+            mark_feedback_committed(session_id, question_number)
             await logger.ainfo("sse_feedback_cancelled")
             raise
         except Exception as exc:
             await logger.aexception("sse_feedback_failed")
+            # Story 3.4 v1.3.0 (BLOCKER #4 edge case): the answer row is
+            # committed but the feedback stream failed. Mark the flag
+            # so the pause-loop can advance — the user will see an
+            # error on the feedback message but Q_next still streams.
+            mark_feedback_committed(session_id, question_number)
             yield _sse_frame(
                 "error",
                 {

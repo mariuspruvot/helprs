@@ -932,3 +932,322 @@ class TestGetStreamAdvancesOnAnswer:
         async with session_factory() as s:
             answer_count = (await s.execute(select(func.count()).select_from(AnswerModel))).scalar_one()
         assert answer_count == 2
+
+
+class TestPauseLoopGatesOnFeedbackCommitted:
+    """Story 3.4 v1.3.0 — BLOCKER #4 regression tests.
+
+    Second manual QA pass (2026-04-11) showed the frontend rendered
+    ``Q / A / Q_next / F`` instead of ``Q / A / F / Q_next`` after
+    answering a question. Root cause: the GET pause-loop's
+    ``_wait_for_answer_count`` only polled ``count_answers`` — which
+    increments as soon as the POST /answers endpoint exits its DB
+    context, several seconds BEFORE the feedback stream completes.
+    Q_next began streaming while F_current was still on the wire.
+
+    The fix (v1.3.0) introduced an in-process ``feedback_committed``
+    flag in ``answer_pubsub`` that the POST sets AFTER yielding the
+    ``feedback`` frame, and made ``_wait_for_answer_count`` gate on
+    BOTH conditions. These tests lock that behaviour:
+
+    (a) ``_wait_for_answer_count`` does NOT return on the DB
+        condition alone — the flag must also be set.
+    (b) End-to-end: while the POST is mid-feedback-stream (answer
+        persisted, feedback not yet yielded), the concurrent GET
+        stream is blocked on the first question frame and has NOT
+        yet emitted Q_next.
+    """
+
+    async def test_wait_for_answer_count_blocks_until_feedback_committed(
+        self, app_with_db, _patch_external_calls, monkeypatch
+    ):
+        """Unit-ish: the helper must not return on count alone."""
+        from unittest.mock import AsyncMock
+
+        from helprs.modules.comprehension.presentation import sse as sse_module
+        from helprs.modules.comprehension.presentation.answer_pubsub import (
+            mark_feedback_committed,
+            reset_answer_pubsub,
+        )
+
+        _, _session_factory, seeded = app_with_db
+        session_id = seeded["author_id"]
+
+        reset_answer_pubsub()
+
+        # Tight poll interval so the test finishes fast.
+        monkeypatch.setattr(sse_module, "_ANSWER_POLL_INTERVAL_SECONDS", 0.01)
+
+        # Pre-seed one answer so ``count_answers`` = 1 >= target on
+        # the very first poll iteration. Without the BLOCKER #4 fix
+        # the helper would return immediately. With the fix, it must
+        # continue looping until ``mark_feedback_committed`` fires.
+        from helprs.modules.comprehension.domain.value_objects import Topic
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+
+        _, session_factory_local, _ = app_with_db
+        async with session_factory_local() as s:
+            repo = SqlAlchemySessionRepository(s)
+            q1 = await repo.append_question(session_id=session_id, topic=Topic.ARCHITECTURE, text_hash="a" * 64)
+            await repo.append_answer(question_id=q1.id, text_hash="1" * 64, latency_ms=10)
+            await s.commit()
+
+        # Fake Request that is never disconnected.
+        fake_request = type("R", (), {})()
+        fake_request.is_disconnected = AsyncMock(return_value=False)
+
+        async def call_wait() -> None:
+            await sse_module._wait_for_answer_count(
+                session_id=session_id,
+                target=1,
+                request=fake_request,
+            )
+
+        wait_task = asyncio.create_task(call_wait())
+
+        # Give the pause-loop several poll intervals to confirm it
+        # does NOT return purely on the DB condition.
+        await asyncio.sleep(0.1)
+        assert not wait_task.done(), "pause-loop returned on count_answers alone — BLOCKER #4 regression"
+
+        # Fire the feedback-committed signal. Within one poll interval
+        # the helper should return cleanly.
+        mark_feedback_committed(session_id, 1)
+
+        await asyncio.wait_for(wait_task, timeout=1.0)
+        assert wait_task.done()
+        assert wait_task.exception() is None
+
+    async def test_get_stream_waits_for_feedback_before_advancing(
+        self, app_with_db, _patch_external_calls, monkeypatch
+    ):
+        """End-to-end: the GET pause-loop must not emit Q2 until the
+        POST /answers feedback stream has fully yielded F1.
+
+        Uses a slow-feedback LLM whose ``stream_feedback`` blocks on an
+        ``asyncio.Event`` controlled by the test. While that event is
+        unset, the POST generator is stuck mid-``feedback_token``, the
+        answer row is already committed (so ``count_answers == 1``),
+        and the GET pause-loop MUST NOT advance. Once the event fires,
+        the feedback stream completes, ``mark_feedback_committed`` runs,
+        and the GET pause-loop unblocks → Q2 emits.
+
+        **Race observation (v1.3.0 review P3 hardening):** the earlier
+        draft of this test observed the race via a ``q_count < 2``
+        check after an ``await asyncio.sleep(0.2)`` window, which could
+        pass on the buggy version in CI if Q2's DB insert happened to
+        take longer than 200 ms. We now monkeypatch
+        ``SqlAlchemySessionRepository.append_question`` with a spy that
+        records ``time.monotonic()`` on each invocation, and capture a
+        ``feedback_gate_released_at`` timestamp right before calling
+        ``feedback_gate.set()``. The assertion is deterministic:
+        ``append_question`` for Q2 MUST happen strictly after the gate
+        release — the pause-loop cannot have advanced any earlier.
+        """
+        import time as _time
+
+        from helprs.modules.comprehension.infrastructure.repositories import (
+            SqlAlchemySessionRepository,
+        )
+        from helprs.modules.comprehension.presentation import sse as sse_module
+
+        monkeypatch.setattr(sse_module, "_ANSWER_POLL_INTERVAL_SECONDS", 0.02)
+
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_external_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        async with session_factory() as s:
+            stmt = select(SessionModel).where(SessionModel.id == seeded["author_id"])
+            sess = (await s.execute(stmt)).scalar_one()
+            sess.total_questions = 2
+            await s.commit()
+
+        from .test_sse_stream import _ScriptedLLM
+
+        feedback_gate = asyncio.Event()
+        # Timestamp captured right before feedback_gate.set() — used as
+        # the reference point for "Q2's append MUST happen after this".
+        feedback_gate_released_at: list[float] = []
+        # Timestamps for each append_question call, in invocation order.
+        # On the correct code path there should be two entries; the
+        # SECOND one (for Q2) must be > feedback_gate_released_at[0].
+        append_question_timestamps: list[float] = []
+
+        _original_append_question = SqlAlchemySessionRepository.append_question
+
+        async def _spy_append_question(self, **kwargs):  # type: ignore[no-untyped-def]
+            result = await _original_append_question(self, **kwargs)
+            append_question_timestamps.append(_time.monotonic())
+            return result
+
+        monkeypatch.setattr(
+            SqlAlchemySessionRepository,
+            "append_question",
+            _spy_append_question,
+        )
+
+        class _GatedFeedbackLLM:
+            """First call to ``stream_feedback`` blocks on the gate,
+            second call streams normally. Lets the test arrange a race
+            window around F1 only.
+            """
+
+            def __init__(self):
+                self._questions = _ScriptedLLM(["Q1 text?", "Q2 text?"])
+                self._feedback_calls = 0
+
+            def stream_question(self, **kwargs):
+                return self._questions.stream_question(**kwargs)
+
+            async def stream_feedback(self, **kwargs):  # noqa: ARG002
+                self._feedback_calls += 1
+                if self._feedback_calls == 1:
+                    yield "partial "
+                    await feedback_gate.wait()
+                    yield "feedback."
+                else:
+                    yield "Good answer to Q2."
+
+            async def generate_feedback(self, **kwargs) -> str:  # noqa: ARG002
+                return ""
+
+            async def generate_question(self, **kwargs) -> str:  # noqa: ARG002
+                return ""
+
+        _override_llm(application, _GatedFeedbackLLM())
+
+        async def drive_get_stream() -> list:
+            async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+                resp = await ac.get(
+                    f"/api/v1/sessions/{seeded['author_id']}/stream",
+                    headers=_bearer(seeded["user_id"]),
+                )
+            return _parse_sse(resp.content)
+
+        async def post_answers_with_race_observation() -> None:
+            # Wait for Q1 to land in the DB so the GET stream has
+            # committed it and is sitting in the pause-loop.
+            for _ in range(200):
+                async with session_factory() as s:
+                    count = (
+                        await s.execute(
+                            select(func.count())
+                            .select_from(QuestionModel)
+                            .where(QuestionModel.session_id == seeded["author_id"])
+                        )
+                    ).scalar_one()
+                if count >= 1:
+                    break
+                await asyncio.sleep(0.01)
+
+            async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+                # POST Q1 — first feedback call is gated. ``ac.post``
+                # blocks until the full response body is read; we
+                # spawn it so we can observe the race window.
+                post_task_q1 = asyncio.create_task(
+                    ac.post(
+                        f"/api/v1/sessions/{seeded['author_id']}/answers",
+                        headers=_bearer(seeded["user_id"]),
+                        json={"question_number": 1, "text": "my answer to Q1"},
+                    )
+                )
+
+                # Wait until the answer row is committed (POST has
+                # entered its feedback-streaming phase and is now
+                # blocked on ``feedback_gate``).
+                for _ in range(500):
+                    async with session_factory() as s:
+                        a_count = (await s.execute(select(func.count()).select_from(AnswerModel))).scalar_one()
+                    if a_count >= 1:
+                        break
+                    await asyncio.sleep(0.005)
+
+                # Let the GET pause-loop poll a few times while F1 is
+                # still blocked on ``feedback_gate``. This is only for
+                # the buggy code to have had the opportunity to call
+                # ``append_question`` for Q2 — if the code were buggy,
+                # its timestamp would land BEFORE the gate release and
+                # the assertion below would catch it.
+                await asyncio.sleep(0.2)
+
+                # Capture the release timestamp and release the gate
+                # atomically. The assertion at the bottom of the test
+                # compares Q2's ``append_question`` timestamp against
+                # this reference point.
+                feedback_gate_released_at.append(_time.monotonic())
+                feedback_gate.set()
+
+                post_resp_q1 = await post_task_q1
+                assert post_resp_q1.status_code == 200
+
+                # Wait for Q2 to land so we can POST its answer and
+                # let the GET stream close cleanly.
+                for _ in range(500):
+                    async with session_factory() as s:
+                        q_count = (await s.execute(select(func.count()).select_from(QuestionModel))).scalar_one()
+                    if q_count >= 2:
+                        break
+                    await asyncio.sleep(0.01)
+
+                post_resp_q2 = await ac.post(
+                    f"/api/v1/sessions/{seeded['author_id']}/answers",
+                    headers=_bearer(seeded["user_id"]),
+                    json={"question_number": 2, "text": "my answer to Q2"},
+                )
+                assert post_resp_q2.status_code == 200
+
+        stream_task = asyncio.create_task(drive_get_stream())
+        poster_task = asyncio.create_task(post_answers_with_race_observation())
+
+        frames = await asyncio.wait_for(stream_task, timeout=30.0)
+        await asyncio.wait_for(poster_task, timeout=15.0)
+
+        # Load-bearing assertion for the BLOCKER #4 fix (v1.3.0 review
+        # P3): Q2's ``append_question`` timestamp MUST be strictly
+        # greater than ``feedback_gate_released_at``. This is a
+        # deterministic, timing-window-free check — if the pause-loop
+        # were to advance on ``count_answers`` alone, it would call
+        # ``append_question`` during the ~200 ms the gate was held,
+        # and Q2's timestamp would predate the release.
+        assert len(feedback_gate_released_at) == 1, (
+            f"test bug: feedback_gate was not released exactly once — release_count={len(feedback_gate_released_at)}"
+        )
+        assert len(append_question_timestamps) == 2, (
+            f"expected exactly two append_question calls (Q1 + Q2); got {len(append_question_timestamps)}"
+        )
+        q1_appended_at, q2_appended_at = append_question_timestamps
+        released_at = feedback_gate_released_at[0]
+        assert q2_appended_at > released_at, (
+            "BLOCKER #4 regression: Q2 was appended to the DB "
+            f"{released_at - q2_appended_at:.3f}s BEFORE the feedback "
+            "gate was released — pause-loop advanced on count_answers "
+            "alone. Timestamps (monotonic): "
+            f"Q1_appended={q1_appended_at:.6f}, "
+            f"gate_released={released_at:.6f}, "
+            f"Q2_appended={q2_appended_at:.6f}."
+        )
+        # Sanity: Q1 was appended BEFORE the POST ran (the GET stream
+        # seeded it as the first question), so its timestamp predates
+        # the gate release. This just guards against a future refactor
+        # that reorders the test setup.
+        assert q1_appended_at < released_at, (
+            "test setup regression: Q1 was appended AFTER the gate "
+            "release — the GET stream's initial question seeding no "
+            "longer happens before the POST. Review the test's ordering "
+            "before trusting the Q2 assertion."
+        )
+
+        # And after release, Q2 did emit normally — the GET stream's
+        # frame list should contain both question frames, in order.
+        question_frames = [d for (e, d) in frames if e == "question"]
+        assert len(question_frames) == 2
+        assert question_frames[0]["number"] == 1
+        assert question_frames[1]["number"] == 2
