@@ -14,6 +14,8 @@ import pytest
 from helprs.modules.comprehension.presentation.answer_pubsub import (
     clear_session,
     get_question_text,
+    is_feedback_committed,
+    mark_feedback_committed,
     reset_answer_pubsub,
     stash_question_text,
 )
@@ -69,6 +71,22 @@ class TestClearSession:
         # Should not raise.
         clear_session(uuid.uuid4())
 
+    def test_clear_drops_feedback_committed_flags(self):
+        """Story 3.4 v1.3.0 BLOCKER #4: ``clear_session`` must wipe
+        both the question-text registry AND the feedback-committed
+        flag set so a long-running worker doesn't leak either.
+        """
+        session_id = uuid.uuid4()
+        mark_feedback_committed(session_id, 1)
+        mark_feedback_committed(session_id, 2)
+        assert is_feedback_committed(session_id, 1) is True
+        assert is_feedback_committed(session_id, 2) is True
+
+        clear_session(session_id)
+
+        assert is_feedback_committed(session_id, 1) is False
+        assert is_feedback_committed(session_id, 2) is False
+
 
 class TestResetAnswerPubsub:
     def test_reset_wipes_everything(self):
@@ -79,6 +97,61 @@ class TestResetAnswerPubsub:
         reset_answer_pubsub()
 
         assert get_question_text(uuid.uuid4(), uuid.uuid4()) is None
+
+    def test_reset_wipes_feedback_committed_flags(self):
+        """Story 3.4 v1.3.0 BLOCKER #4: the test-only reset helper
+        must wipe the feedback-committed registry so cross-test bleed
+        cannot cause a later test to see a stale "already committed"
+        state.
+        """
+        sid = uuid.uuid4()
+        mark_feedback_committed(sid, 1)
+        assert is_feedback_committed(sid, 1) is True
+
+        reset_answer_pubsub()
+
+        assert is_feedback_committed(sid, 1) is False
+
+
+class TestFeedbackCommitted:
+    """Story 3.4 v1.3.0 BLOCKER #4: feedback-committed signal."""
+
+    def test_mark_then_check_is_true(self):
+        sid = uuid.uuid4()
+        mark_feedback_committed(sid, 1)
+        assert is_feedback_committed(sid, 1) is True
+
+    def test_unmarked_is_false(self):
+        assert is_feedback_committed(uuid.uuid4(), 1) is False
+
+    def test_other_question_number_is_false(self):
+        """Marking question 1 must not leak into question 2."""
+        sid = uuid.uuid4()
+        mark_feedback_committed(sid, 1)
+        assert is_feedback_committed(sid, 2) is False
+
+    def test_cross_session_isolation(self):
+        sid_a = uuid.uuid4()
+        sid_b = uuid.uuid4()
+        mark_feedback_committed(sid_a, 1)
+        assert is_feedback_committed(sid_b, 1) is False
+
+    def test_mark_is_idempotent(self):
+        """Calling mark twice is a no-op; the set semantics dedupe."""
+        sid = uuid.uuid4()
+        mark_feedback_committed(sid, 1)
+        mark_feedback_committed(sid, 1)
+        assert is_feedback_committed(sid, 1) is True
+
+    def test_multiple_questions_in_same_session(self):
+        sid = uuid.uuid4()
+        mark_feedback_committed(sid, 1)
+        mark_feedback_committed(sid, 2)
+        mark_feedback_committed(sid, 3)
+        assert is_feedback_committed(sid, 1) is True
+        assert is_feedback_committed(sid, 2) is True
+        assert is_feedback_committed(sid, 3) is True
+        assert is_feedback_committed(sid, 4) is False
 
 
 @pytest.fixture(autouse=True)

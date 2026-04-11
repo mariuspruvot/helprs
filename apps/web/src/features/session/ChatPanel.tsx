@@ -134,6 +134,33 @@ export default function ChatPanel({ session }: ChatPanelProps) {
   // and the ``if (messages.length > 0)`` fast-path below would
   // silently skip seeding — so the user would see session A's chat
   // on session B's page until the next SSE frame arrived.
+  //
+  // Story 3.4 v1.3.0 (manual QA BLOCKER #3, 2026-04-11): the bail
+  // condition was previously ``messages.length > 0`` — but on a
+  // page reload of a session with answered questions, the SSE
+  // ``question_token`` frame for the in-flight Q_next frequently
+  // commits to ``messages`` BEFORE this effect runs (the session
+  // query resolves async; the SSE connection starts within ~300 ms
+  // of mount). With the old bail, the effect saw a streaming Q2 in
+  // ``messages``, mistook it for "already seeded", and never
+  // seeded the placeholders for the answered Q1/A1/F1 cycle —
+  // losing the user's visual context of completed cycles. The fix:
+  //   (a) only bail when a real resume placeholder already exists
+  //       in the store (id prefix ``resume-q-``)
+  //   (b) PREPEND the placeholders instead of appending, so a
+  //       racing Q_next that already landed in the store stays
+  //       visually AFTER the resume history
+  //
+  // Story 3.4 v1.3.0 code-review P5 (2026-04-11): the dep array used
+  // to include ``messages`` (full reference), which caused this effect
+  // to re-run on every Zustand store mutation — i.e. every SSE
+  // ``feedback_token`` or ``question_token`` frame. The ``seededForSessionRef``
+  // short-circuit at the top makes each re-run an O(1) no-op, but
+  // over a ~500-token feedback stream that's ~500 wasted closure
+  // allocations and dep-comparisons per answer cycle. Fix: depend on
+  // the pieces of ``session`` that actually change between mounts and
+  // read ``messages`` via ``useSessionStore.getState()`` inside the
+  // bail branch, which does not subscribe the effect to store updates.
   const seededForSessionRef = useRef<string | null>(null)
   useEffect(() => {
     if (seededForSessionRef.current === session.id) return
@@ -141,11 +168,13 @@ export default function ChatPanel({ session }: ChatPanelProps) {
       // We previously seeded a DIFFERENT session and are now switching
       // — wipe the stale per-session state before re-seeding.
       resetForNewSession()
-    } else if (messages.length > 0) {
-      // First seed attempt for this panel instance, but the store
-      // already contains messages (e.g. a previous ChatPanel mount
-      // left state behind). Treat as already-seeded to preserve the
-      // pre-v1.2.0 behaviour on the first mount.
+    } else if (useSessionStore.getState().messages.some((m) => m.id.startsWith('resume-q-'))) {
+      // A resume placeholder already exists for this session (e.g. a
+      // previous ChatPanel mount seeded it and left the state behind).
+      // Treat as already-seeded. NOTE: we DO NOT bail on "store has
+      // a streaming Q_next" anymore — that's a different state and
+      // conflating it was BLOCKER #3. Read via ``getState()`` so the
+      // effect is not resubscribed to every store mutation (P5).
       seededForSessionRef.current = session.id
       return
     }
@@ -190,12 +219,20 @@ export default function ChatPanel({ session }: ChatPanelProps) {
       })
     }
     if (placeholders.length > 0) {
-      // Push directly via setState so we don't reset the store's
-      // other Story 3.4 fields.
-      useSessionStore.setState((state) => ({ messages: [...state.messages, ...placeholders] }))
+      // Story 3.4 v1.3.0 (BLOCKER #3): PREPEND rather than append so a
+      // racing Q_next that already streamed into the store stays
+      // visually AFTER the completed-cycle history. Push directly via
+      // setState so we don't reset the store's other Story 3.4 fields.
+      useSessionStore.setState((state) => ({ messages: [...placeholders, ...state.messages] }))
     }
     seededForSessionRef.current = session.id
-  }, [session, messages.length, resetForNewSession])
+    // v1.3.0 P5: depend on ``session.id`` + the specific session fields
+    // this effect reads — NOT the full ``session`` reference (refetches
+    // produce fresh object identities even when nothing changed) and
+    // NOT ``messages`` (reactive subscription would re-run this effect
+    // on every streamed token). ``messages`` is read via ``getState()``
+    // inside the bail branch, which does not subscribe.
+  }, [session.id, session.updated_at, session.total_questions, session.progress, resetForNewSession])
 
   const handleQuestionToken = useCallback(
     (payload: { questionId: string; token: string; number: number; total: number }) => {
