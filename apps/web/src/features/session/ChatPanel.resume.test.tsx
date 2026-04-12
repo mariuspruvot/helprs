@@ -205,4 +205,37 @@ describe('ChatPanel resume seeding vs racing SSE Q_next (BLOCKER #3)', () => {
     expect(messages[1]?.createdAt).toBe('2026-04-10T00:00:00Z')
     expect(messages[2]?.createdAt).toBe('2026-04-10T00:00:00Z')
   })
+
+  test('Story 3.5: resume seeding works for large-tier sessions (total=8)', () => {
+    // Story 3.5 introduces the 4/6/8 tier counts. Verify the seeding
+    // effect handles total=8 with multiple already-answered questions
+    // — the resume placeholder loop scales per answered progress entry
+    // and must not silently cap at 5.
+    const session = makeSession({
+      total_questions: 8,
+      progress: [
+        { number: 1, status: 'answered', topic: 'architecture' },
+        { number: 2, status: 'answered', topic: 'architecture' },
+        { number: 3, status: 'answered', topic: 'architecture' },
+        { number: 4, status: 'in_flight', topic: 'architecture' },
+      ],
+    })
+
+    render(<ChatPanel session={session} />)
+
+    const messages = useSessionStore.getState().messages
+    // 3 answered → 3 × (question + answer + feedback) = 9 placeholders.
+    expect(messages).toHaveLength(9)
+    // Each resume placeholder set exists for Q1, Q2, and Q3.
+    const ids = messages.map((m) => m.id)
+    for (const n of [1, 2, 3]) {
+      expect(ids).toContain(`resume-q-${n}`)
+      expect(ids).toContain(`resume-q-${n}::answer`)
+      expect(ids).toContain(`resume-f-${n}`)
+    }
+    // All placeholders carry total=8 so SessionHeader reads the right count.
+    for (const m of messages) {
+      expect(m.total).toBe(8)
+    }
+  })
 })

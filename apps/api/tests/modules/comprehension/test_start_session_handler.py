@@ -18,6 +18,7 @@ def _cmd(
     pr_head_sha: str = "abc123",
     pr_title: str = "Add foo",
     pr_number: int = 42,
+    pr_diff_line_count: int | None = None,
 ) -> StartSessionCommand:
     return StartSessionCommand(
         github_installation_id=github_installation_id,
@@ -29,6 +30,7 @@ def _cmd(
         pr_head_sha=pr_head_sha,
         pr_diff_url=f"https://github.com/acme/repo/pull/{pr_number}.diff",
         pr_labels=tuple(pr_labels) if pr_labels else (),
+        pr_diff_line_count=pr_diff_line_count,
     )
 
 
@@ -47,6 +49,32 @@ class TestHappyPath:
 
         rows = (await db_session.execute(select(SessionModel))).scalars().all()
         assert len(rows) == 2
+
+
+class TestTotalQuestionsFallback:
+    """Story 3.5 Task 2.4: the production webhook path always passes an
+    ``int`` for ``pr_diff_line_count``, but ``StartSessionCommand`` retains
+    ``int | None`` as its signature for legacy callers (e.g. older fixtures).
+    A single explicit test keeps the ``None → 5`` fallback at
+    ``handlers.py:137`` covered so it cannot silently regress.
+    """
+
+    async def test_none_diff_line_count_falls_back_to_five(self, db_session, test_installation):
+        handler = StartSessionHandler(db_session)
+        result = await handler.handle(_cmd(pr_diff_line_count=None))
+
+        assert result.sessions is not None
+        for session in result.sessions:
+            assert session.total_questions == 5
+
+    async def test_small_diff_line_count_maps_to_tier_four(self, db_session, test_installation):
+        """Story 3.5 AC #5: small tier → 4 questions."""
+        handler = StartSessionHandler(db_session)
+        result = await handler.handle(_cmd(pr_diff_line_count=45))
+
+        assert result.sessions is not None
+        for session in result.sessions:
+            assert session.total_questions == 4
 
 
 class TestSuppression:

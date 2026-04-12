@@ -64,8 +64,13 @@ from helprs.core.middleware import limiter
 from helprs.modules.comprehension.application.handlers import GetSessionHandler
 from helprs.modules.comprehension.application.queries import GetSessionQuery
 from helprs.modules.comprehension.domain.value_objects import SessionStatus, Topic
-from helprs.modules.comprehension.infrastructure.agents import PydanticAILLMProvider
-from helprs.modules.comprehension.infrastructure.diff_refs import extract_file_refs
+from helprs.modules.comprehension.infrastructure.agents import PRPromptContext, PydanticAILLMProvider
+from helprs.modules.comprehension.infrastructure.diff_refs import (
+    _LARGE_PR_LINE_THRESHOLD,
+    compute_file_stats,
+    extract_file_refs,
+    select_and_rank_files,
+)
 from helprs.modules.comprehension.infrastructure.github_diff import fetch_pr_diff
 from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemySessionRepository
 from helprs.modules.comprehension.presentation.answer_pubsub import (
@@ -262,6 +267,7 @@ async def stream_session(
     repo_owner = session.repo_owner
     repo_name = session.repo_name
     pr_number = session.pr_number
+    pr_title = session.pr_title  # Story 3.5: feeds into PRPromptContext
     session_role = session.role
     session_id_str = str(session_id)
 
@@ -278,11 +284,24 @@ async def stream_session(
                 installation_token=installation_token,
             )
 
-            # Story 3.3 passes an empty ``previous_questions`` list to
-            # the LLM because we only have hashes, not text. Story 3.5
-            # will feed back the full text list by keeping it in
-            # memory for the duration of the stream.
-            #
+            # Story 3.5 (AC #7): compute per-file stats from the fetched
+            # diff. For huge PRs (>= 2000 lines) call ``select_and_rank_files``
+            # to trim the diff body to the top-ranked files while
+            # preserving the **full** stats list for the prompt (so the
+            # LLM knows about files that are not in the body).
+            file_stats = compute_file_stats(diff)
+            total_lines_changed = sum(s.total_lines for s in file_stats)
+            if total_lines_changed >= _LARGE_PR_LINE_THRESHOLD:
+                diff, file_stats = select_and_rank_files(diff, stats=file_stats)
+
+            pr_metadata = PRPromptContext(
+                role=session_role,
+                pr_title=pr_title,
+                total_lines_changed=total_lines_changed,
+                changed_file_count=len(file_stats),
+                file_stats=tuple(file_stats),
+            )
+
             # Story 3.4 kick-back fix: hydrate ``previous_texts`` from
             # the in-memory registry for any questions that already
             # exist on this session (e.g. a prior SSE connection
@@ -370,7 +389,7 @@ async def stream_session(
                     parts: list[str] = []
                     async for token in llm.stream_question(
                         pr_diff=diff,
-                        role=session_role,
+                        pr_metadata=pr_metadata,
                         previous_questions=previous_texts,
                         api_key=api_key,
                     ):

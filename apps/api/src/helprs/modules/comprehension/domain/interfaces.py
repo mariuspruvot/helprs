@@ -4,15 +4,30 @@ Story 2.2 introduced the ``SessionRepository`` port used by the
 ``StartSessionHandler`` to persist session pairs. Story 3.1 extends the
 repository contract with ``get_by_id`` (for the GET endpoint) and adds
 the ``LLMProvider`` port — the contract Story 3.3's PydanticAI provider
-will implement.
+will implement. Story 3.5 tightens the ``stream_question`` /
+``generate_question`` signatures to take a ``PRPromptContext`` instead
+of a bare ``SessionRole``.
+
+Domain purity note (Story 3.5): ``PRPromptContext`` lives in
+``infrastructure/`` because it is a prompt-assembly DTO, not a domain
+concept. The Protocol references it via a ``TYPE_CHECKING`` import so
+the domain package never imports infrastructure at runtime. The
+``test_domain_purity`` AST walker only forbids ``sqlalchemy``,
+``fastapi``, ``httpx``, and ``pydantic_ai`` — ``helprs.*`` relative
+imports are permitted.
 """
 
-from collections.abc import AsyncIterator
-from typing import Protocol
-from uuid import UUID
+from __future__ import annotations
 
-from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Session
-from helprs.modules.comprehension.domain.value_objects import SessionRole, Topic
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from uuid import UUID
+
+    from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Session
+    from helprs.modules.comprehension.domain.value_objects import SessionRole, Topic
+    from helprs.modules.comprehension.infrastructure.agents import PRPromptContext
 
 
 class SessionRepository(Protocol):
@@ -174,14 +189,14 @@ class LLMProvider(Protocol):
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
         api_key: str,
     ) -> AsyncIterator[str]:
         """Yield question-text chunks as they arrive from the LLM.
 
-        Story 3.3 implementation: ``async for chunk in stream_question(...)``
-        returns token-level deltas. The fresh-Agent-per-call rule means
+        Story 3.5: ``pr_metadata`` carries role, PR title, line stats,
+        and per-file stats. The fresh-Agent-per-call rule means
         ``api_key`` is passed as a function argument and never stashed on
         the provider instance (zero-retention, FR34).
         """
@@ -191,7 +206,7 @@ class LLMProvider(Protocol):
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
         api_key: str,
     ) -> str:
