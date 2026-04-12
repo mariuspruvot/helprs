@@ -135,6 +135,28 @@ async def _handle_pull_request_common(
             for lbl in (pr.get("labels") or [])
             if isinstance(lbl, dict) and isinstance(lbl.get("name"), str)
         )
+
+        # Story 3.5 (AC #6): GitHub's ``pull_request`` event always
+        # carries ``additions``/``deletions`` as integers. Cast
+        # defensively so a pathological (replayed / malformed) payload
+        # still yields a valid int — ``estimate_question_count`` treats
+        # ``0`` as the smallest tier, which is safer than crashing.
+        # Story 3.5 code-review patch (P1+P9): ``int()`` raises
+        # ``ValueError`` on non-numeric strings (not in the outer
+        # ``except`` tuple), and negative counts would surface as
+        # ``Total lines changed: -N`` in the LLM prompt. Clamp both
+        # casts here and swallow cast errors locally.
+        def _clamp_nonneg_int(raw: object) -> int:
+            if raw is None:
+                return 0
+            try:
+                return max(0, int(raw))
+            except (TypeError, ValueError):
+                return 0
+
+        additions = _clamp_nonneg_int(pr.get("additions"))
+        deletions = _clamp_nonneg_int(pr.get("deletions"))
+        pr_diff_line_count = additions + deletions
     except (KeyError, TypeError) as exc:
         await logger.awarning(
             "pull_request_event_malformed_payload",
@@ -162,14 +184,12 @@ async def _handle_pull_request_common(
         pr_head_sha=pr_head_sha,
         pr_diff_url=pr_diff_url,
         pr_labels=pr_labels,
-        # TODO(story-3.5): fetch the PR diff here to compute
-        # ``pr_diff_line_count`` so ``estimate_question_count`` gets a
-        # non-``None`` input. Currently ``None`` → the handler falls
-        # back to ``total_questions=5`` for every PR, which is fine for
-        # Story 3.3's minimal heuristic but defeats the point of the
-        # size-tiered sizing. Story 3.5 rewrites the heuristic anyway,
-        # so the diff-fetch wiring is tracked as part of that story.
-        pr_diff_line_count=None,
+        # Story 3.5 (AC #6): derived from the webhook payload's
+        # ``additions`` + ``deletions`` fields. The full diff is NOT
+        # fetched here — GitHub's event is authoritative for line
+        # counts and fetching the diff inside the webhook handler
+        # would violate the NFR1 10s wall-clock ceiling.
+        pr_diff_line_count=pr_diff_line_count,
     )
 
     handler = StartSessionHandler(session)

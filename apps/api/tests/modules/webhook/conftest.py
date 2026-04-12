@@ -72,12 +72,19 @@ def make_pull_request_payload(
     pr_number: int = 42,
     head_sha: str = "abc123",
     pr_title: str = "Add foo",
+    additions: int = 30,
+    deletions: int = 15,
 ) -> dict:
     """Minimal pull_request webhook payload for tests.
 
     Extended in Story 2.2 to carry ``labels`` (for suppression-label
     coverage) plus override hooks for ``pr_number``/``head_sha``/
     ``pr_title`` (used in synchronize-after-opened and multi-event tests).
+
+    Story 3.5 adds ``additions``/``deletions`` so the webhook handler's
+    ``pr_diff_line_count`` propagation path can be exercised. The
+    default (30/15 → 45) stays inside the small tier so existing
+    assertions that check ``total_questions == 4`` remain valid.
     """
     return {
         "action": action,
@@ -88,6 +95,8 @@ def make_pull_request_payload(
             "diff_url": f"https://github.com/acme/repo/pull/{pr_number}.diff",
             "head": {"sha": head_sha},
             "labels": [{"name": name} for name in (labels or [])],
+            "additions": additions,
+            "deletions": deletions,
         },
         "repository": {
             "id": 999,

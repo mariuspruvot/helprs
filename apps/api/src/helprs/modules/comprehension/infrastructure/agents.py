@@ -1,8 +1,13 @@
 """Concrete ``LLMProvider`` implementations.
 
 Story 3.1 shipped the ``NullLLMProvider`` stub.
-Story 3.3 introduces ``PydanticAILLMProvider`` — the production
+Story 3.3 introduced ``PydanticAILLMProvider`` — the production
 provider backed by Pydantic AI 1.78 + Anthropic Claude Sonnet 4.5.
+Story 3.5 replaces the minimal question prompt with two role-adaptive
+prompts (``AUTHOR_QUESTION_SYSTEM_PROMPT`` /
+``REVIEWER_QUESTION_SYSTEM_PROMPT``) and threads a ``PRPromptContext``
+carrying the PR title, total line count, and per-file stats through
+the prompt assembly path.
 
 Design rules (non-negotiable):
 
@@ -18,11 +23,13 @@ Design rules (non-negotiable):
 * **Fresh Agent per call.** No caching by API key or otherwise.
   Constructing an ``Agent`` is cheap; an instance keyed on BYOK
   would defeat zero-retention.
-* **Minimal prompt scaffold.** Story 3.3 ships a minimal role-aware
-  prompt; Story 3.5 replaces it with the full challenge-me SKILL.md
-  adaptation (role-adaptive, tradeoff probing, architectural
-  reasoning). A ``TODO(story-3.5)`` marker at the prompt location
-  makes the seam obvious.
+* **Role-adaptive question prompts (Story 3.5).** The question path
+  branches on ``PRPromptContext.role`` to pick either the AUTHOR or
+  REVIEWER system prompt. Both prompts are adapted from
+  ``challenge-me/skills/run/SKILL.md`` Phases 3-4: Socratic framing,
+  anti-cheat clauses, "beyond the diff" probing. The feedback path
+  is untouched — role-adaptive feedback is an Epic 4 / scoring
+  concern.
 
 Pydantic AI 1.78 streaming API reference (Context7):
 https://github.com/pydantic/pydantic-ai/blob/v1.71.0/docs/output.md
@@ -36,38 +43,184 @@ https://github.com/pydantic/pydantic-ai/blob/v1.71.0/docs/models/anthropic.md
 """
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from helprs.modules.comprehension.domain.value_objects import SessionRole
+from helprs.modules.comprehension.infrastructure.diff_refs import FileChangeStats
 
-# Model ID — the story pins ``claude-sonnet-4-5``. If Anthropic ships a
-# newer stable before we flip to Story 3.5's full prompt, bump here (and
-# only here).
+# Model ID — Story 3.3 pinned ``claude-sonnet-4-5``. Story 3.5 does not
+# change the model — prompt-quality experiments with smaller / cheaper
+# models belong to an Epic 4 / ops story.
 _ANTHROPIC_MODEL_ID = "claude-sonnet-4-5"
 
-# TODO(story-3.5): replace this minimal scaffold with the role-adaptive
-# challenge-me SKILL.md adaptation (~220 lines, author/reviewer
-# branching, tradeoff probing, architectural reasoning).
-QUESTION_SYSTEM_PROMPT = """You are a Socratic code reviewer helping a developer \
-think deeply about their pull request. Ask one focused question at a time.
-The question should:
-- Reveal a gap in understanding or an assumption the developer may not have examined
-- Reference specific file paths or code sections from the diff when possible
-- Probe decisions, tradeoffs, or edge cases — not trivia
-- Be conversational in tone, ~1-3 sentences
-- End with a question mark
+# Maximum number of per-file stat lines we render into the prompt. Huge-
+# but-diverse PRs (e.g. monorepo renames) would otherwise blow out the
+# prompt budget with hundreds of one-line file entries that each carry
+# zero useful signal to the LLM. The full list is preserved on the
+# ``PRPromptContext`` dataclass — only the **displayed** list is capped.
+_MAX_DISPLAYED_FILE_STATS = 25
 
-Do not answer the question. Do not provide hints. Do not critique; just ask."""
+# Story 3.5 code-review patch (P8): attacker-controlled PR titles can
+# carry newlines or injection-shaped content. Cap the rendered title
+# at a length that still fits a realistic GitHub PR title (GitHub
+# enforces 256 chars as of 2026; 200 leaves headroom for our own
+# prefix wrapper) and strip newlines so a crafted title cannot break
+# the structured prompt.
+_MAX_RENDERED_PR_TITLE = 200
 
 
-# TODO(story-3.5): role-adaptive feedback prompt with author/reviewer
-# branching, beyond-diff probing. TODO(story-4.1): structured-output
-# format for per-question score + gap extraction. The Story 3.4 scaffold
-# below is intentionally minimal — it just yields conversational coaching
-# with inline `path:line` references for the frontend's CodeLink.
+def _sanitize_pr_title(raw: str) -> str:
+    """Return a single-line, length-capped version of ``raw``.
+
+    Used by ``_render_prompt`` to hardening the only user-controlled
+    input interpolated into the LLM prompt body. Guarantees:
+
+    * no ``\\n`` / ``\\r`` characters — collapses them to a single space
+    * whitespace-stripped ends
+    * at most ``_MAX_RENDERED_PR_TITLE`` characters (suffixed with
+      ``…`` if truncation occurred)
+    """
+    if not raw:
+        return ""
+    flattened = raw.replace("\r", " ").replace("\n", " ").strip()
+    if len(flattened) > _MAX_RENDERED_PR_TITLE:
+        return flattened[: _MAX_RENDERED_PR_TITLE - 1].rstrip() + "…"
+    return flattened
+
+
+@dataclass(frozen=True, slots=True)
+class PRPromptContext:
+    """Prompt-assembly DTO carrying the PR metadata the LLM needs.
+
+    Lives in ``infrastructure/`` (not ``domain/value_objects.py``):
+    this is a prompt-assembly concern, not a domain concept. Shipping
+    it into the domain would force the domain package to import
+    ``FileChangeStats`` from ``diff_refs`` (an infrastructure module),
+    violating the one-way dependency rule. The ``LLMProvider`` Protocol
+    in ``domain/interfaces.py`` references it via a ``TYPE_CHECKING``
+    block.
+    """
+
+    role: SessionRole
+    pr_title: str
+    total_lines_changed: int  # additions + deletions
+    changed_file_count: int
+    # Ordered list of per-file stats. For small/medium PRs this mirrors
+    # ``compute_file_stats`` output (diff order). For huge PRs where the
+    # diff body is ranked + elided, this is still the **full** unranked
+    # list so the LLM knows about files it is not seeing in the body.
+    file_stats: tuple[FileChangeStats, ...]
+
+
+AUTHOR_QUESTION_SYSTEM_PROMPT = """\
+You are a senior staff engineer reviewing a pull request WITH the
+author. Your job is to probe the decisions, tradeoffs, edge cases, and
+architectural choices the author committed to. The author wrote this
+code and must defend it.
+
+Draw from these question categories (pick whatever is most relevant
+to the specific change you see):
+
+1. Architectural choices — "Why did you choose this pattern over X?",
+   "What alternatives did you consider for this?"
+2. Edge cases and failure modes — "What happens in this function when
+   the input is null / empty / concurrent?", "How does this behave
+   under the specific load scenarios you expect?"
+3. Security implications — "What input validation protects against
+   this vector?", "Could this data flow be exploited?"
+4. Performance considerations — "What is the time complexity of this
+   operation?", "How does this query/loop scale with data volume?"
+5. Testing gaps — "How would you test this edge case?", "What scenario
+   is NOT covered by the existing tests?"
+
+Beyond the diff — this is mandatory:
+  Questions MUST probe code NOT visible in the diff when the change
+  warrants it — callers of modified functions, consumers of changed
+  models, downstream services, existing test files, architectural
+  implications on modules that were not touched. At least 30% of
+  questions across a session should require knowledge of code beyond
+  the diff surface.
+
+Anti-cheat principles (non-negotiable):
+  - Never ask a question whose answer is directly visible in the diff
+    without deeper thought.
+  - Do NOT ask "what does this code do?" or "explain these lines" —
+    that can be answered by reading.
+  - Frame questions around decisions, tradeoffs, and consequences —
+    not descriptions.
+
+Output rules:
+  - Ask ONE question at a time. 1-3 sentences. Conversational tone.
+  - End with a question mark.
+  - When referring to specific code, reference the file path inline
+    using backticks — `path/to/file.ts` — so the frontend can render
+    it as a clickable link.
+  - Do NOT answer the question. Do NOT provide hints. Do NOT critique
+    the code. Just ask.\
+"""
+
+
+REVIEWER_QUESTION_SYSTEM_PROMPT = """\
+You are a senior staff engineer helping a developer who is REVIEWING
+this pull request. They did NOT write the code. Your job is to probe
+their understanding of what the changes do, who is affected, and how
+the changes interact with the rest of the system — the knowledge
+they need to review the PR well.
+
+Reframe from the author view: instead of "why did you choose this
+approach", ask "what does this change actually do and who does it
+affect". Draw from these question categories:
+
+1. Behavior changes — "What user-facing behavior changes when this
+   merges?", "What API contract did this change?"
+2. Blast radius and side effects — "What other parts of the system
+   consume this function/model?", "Could this change break a specific
+   downstream consumer?"
+3. Maintainability — "If a new developer reads this file in 6 months,
+   what implicit assumptions would confuse them?", "What is no longer
+   obvious after this change?"
+4. Testing signals — "What scenario is NOT covered by the tests the
+   PR adds?", "Where would a regression show up first in monitoring?"
+5. Migration / rollout risk — "If this needs to be rolled back, is
+   there state that can't easily be undone?", "What depends on the
+   order this is deployed in?"
+
+Beyond the diff — this is mandatory:
+  Questions MUST probe code NOT visible in the diff when the change
+  warrants it — callers of modified functions, consumers of changed
+  models, downstream services, existing test files, architectural
+  implications on modules that were not touched. At least 30% of
+  questions across a session should require knowledge of code beyond
+  the diff surface.
+
+Anti-cheat principles (non-negotiable):
+  - Never ask a question whose answer is directly visible in the diff
+    without deeper thought.
+  - Do NOT ask "what does this code do?" or "explain these lines" —
+    that can be answered by reading.
+  - Frame questions around impact, contracts, and consequences — not
+    descriptions.
+
+Output rules:
+  - Ask ONE question at a time. 1-3 sentences. Conversational tone.
+  - End with a question mark.
+  - When referring to specific code, reference the file path inline
+    using backticks — `path/to/file.ts` — so the frontend can render
+    it as a clickable link.
+  - Do NOT answer the question. Do NOT provide hints. Do NOT critique
+    the code. Just ask.\
+"""
+
+
+# TODO(story-4.1): role-adaptive feedback prompt with author/reviewer
+# branching + structured-output format for per-question score + gap
+# extraction. The Story 3.4 scaffold below stays as-is — feedback
+# role-adaptation is explicitly out of scope for Story 3.5 (it belongs
+# with scoring in Epic 4).
 FEEDBACK_SYSTEM_PROMPT = """\
 You are a Socratic code reviewer giving feedback on a developer's answer
 to a question about their pull request.
@@ -108,7 +261,7 @@ class NullLLMProvider:
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
         api_key: str,
     ) -> AsyncIterator[str]:
@@ -118,7 +271,7 @@ class NullLLMProvider:
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
         api_key: str,
     ) -> str:
@@ -160,15 +313,13 @@ class PydanticAILLMProvider:
     Zero-retention by construction: the ``Agent`` is built per call
     with the user's decrypted BYOK key. Neither the key nor the
     ``pr_diff`` is persisted here — both flow through as arguments.
-
-    ``generate_feedback`` is deferred to Story 3.4.
     """
 
     async def stream_question(
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
         api_key: str,
     ) -> AsyncIterator[str]:
@@ -176,12 +327,13 @@ class PydanticAILLMProvider:
 
         Each yielded value is a partial chunk (``delta=True``). The
         caller accumulates these into the full question text before
-        hashing it for persistence.
+        hashing it for persistence. The role-adaptive system prompt
+        is chosen from ``pr_metadata.role`` inside ``_build_agent``.
         """
-        agent = self._build_agent(api_key)
+        agent = self._build_agent(api_key, role=pr_metadata.role)
         prompt = self._render_prompt(
             pr_diff=pr_diff,
-            role=role,
+            pr_metadata=pr_metadata,
             previous_questions=previous_questions,
         )
         async with agent.run_stream(prompt) as result:
@@ -192,7 +344,7 @@ class PydanticAILLMProvider:
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
         api_key: str,
     ) -> str:
@@ -200,7 +352,7 @@ class PydanticAILLMProvider:
         parts: list[str] = []
         async for chunk in self.stream_question(
             pr_diff=pr_diff,
-            role=role,
+            pr_metadata=pr_metadata,
             previous_questions=previous_questions,
             api_key=api_key,
         ):
@@ -260,43 +412,89 @@ class PydanticAILLMProvider:
     # Internals — kept narrow so tests can monkeypatch ``_build_agent``
     # ------------------------------------------------------------------
 
-    def _build_agent(self, api_key: str) -> Agent:
+    def _build_agent(self, api_key: str, *, role: SessionRole) -> Agent:
         """Construct a fresh ``Agent`` with a per-call Anthropic provider.
 
-        Split out as a seam for unit tests: they can ``monkeypatch``
-        this method to return a fake ``Agent`` backed by a scripted
+        Story 3.5 (AC #9): the role argument is load-bearing — it picks
+        between ``AUTHOR_QUESTION_SYSTEM_PROMPT`` and
+        ``REVIEWER_QUESTION_SYSTEM_PROMPT``. Tests monkeypatch this
+        method to return a fake ``Agent`` backed by a scripted
         ``run_stream`` context manager, avoiding any real Anthropic
-        traffic.
+        traffic — those fakes must accept the ``role`` kwarg too.
         """
         model = AnthropicModel(
             _ANTHROPIC_MODEL_ID,
             provider=AnthropicProvider(api_key=api_key),
         )
-        return Agent(model, system_prompt=QUESTION_SYSTEM_PROMPT)
+        # Story 3.5 code-review patch (P6): explicit exhaustive match so
+        # a future ``SessionRole`` variant cannot silently inherit the
+        # REVIEWER prompt without a failing test. Raising loud here
+        # fails the CI boundary instead of shipping the wrong system
+        # prompt to production.
+        if role is SessionRole.AUTHOR:
+            system = AUTHOR_QUESTION_SYSTEM_PROMPT
+        elif role is SessionRole.REVIEWER:
+            system = REVIEWER_QUESTION_SYSTEM_PROMPT
+        else:
+            raise ValueError(f"_build_agent received unhandled SessionRole: {role!r}")
+        return Agent(model, system_prompt=system)
 
     def _render_prompt(
         self,
         *,
         pr_diff: str,
-        role: SessionRole,
+        pr_metadata: PRPromptContext,
         previous_questions: list[str],
     ) -> str:
         """Render the per-call user prompt from the session context.
 
-        Story 3.3 uses a role-aware-but-minimal template; Story 3.5
-        swaps it for the full role-adapted version.
+        Story 3.5 produces a structured body carrying role, PR title,
+        line stats, and a per-file "Per-file line stats" block. The
+        displayed stats list is truncated at ``_MAX_DISPLAYED_FILE_STATS``
+        entries (sorted by total_lines desc) so unbounded file lists
+        cannot blow out the prompt budget.
         """
         previous_block = (
             "\n".join(f"- {q}" for q in previous_questions)
             if previous_questions
             else "(none yet — this is the first question)"
         )
+
+        # Sort file stats by total_lines desc for the "largest first"
+        # display order — useful hint for the LLM about where the most
+        # signal lives even when the diff body retains everything.
+        sorted_stats = sorted(
+            pr_metadata.file_stats,
+            key=lambda s: (-s.total_lines, s.path),
+        )
+        displayed = sorted_stats[:_MAX_DISPLAYED_FILE_STATS]
+        stat_lines = [f"- {s.path}  (+{s.additions} / -{s.deletions})" for s in displayed]
+        if len(sorted_stats) > _MAX_DISPLAYED_FILE_STATS:
+            stat_lines.append(f"- ... (+{len(sorted_stats) - _MAX_DISPLAYED_FILE_STATS} more files)")
+        stats_block = "\n".join(stat_lines) if stat_lines else "(no files)"
+
+        # Story 3.5 code-review patch (P8): the PR title is attacker-
+        # controlled (any GitHub user opening a PR against a watched
+        # repo). Strip newlines + cap length before interpolation so a
+        # crafted title cannot break the prompt structure or smuggle
+        # instructions that override the role-adaptive Socratic
+        # anti-cheat clauses. BYOK zero-retention limits blast radius
+        # but hardening the external-input surface is essentially
+        # free.
+        safe_title = _sanitize_pr_title(pr_metadata.pr_title)
+
         return (
-            f"Role: {role.value}\n"
-            f"PR diff:\n{pr_diff}\n\n"
+            f"Role: {pr_metadata.role.value}\n"
+            f"PR title: {safe_title}\n"
+            f"Changed files: {pr_metadata.changed_file_count}\n"
+            f"Total lines changed: {pr_metadata.total_lines_changed}\n\n"
+            f"Per-file line stats (largest-change first):\n{stats_block}\n\n"
+            f"PR diff (possibly truncated for large PRs — see above stats for the full picture):\n"
+            f"{pr_diff}\n\n"
             f"Previous questions you already asked (do not repeat):\n"
             f"{previous_block}\n\n"
-            "Ask the next Socratic question."
+            "Ask the next Socratic question. Remember: probe beyond the "
+            "diff when the change warrants it."
         )
 
     def _build_feedback_agent(self, api_key: str) -> Agent:
@@ -323,8 +521,8 @@ class PydanticAILLMProvider:
     ) -> str:
         """Render the per-call feedback user prompt.
 
-        Story 3.4 minimal scaffold — Story 3.5/4.1 may extend with
-        role-specific framing and structured-output formats.
+        Story 3.4 scaffold — kept verbatim in Story 3.5. Feedback
+        role-adaptation is owned by Epic 4 (scoring).
         """
         return (
             f"Role: {role.value}\n\n"

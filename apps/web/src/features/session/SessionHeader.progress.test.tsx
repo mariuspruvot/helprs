@@ -110,6 +110,34 @@ describe('SessionHeader progress indicator', () => {
     expect(progress.textContent).toBe('Questions pending...')
   })
 
+  test('Story 3.5: renders "Question 0 of 8" for a large-tier session', () => {
+    // Story 3.5 introduces the 4/6/8 tier counts — verify the header
+    // layout handles the new large-tier value without hardcoding 5.
+    render(<SessionHeader session={makeSession({ total_questions: 8 })} />)
+    expect(screen.getByTestId('session-header-progress').textContent).toBe('Question 0 of 8')
+  })
+
+  test('Story 3.5: renders "Question 4 of 8" after four completed cycles (large tier)', () => {
+    useSessionStore.setState({
+      messages: [
+        committedQuestion('q1', 1, 8),
+        userAnswer('q1', 1, 8),
+        feedback('a1', 1, 8),
+        committedQuestion('q2', 2, 8),
+        userAnswer('q2', 2, 8),
+        feedback('a2', 2, 8),
+        committedQuestion('q3', 3, 8),
+        userAnswer('q3', 3, 8),
+        feedback('a3', 3, 8),
+        committedQuestion('q4', 4, 8),
+        userAnswer('q4', 4, 8),
+        feedback('a4', 4, 8),
+      ],
+    })
+    render(<SessionHeader session={makeSession({ total_questions: 8 })} />)
+    expect(screen.getByTestId('session-header-progress').textContent).toBe('Question 4 of 8')
+  })
+
   test('streamingFeedback does NOT count toward completed cycles', () => {
     useSessionStore.setState({
       messages: [committedQuestion('q1', 1, 3), userAnswer('q1', 1, 3)],

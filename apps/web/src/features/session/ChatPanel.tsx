@@ -163,7 +163,28 @@ export default function ChatPanel({ session }: ChatPanelProps) {
   // bail branch, which does not subscribe the effect to store updates.
   const seededForSessionRef = useRef<string | null>(null)
   useEffect(() => {
-    if (seededForSessionRef.current === session.id) return
+    // Story 3.4 v1.3.1 (batch QA BLOCKER #3 regression): React 18
+    // StrictMode preserves refs across the unmount/remount cycle, but
+    // LoadedLayout's cleanup calls ``clearSession()`` which wipes the
+    // store's ``messages`` array between the two mounts. On the second
+    // mount the ref already equals session.id (set by the first mount)
+    // so the old guard bailed immediately — the placeholders seeded in
+    // mount #1 were gone (wiped by clearSession) and never re-seeded.
+    //
+    // Fix: when ref === session.id, check whether the store STILL has
+    // the resume placeholders we expect. If it doesn't (i.e. the store
+    // was wiped externally), reset the ref so seeding runs again.
+    if (seededForSessionRef.current === session.id) {
+      const hasAnswered = session.progress.some((e) => e.status === 'answered')
+      const hasPlaceholders = useSessionStore.getState().messages.some((m) => m.id.startsWith('resume-q-'))
+      if (hasAnswered && !hasPlaceholders) {
+        // Store was wiped (StrictMode clearSession or external reset)
+        // — fall through to re-seed.
+        seededForSessionRef.current = null
+      } else {
+        return
+      }
+    }
     if (seededForSessionRef.current !== null) {
       // We previously seeded a DIFFERENT session and are now switching
       // — wipe the stale per-session state before re-seeding.

@@ -222,16 +222,20 @@ class _ScriptedLLM:
         self.calls = 0
         self.first_token_delay = first_token_delay
         self.api_keys_seen: list[str] = []
+        # Story 3.5: capture each PRPromptContext the stream receives so
+        # integration tests can assert role/title/stats wiring.
+        self.pr_metadata_seen: list = []
 
     async def stream_question(
         self,
         *,
         pr_diff: str,
-        role,
+        pr_metadata,
         previous_questions,
         api_key: str,
     ) -> AsyncIterator[str]:
         self.api_keys_seen.append(api_key)
+        self.pr_metadata_seen.append(pr_metadata)
         idx = self.calls
         self.calls += 1
         if idx >= len(self.questions):
@@ -738,6 +742,7 @@ class TestProviderKeyHygiene:
         may appear on the provider instance after both calls return.
         """
         from helprs.modules.comprehension.domain.value_objects import SessionRole
+        from helprs.modules.comprehension.infrastructure.agents import PRPromptContext
 
         keys_seen: list[str] = []
 
@@ -755,20 +760,27 @@ class TestProviderKeyHygiene:
             def run_stream(self, prompt: str):
                 return _StubRunStream()
 
-        def _stub_build_agent(self, api_key: str):
+        def _stub_build_agent(self, api_key: str, *, role: SessionRole):  # noqa: ARG001
             keys_seen.append(api_key)
             return _StubAgent()
 
         monkeypatch.setattr(PydanticAILLMProvider, "_build_agent", _stub_build_agent)
 
         provider = PydanticAILLMProvider()
+        metadata = PRPromptContext(
+            role=SessionRole.AUTHOR,
+            pr_title="Test",
+            total_lines_changed=0,
+            changed_file_count=0,
+            file_stats=(),
+        )
 
         async for _ in provider.stream_question(
-            pr_diff="diff", role=SessionRole.AUTHOR, previous_questions=[], api_key="key-A"
+            pr_diff="diff", pr_metadata=metadata, previous_questions=[], api_key="key-A"
         ):
             pass
         async for _ in provider.stream_question(
-            pr_diff="diff", role=SessionRole.AUTHOR, previous_questions=[], api_key="key-B"
+            pr_diff="diff", pr_metadata=metadata, previous_questions=[], api_key="key-B"
         ):
             pass
 
@@ -942,3 +954,235 @@ class TestReconnectReplay:
         assert err["error"] == "question_text_unavailable_after_restart"
         # The LLM was never called: nothing was generated.
         assert scripted.calls == 0
+
+
+# ----------------------------------------------------------------------
+# Story 3.5: pr_metadata wiring + large-PR ranking in stream_session
+# ----------------------------------------------------------------------
+
+
+def _make_large_diff(file_sizes: list[tuple[str, int, int]]) -> str:
+    """Build a synthetic unified diff from a list of (path, add, del)
+    tuples. Each file gets ``add`` added-lines and ``del`` deleted-lines
+    of filler content.
+    """
+    sections: list[str] = []
+    for path, additions, deletions in file_sizes:
+        lines = [
+            f"diff --git a/{path} b/{path}",
+            f"--- a/{path}",
+            f"+++ b/{path}",
+            "@@ -1 +1 @@",
+        ]
+        for i in range(additions):
+            lines.append(f"+added_{i}")
+        for i in range(deletions):
+            lines.append(f"-deleted_{i}")
+        sections.append("\n".join(lines))
+    return "\n".join(sections)
+
+
+class TestStory35PRPromptContext:
+    """Story 3.5 AC #15: the SSE stream must build a ``PRPromptContext``
+    that carries the session role, the PR title, the computed
+    ``total_lines_changed``, and the per-file stats tuple, and forward
+    it into ``llm.stream_question`` in place of the old bare ``role``.
+    """
+
+    async def test_stream_session_builds_pr_metadata_for_author_session(
+        self, app_with_db, _patch_github_calls, monkeypatch
+    ):
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        # 300-line diff — below the 2000-line ranking threshold.
+        small_diff = _make_large_diff(
+            [
+                ("apps/api/foo.py", 100, 50),
+                ("apps/web/bar.ts", 100, 50),
+            ]
+        )
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.presentation.sse.fetch_pr_diff",
+            _const_coro(small_diff),
+        )
+
+        scripted = _ScriptedLLM(["Q1?", "Q2?", "Q3?"])
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 200
+
+        assert len(scripted.pr_metadata_seen) >= 1
+        first_meta = scripted.pr_metadata_seen[0]
+        # Author session from the seeded fixture.
+        assert first_meta.role.value == "author"
+        # PR title from the seeded session row.
+        assert first_meta.pr_title == "Improve foo"
+        # Total lines = additions + deletions across both files.
+        assert first_meta.total_lines_changed == 300
+        # Two changed files in the diff.
+        assert first_meta.changed_file_count == 2
+        # Stats tuple carries one entry per file.
+        assert len(first_meta.file_stats) == 2
+        paths = {s.path for s in first_meta.file_stats}
+        assert paths == {"apps/api/foo.py", "apps/web/bar.ts"}
+
+    async def test_stream_session_skips_ranking_for_small_pr(self, app_with_db, _patch_github_calls, monkeypatch):
+        """AC #15: below the 2000-line threshold, ``select_and_rank_files``
+        is NOT called; the diff seen by the LLM matches the fetched diff
+        byte-for-byte.
+        """
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        small_diff = _make_large_diff([("x.py", 100, 100)])
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.presentation.sse.fetch_pr_diff",
+            _const_coro(small_diff),
+        )
+
+        call_count = {"n": 0}
+        original_rank = __import__(
+            "helprs.modules.comprehension.presentation.sse",
+            fromlist=["select_and_rank_files"],
+        ).select_and_rank_files
+
+        def spy(diff, stats=None):
+            call_count["n"] += 1
+            return original_rank(diff, stats=stats)
+
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.presentation.sse.select_and_rank_files",
+            spy,
+        )
+
+        # Capture what the LLM received as pr_diff.
+        captured: dict = {}
+
+        class _CapturingLLM(_ScriptedLLM):
+            async def stream_question(self, *, pr_diff, pr_metadata, previous_questions, api_key):
+                captured.setdefault("diff", pr_diff)
+                async for c in super().stream_question(
+                    pr_diff=pr_diff,
+                    pr_metadata=pr_metadata,
+                    previous_questions=previous_questions,
+                    api_key=api_key,
+                ):
+                    yield c
+
+        scripted = _CapturingLLM(["Q1?", "Q2?", "Q3?"])
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 200
+
+        assert call_count["n"] == 0, "select_and_rank_files should not be called for small PRs"
+        assert captured["diff"] == small_diff
+
+    async def test_stream_session_ranks_diff_for_huge_pr(self, app_with_db, _patch_github_calls, monkeypatch):
+        """AC #15: at/above the 2000-line threshold, ``select_and_rank_files``
+        is invoked and its output (not the raw fetch) goes into the LLM.
+        """
+        application, session_factory, seeded = app_with_db
+        _, access_list, _ = _patch_github_calls
+        async with session_factory() as s:
+            inst = (
+                await s.execute(select(Installation).where(Installation.id == seeded["installation_id"]))
+            ).scalar_one()
+        access_list.return_value = [inst]
+
+        huge_diff = _make_large_diff(
+            [
+                ("dominant.py", 1500, 0),
+                ("moderate.py", 800, 0),
+                ("small.py", 200, 0),
+            ]
+        )
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.presentation.sse.fetch_pr_diff",
+            _const_coro(huge_diff),
+        )
+
+        call_inputs: list[tuple[str, object]] = []
+
+        def rank_spy(diff, stats=None):
+            call_inputs.append((diff, stats))
+            # Return a sentinel diff so we can assert it flows into the LLM.
+            return "RANKED_DIFF_SENTINEL", stats or []
+
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.presentation.sse.select_and_rank_files",
+            rank_spy,
+        )
+
+        captured: dict = {}
+
+        class _CapturingLLM(_ScriptedLLM):
+            async def stream_question(self, *, pr_diff, pr_metadata, previous_questions, api_key):
+                captured.setdefault("diff", pr_diff)
+                async for c in super().stream_question(
+                    pr_diff=pr_diff,
+                    pr_metadata=pr_metadata,
+                    previous_questions=previous_questions,
+                    api_key=api_key,
+                ):
+                    yield c
+
+        scripted = _CapturingLLM(["Q1?", "Q2?", "Q3?"])
+        _override_llm(application, scripted)
+
+        async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/sessions/{seeded['author_id']}/stream",
+                headers=_bearer(seeded["user_id"]),
+            )
+        assert resp.status_code == 200
+
+        # Ranking was called exactly once with a diff whose measured
+        # total_lines >= 2000.
+        assert len(call_inputs) == 1
+        # Second arg is the stats list — its total should be 2500.
+        _, stats = call_inputs[0]
+        total = sum(s.total_lines for s in stats)
+        assert total == 2500
+        # The LLM received the ranked sentinel, NOT the raw fetched diff.
+        assert captured["diff"] == "RANKED_DIFF_SENTINEL"
+
+        # Story 3.5 code-review patch (P5 / AC #15): the PRPromptContext
+        # forwarded to the LLM must carry the PRE-RANKING totals so the
+        # LLM knows the full scope of the change even though the diff
+        # body was trimmed. This is the AC #7 contract surface ("the
+        # prompt still shows stats for every file so the LLM knows
+        # what it is NOT seeing").
+        assert len(scripted.pr_metadata_seen) >= 1
+        meta = scripted.pr_metadata_seen[0]
+        assert meta.total_lines_changed == 2500
+        assert len(meta.file_stats) == 3
+        assert {s.path for s in meta.file_stats} == {"dominant.py", "moderate.py", "small.py"}
+
+
+def _const_coro(value):
+    """Return an AsyncMock-like callable that returns ``value``."""
+    from unittest.mock import AsyncMock
+
+    return AsyncMock(return_value=value)
