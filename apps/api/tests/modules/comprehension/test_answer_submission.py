@@ -862,6 +862,9 @@ class TestGetStreamAdvancesOnAnswer:
             def stream_feedback(self, **kwargs):
                 return self._feedback.stream_feedback(**kwargs)
 
+            async def generate_score(self, **kwargs):
+                return await self._questions.generate_score(**kwargs)
+
         _override_llm(application, _HybridLLM())
 
         async def drive_get_stream() -> list:
@@ -1121,6 +1124,9 @@ class TestPauseLoopGatesOnFeedbackCommitted:
 
             async def generate_question(self, **kwargs) -> str:  # noqa: ARG002
                 return ""
+
+            async def generate_score(self, **kwargs):
+                return await self._questions.generate_score(**kwargs)
 
         _override_llm(application, _GatedFeedbackLLM())
 

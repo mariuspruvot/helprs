@@ -297,9 +297,13 @@ class GetSessionHandler:
             for i, q in enumerate(questions)
         )
 
+        # Story 4.1: load score if available.
+        score = await repo.get_score_by_session_id(session_id=query.session_id)
+
         return GetSessionResult(
             session=domain_session,
             installation_token=installation_token,
             question_count=question_count,
             progress=progress,
+            score=score,
         )

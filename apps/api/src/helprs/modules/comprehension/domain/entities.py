@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic
+from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic, Verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,4 +114,24 @@ class Answer:
     question_id: UUID
     text_hash: str  # SHA-256 of the verbatim text
     latency_ms: int
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Score:
+    """Comprehension score computed once per session.
+
+    Frozen — scores are immutable after computation. The LLM produces
+    the four dimension scores (0-10); the verdict is derived
+    deterministically from the average in ``derive_verdict``.
+    ``gap_summary`` is 2-4 growth-oriented bullet points.
+    """
+
+    session_id: UUID
+    depth: int  # 0-10
+    accuracy: int  # 0-10
+    completeness: int  # 0-10
+    insight: int  # 0-10
+    verdict: Verdict
+    gap_summary: tuple[str, ...]
     created_at: datetime

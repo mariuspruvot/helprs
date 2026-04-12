@@ -29,6 +29,21 @@ class QuestionProgress(BaseModel):
     topic: str  # serialized ``Topic`` enum value
 
 
+class ScoreResponse(BaseModel):
+    """Story 4.1: score breakdown included in ``SessionResponse``.
+
+    Nullable at the ``SessionResponse`` level — only present after
+    the session is scored (status == COMPLETED).
+    """
+
+    depth: int
+    accuracy: int
+    completeness: int
+    insight: int
+    verdict: str
+    gaps: list[str]
+
+
 class SessionResponse(BaseModel):
     """Serialized shape of ``GET /api/v1/sessions/{id}``.
 
@@ -55,6 +70,8 @@ class SessionResponse(BaseModel):
     updated_at: datetime
     # Story 3.4: per-question progress for resume support.
     progress: list[QuestionProgress]
+    # Story 4.1: score breakdown — null before session is scored.
+    score: ScoreResponse | None = None
 
 
 class SubmitAnswerRequest(BaseModel):

@@ -13,7 +13,8 @@ structlog at ``debug`` level (gated by env) instead.
 
 import uuid
 
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from helprs.core.database import Base
@@ -151,3 +152,36 @@ class AnswerModel(Base):
     # than ``Integer`` so a tab left open for ≥25 days (Integer overflow
     # at 2**31-1 ms ≈ 24.85 d) does not 500 the POST.
     latency_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class ScoreModel(Base):
+    """Comprehension score for a session — metadata-only.
+
+    Story 4.1: one score per session (enforced by unique constraint on
+    ``session_id``). Stores four dimension scores (0-10), a verdict
+    string, and a JSONB gap summary (list of strings). No verbatim Q&A
+    text — FR35/NFR14 zero-retention rule.
+
+    Check constraints enforce 0-10 range on each dimension at the DB
+    level so corrupt data cannot bypass Python validation.
+    """
+
+    __tablename__ = "scores"
+    __table_args__ = (
+        UniqueConstraint("session_id", name="uq_scores_session_id"),
+        CheckConstraint("depth >= 0 AND depth <= 10", name="ck_scores_depth_range"),
+        CheckConstraint("accuracy >= 0 AND accuracy <= 10", name="ck_scores_accuracy_range"),
+        CheckConstraint("completeness >= 0 AND completeness <= 10", name="ck_scores_completeness_range"),
+        CheckConstraint("insight >= 0 AND insight <= 10", name="ck_scores_insight_range"),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    depth: Mapped[int] = mapped_column(Integer, nullable=False)
+    accuracy: Mapped[int] = mapped_column(Integer, nullable=False)
+    completeness: Mapped[int] = mapped_column(Integer, nullable=False)
+    insight: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False)
+    gap_summary: Mapped[list] = mapped_column(JSONB, nullable=False)

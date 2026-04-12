@@ -43,6 +43,16 @@ export interface SSEError {
   readonly payload?: unknown
 }
 
+/** Story 4.1: score payload from `event: score`. */
+export interface ScorePayload {
+  depth: number
+  accuracy: number
+  completeness: number
+  insight: number
+  verdict: string
+  gaps: string[]
+}
+
 export interface UseSSEOptions {
   /** Absolute or relative URL — the browser resolves relative. */
   url: string
@@ -61,6 +71,8 @@ export interface UseSSEOptions {
     total: number
     file_refs: string[]
   }) => void
+  onScoring?: (payload: { text: string }) => void
+  onScore?: (payload: ScorePayload) => void
   onDone?: (payload: { sessionId: string; questionCount: number }) => void
   onError?: (err: SSEError) => void
 }
@@ -71,6 +83,8 @@ const MAX_BACKOFF_MS = 16_000
 type HandlersRef = {
   onQuestionToken?: UseSSEOptions['onQuestionToken']
   onQuestion?: UseSSEOptions['onQuestion']
+  onScoring?: UseSSEOptions['onScoring']
+  onScore?: UseSSEOptions['onScore']
   onDone?: UseSSEOptions['onDone']
   onError?: UseSSEOptions['onError']
 }
@@ -80,7 +94,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
-  const { url, enabled = true, onQuestionToken, onQuestion, onDone, onError } = options
+  const { url, enabled = true, onQuestionToken, onQuestion, onScoring, onScore, onDone, onError } = options
 
   const [status, setStatus] = useState<SSEStatus>('idle')
 
@@ -89,8 +103,8 @@ export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
   // open EventSource pointing at torn-down handler identities.
   const handlersRef = useRef<HandlersRef>({})
   useEffect(() => {
-    handlersRef.current = { onQuestionToken, onQuestion, onDone, onError }
-  }, [onQuestionToken, onQuestion, onDone, onError])
+    handlersRef.current = { onQuestionToken, onQuestion, onScoring, onScore, onDone, onError }
+  }, [onQuestionToken, onQuestion, onScoring, onScore, onDone, onError])
 
   useEffect(() => {
     if (!enabled) {
@@ -213,6 +227,40 @@ export function useSSE(options: UseSSEOptions): { status: SSEStatus } {
           total,
           file_refs,
         })
+      })
+
+      // Story 4.1: scoring-in-progress indicator.
+      next.addEventListener('scoring', (event: MessageEvent) => {
+        const parsed = safeParse(event.data)
+        if (!isRecord(parsed)) return
+        const { text } = parsed
+        if (typeof text === 'string') {
+          handlersRef.current.onScoring?.({ text })
+        }
+      })
+
+      // Story 4.1: score event — session comprehension score.
+      next.addEventListener('score', (event: MessageEvent) => {
+        const parsed = safeParse(event.data)
+        if (!isRecord(parsed)) return
+        const { depth, accuracy, completeness, insight, verdict, gaps } = parsed
+        if (
+          typeof depth === 'number' &&
+          typeof accuracy === 'number' &&
+          typeof completeness === 'number' &&
+          typeof insight === 'number' &&
+          typeof verdict === 'string' &&
+          Array.isArray(gaps)
+        ) {
+          handlersRef.current.onScore?.({
+            depth,
+            accuracy,
+            completeness,
+            insight,
+            verdict,
+            gaps: gaps.filter((g): g is string => typeof g === 'string'),
+          })
+        }
       })
 
       next.addEventListener('done', (event: MessageEvent) => {

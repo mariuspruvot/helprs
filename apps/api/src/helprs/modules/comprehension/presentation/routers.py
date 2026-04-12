@@ -15,7 +15,7 @@ from helprs.core.middleware import limiter
 from helprs.modules.comprehension.application.handlers import GetSessionHandler
 from helprs.modules.comprehension.application.queries import GetSessionQuery
 from helprs.modules.comprehension.infrastructure.github_diff import fetch_pr_diff
-from helprs.modules.comprehension.presentation.schemas import QuestionProgress, SessionResponse
+from helprs.modules.comprehension.presentation.schemas import QuestionProgress, ScoreResponse, SessionResponse
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -62,6 +62,18 @@ async def get_session(
         installation_token=installation_token,
     )
 
+    # Story 4.1: include score breakdown if available.
+    score_response = None
+    if result.score is not None:
+        score_response = ScoreResponse(
+            depth=result.score.depth,
+            accuracy=result.score.accuracy,
+            completeness=result.score.completeness,
+            insight=result.score.insight,
+            verdict=result.score.verdict.value,
+            gaps=list(result.score.gap_summary),
+        )
+
     return SessionResponse(
         id=session.id,
         repo_full_name=session.repo_full_name,
@@ -77,4 +89,5 @@ async def get_session(
         created_at=session.created_at,
         updated_at=session.updated_at,
         progress=progress,
+        score=score_response,
     )

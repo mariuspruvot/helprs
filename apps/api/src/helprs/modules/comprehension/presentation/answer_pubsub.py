@@ -89,6 +89,11 @@ from uuid import UUID
 # session_id -> {question_id -> verbatim text}
 _question_texts: dict[UUID, dict[UUID, str]] = {}
 
+# Story 4.1: ephemeral answer + feedback text for scoring.
+# Same lifecycle as _question_texts — cleared by clear_session.
+_answer_texts: dict[UUID, dict[UUID, str]] = {}
+_feedback_texts: dict[UUID, dict[UUID, str]] = {}
+
 # session_id -> set of question_numbers whose feedback stream has
 # finished yielding the ``feedback`` frame. Used by the pause-loop to
 # gate Q_next on "F_current is fully emitted", not just "answer row
@@ -116,6 +121,42 @@ def get_question_text(session_id: UUID, question_id: UUID) -> str | None:
     error code.
     """
     bucket = _question_texts.get(session_id)
+    if bucket is None:
+        return None
+    return bucket.get(question_id)
+
+
+def stash_answer_text(session_id: UUID, question_id: UUID, text: str) -> None:
+    """Cache the verbatim answer text in process memory (Story 4.1).
+
+    Called by ``submit_answer`` after the answer row is persisted.
+    Used by the scoring phase to build the Q&A pairs for the LLM.
+    """
+    bucket = _answer_texts.setdefault(session_id, {})
+    bucket[question_id] = text
+
+
+def get_answer_text(session_id: UUID, question_id: UUID) -> str | None:
+    """Resolve a previously-stashed answer text."""
+    bucket = _answer_texts.get(session_id)
+    if bucket is None:
+        return None
+    return bucket.get(question_id)
+
+
+def stash_feedback_text(session_id: UUID, question_id: UUID, text: str) -> None:
+    """Cache the verbatim feedback text in process memory (Story 4.1).
+
+    Called by ``submit_answer`` after the feedback stream completes.
+    Used by the scoring phase to build the Q&A pairs for the LLM.
+    """
+    bucket = _feedback_texts.setdefault(session_id, {})
+    bucket[question_id] = text
+
+
+def get_feedback_text(session_id: UUID, question_id: UUID) -> str | None:
+    """Resolve a previously-stashed feedback text."""
+    bucket = _feedback_texts.get(session_id)
     if bucket is None:
         return None
     return bucket.get(question_id)
@@ -178,6 +219,8 @@ def clear_session(session_id: UUID) -> None:
     feedback-committed flags.
     """
     _question_texts.pop(session_id, None)
+    _answer_texts.pop(session_id, None)
+    _feedback_texts.pop(session_id, None)
     _feedback_committed.pop(session_id, None)
 
 
@@ -188,4 +231,6 @@ def reset_answer_pubsub() -> None:
     ``tests/modules/comprehension/conftest.py``.
     """
     _question_texts.clear()
+    _answer_texts.clear()
+    _feedback_texts.clear()
     _feedback_committed.clear()

@@ -18,6 +18,25 @@ class SessionStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class Verdict(StrEnum):
+    """Session comprehension verdict derived from dimension score average."""
+
+    EXCEPTIONAL = "exceptional"
+    STRONG = "strong"
+    ADEQUATE = "adequate"
+    WEAK = "weak"
+    INSUFFICIENT = "insufficient"
+
+
+class ScoreDimension(StrEnum):
+    """The four scoring axes evaluated by the scoring agent."""
+
+    DEPTH = "depth"
+    ACCURACY = "accuracy"
+    COMPLETENESS = "completeness"
+    INSIGHT = "insight"
+
+
 class Topic(StrEnum):
     """Scoring dimensions questions can attach to.
 

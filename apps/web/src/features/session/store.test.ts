@@ -17,6 +17,7 @@ const fixture: SessionResponse = {
   created_at: '2026-04-10T00:00:00Z',
   updated_at: '2026-04-10T00:00:00Z',
   progress: [],
+  score: null,
 }
 
 beforeEach(() => {
@@ -28,6 +29,7 @@ beforeEach(() => {
     streamingQuestion: null,
     streamingFeedback: null,
     answerInputDisabled: false,
+    sessionCompleted: false,
   })
 })
 

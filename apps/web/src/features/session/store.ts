@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   FeedbackPayload,
   QuestionPayload,
+  ScoreData,
   SessionResponse,
 } from './types'
 
@@ -17,6 +18,8 @@ export interface SessionUIState {
   // Story 3.4: in-flight streaming feedback message + answer-input lock.
   streamingFeedback: ChatMessage | null
   answerInputDisabled: boolean
+  // Story 4.1: session completion state.
+  sessionCompleted: boolean
   // Story 3.3 (AC #11): monotonic counter that ticks every time a
   // question commit cites a file. DiffViewer watches this and flashes
   // the active file tab's bottom border to #007aff for ~600ms with a
@@ -52,6 +55,8 @@ export interface SessionUIState {
   appendFeedbackToken: (answerId: string, questionId: string, token: string) => void
   commitStreamingFeedback: (payload: FeedbackPayload) => void
   setAnswerInputDisabled: (disabled: boolean) => void
+  // Story 4.1: commit a score message + mark session completed.
+  commitScore: (score: ScoreData) => void
   // Story 3.4 v1.2.0 (code-review F3): full-reset of all per-session
   // chat state when the user navigates from one session to another.
   // Without this, the module-level store leaks messages from session A
@@ -73,6 +78,7 @@ export const useSessionStore = create<SessionUIState>((set) => ({
   streamingQuestion: null,
   streamingFeedback: null,
   answerInputDisabled: false,
+  sessionCompleted: false,
   highlightFileTrigger: 0,
 
   setSession: (s) => set({ session: s, activeFileIndex: 0 }),
@@ -85,6 +91,7 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       streamingQuestion: null,
       streamingFeedback: null,
       answerInputDisabled: false,
+      sessionCompleted: false,
       highlightFileTrigger: 0,
     }),
   setActiveFile: (index) => set({ activeFileIndex: index }),
@@ -265,6 +272,31 @@ export const useSessionStore = create<SessionUIState>((set) => ({
 
   setAnswerInputDisabled: (disabled) => set({ answerInputDisabled: disabled }),
 
+  // Story 4.1: append a score message to the chat + mark completed.
+  commitScore: (score) =>
+    set((state) => {
+      const scoreMessage: ChatMessage = {
+        id: 'session-score',
+        kind: 'ai_score',
+        questionNumber: 0,
+        total: 0,
+        text: '',
+        fileRefs: [],
+        createdAt: new Date().toISOString(),
+        isStreaming: false,
+        score,
+      }
+      // Dedupe — idempotent on reconnect.
+      if (state.messages.some((m) => m.id === 'session-score')) {
+        return { sessionCompleted: true, answerInputDisabled: true }
+      }
+      return {
+        messages: [...state.messages, scoreMessage],
+        sessionCompleted: true,
+        answerInputDisabled: true,
+      }
+    }),
+
   // Story 3.4 v1.2.0 (code-review F3): clear every per-session chat
   // field so the next session starts with a blank slate. Preserves
   // ``session``, ``activeFileIndex``, ``panelRatio``,
@@ -276,5 +308,6 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       streamingQuestion: null,
       streamingFeedback: null,
       answerInputDisabled: false,
+      sessionCompleted: false,
     }),
 }))

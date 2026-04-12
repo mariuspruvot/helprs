@@ -18,14 +18,17 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from helprs.modules.comprehension.domain.value_objects import SessionRole
+from helprs.modules.comprehension.domain.value_objects import SessionRole, Verdict
 from helprs.modules.comprehension.infrastructure.agents import (
     AUTHOR_QUESTION_SYSTEM_PROMPT,
+    AUTHOR_SCORING_SYSTEM_PROMPT,
     FEEDBACK_SYSTEM_PROMPT,
     REVIEWER_QUESTION_SYSTEM_PROMPT,
+    REVIEWER_SCORING_SYSTEM_PROMPT,
     NullLLMProvider,
     PRPromptContext,
     PydanticAILLMProvider,
+    ScoringResult,
 )
 from helprs.modules.comprehension.infrastructure.diff_refs import FileChangeStats
 
@@ -545,3 +548,218 @@ class TestRenderFeedbackPrompt:
         assert "DIFF_BODY" in prompt
         # System prompt sits on the Agent, not on the per-call prompt.
         assert FEEDBACK_SYSTEM_PROMPT not in prompt
+
+
+# ----------------------------------------------------------------------
+# Story 4.1: scoring agent tests
+# ----------------------------------------------------------------------
+
+
+class _StubRunResult:
+    """Fake ``agent.run(prompt)`` result."""
+
+    def __init__(self, output):
+        self.output = output
+
+
+class _StubScoreAgent:
+    """Fake Agent that returns a preset ScoringResult."""
+
+    def __init__(self, scoring_result: ScoringResult, *, system_prompt: str | None = None):
+        self._scoring_result = scoring_result
+        self.system_prompt = system_prompt
+
+    async def run(self, prompt: str):
+        return _StubRunResult(self._scoring_result)
+
+
+class TestGenerateScore:
+    async def test_returns_score_with_derived_verdict(self, monkeypatch):
+        fake_result = ScoringResult(
+            depth=8,
+            accuracy=7,
+            completeness=7,
+            insight=8,
+            gaps=["area 1", "area 2"],
+        )
+        monkeypatch.setattr(
+            PydanticAILLMProvider,
+            "_build_score_agent",
+            lambda self, api_key, *, role: _StubScoreAgent(fake_result),
+        )
+        provider = PydanticAILLMProvider()
+        test_sid = __import__("uuid").uuid4()
+        score = await provider.generate_score(
+            session_id=test_sid,
+            session_role=SessionRole.AUTHOR,
+            pr_title="Add foo",
+            questions_and_answers=[("Q1?", "A1", "F1")],
+            pr_metadata=_make_pr_metadata(),
+            api_key="sk-x",
+        )
+        assert score.session_id == test_sid
+        assert score.depth == 8
+        assert score.accuracy == 7
+        assert score.completeness == 7
+        assert score.insight == 8
+        assert score.verdict == Verdict.STRONG  # avg 7.5 → rounds to 8 → Strong
+        assert score.gap_summary == ("area 1", "area 2")
+
+    async def test_exceptional_verdict(self, monkeypatch):
+        fake_result = ScoringResult(
+            depth=10,
+            accuracy=9,
+            completeness=9,
+            insight=10,
+            gaps=["keep it up", "stay sharp"],
+        )
+        monkeypatch.setattr(
+            PydanticAILLMProvider,
+            "_build_score_agent",
+            lambda self, api_key, *, role: _StubScoreAgent(fake_result),
+        )
+        provider = PydanticAILLMProvider()
+        score = await provider.generate_score(
+            session_id=__import__("uuid").uuid4(),
+            session_role=SessionRole.REVIEWER,
+            pr_title="Refactor",
+            questions_and_answers=[("Q?", "A", "F")],
+            pr_metadata=_make_pr_metadata(role=SessionRole.REVIEWER),
+            api_key="sk-x",
+        )
+        assert score.verdict == Verdict.EXCEPTIONAL
+
+    async def test_fresh_agent_per_call(self, monkeypatch):
+        call_count = {"n": 0}
+
+        def build(self, api_key, *, role):
+            call_count["n"] += 1
+            return _StubScoreAgent(
+                ScoringResult(
+                    depth=5,
+                    accuracy=5,
+                    completeness=5,
+                    insight=5,
+                    gaps=["gap a", "gap b"],
+                )
+            )
+
+        monkeypatch.setattr(PydanticAILLMProvider, "_build_score_agent", build)
+        provider = PydanticAILLMProvider()
+        for _ in range(3):
+            await provider.generate_score(
+                session_id=__import__("uuid").uuid4(),
+                session_role=SessionRole.AUTHOR,
+                pr_title="T",
+                questions_and_answers=[],
+                pr_metadata=_make_pr_metadata(),
+                api_key="sk-1",
+            )
+        assert call_count["n"] == 3
+
+
+class TestBuildScoreAgentRoleBranching:
+    def test_author_uses_author_scoring_prompt(self, monkeypatch):
+        seen: dict[str, object] = {}
+
+        def fake_model(model_id, provider):
+            return "fake-model"
+
+        def fake_agent(model, system_prompt, output_type):
+            seen["system_prompt"] = system_prompt
+            seen["output_type"] = output_type
+            return _StubScoreAgent(ScoringResult(depth=5, accuracy=5, completeness=5, insight=5, gaps=["g1", "g2"]))
+
+        monkeypatch.setattr("helprs.modules.comprehension.infrastructure.agents.AnthropicModel", fake_model)
+        monkeypatch.setattr("helprs.modules.comprehension.infrastructure.agents.Agent", fake_agent)
+
+        provider = PydanticAILLMProvider()
+        provider._build_score_agent("sk-x", role=SessionRole.AUTHOR)
+
+        assert seen["system_prompt"] == AUTHOR_SCORING_SYSTEM_PROMPT
+        assert seen["output_type"] is ScoringResult
+
+    def test_reviewer_uses_reviewer_scoring_prompt(self, monkeypatch):
+        seen: dict[str, object] = {}
+
+        def fake_model(model_id, provider):
+            return "fake-model"
+
+        def fake_agent(model, system_prompt, output_type):
+            seen["system_prompt"] = system_prompt
+            return _StubScoreAgent(ScoringResult(depth=5, accuracy=5, completeness=5, insight=5, gaps=["g1", "g2"]))
+
+        monkeypatch.setattr("helprs.modules.comprehension.infrastructure.agents.AnthropicModel", fake_model)
+        monkeypatch.setattr("helprs.modules.comprehension.infrastructure.agents.Agent", fake_agent)
+
+        provider = PydanticAILLMProvider()
+        provider._build_score_agent("sk-x", role=SessionRole.REVIEWER)
+
+        assert seen["system_prompt"] == REVIEWER_SCORING_SYSTEM_PROMPT
+
+    def test_unhandled_role_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.infrastructure.agents.AnthropicModel",
+            lambda model_id, provider: "fake-model",
+        )
+        monkeypatch.setattr(
+            "helprs.modules.comprehension.infrastructure.agents.Agent",
+            lambda model, system_prompt, output_type: _StubScoreAgent(
+                ScoringResult(depth=5, accuracy=5, completeness=5, insight=5, gaps=["g1", "g2"])
+            ),
+        )
+        provider = PydanticAILLMProvider()
+        with pytest.raises(ValueError, match="unhandled SessionRole"):
+            provider._build_score_agent("sk-x", role="not-a-role")
+
+
+class TestRenderScorePrompt:
+    def test_contains_qa_pairs_and_title(self):
+        provider = PydanticAILLMProvider()
+        prompt = provider._render_score_prompt(
+            pr_title="Add auth",
+            pr_metadata=_make_pr_metadata(),
+            questions_and_answers=[
+                ("Why auth?", "Security matters", "Good answer"),
+                ("Edge cases?", "Null tokens", "Consider timeouts"),
+            ],
+        )
+        assert "PR title: Add auth" in prompt
+        assert "Q: Why auth?" in prompt
+        assert "A: Security matters" in prompt
+        assert "Feedback given: Good answer" in prompt
+        assert "Q: Edge cases?" in prompt
+        assert "2 questions" in prompt
+
+    def test_sanitizes_pr_title(self):
+        provider = PydanticAILLMProvider()
+        prompt = provider._render_score_prompt(
+            pr_title="Evil\ntitle",
+            pr_metadata=_make_pr_metadata(),
+            questions_and_answers=[],
+        )
+        title_line = next(line for line in prompt.splitlines() if line.startswith("PR title:"))
+        assert "\n" not in title_line
+
+    def test_empty_qa_pairs(self):
+        provider = PydanticAILLMProvider()
+        prompt = provider._render_score_prompt(
+            pr_title="T",
+            pr_metadata=_make_pr_metadata(),
+            questions_and_answers=[],
+        )
+        assert "(no Q&A pairs)" in prompt
+
+
+class TestNullProviderScoreRaises:
+    async def test_generate_score_raises(self):
+        provider = NullLLMProvider()
+        with pytest.raises(NotImplementedError):
+            await provider.generate_score(
+                session_id=__import__("uuid").uuid4(),
+                session_role=SessionRole.AUTHOR,
+                pr_title="",
+                questions_and_answers=[],
+                pr_metadata=_make_pr_metadata(),
+                api_key="",
+            )

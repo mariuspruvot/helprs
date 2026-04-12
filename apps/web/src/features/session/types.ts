@@ -19,6 +19,16 @@ export interface QuestionProgress {
   topic: string
 }
 
+/** Story 4.1: score response from `GET /sessions/{id}`. */
+export interface ScoreResponse {
+  depth: number
+  accuracy: number
+  completeness: number
+  insight: number
+  verdict: string
+  gaps: string[]
+}
+
 export interface SessionResponse {
   id: string
   repo_full_name: string
@@ -41,6 +51,8 @@ export interface SessionResponse {
   updated_at: string
   /** Story 3.4: per-question progress for the resume-from-reload UX. */
   progress: QuestionProgress[]
+  /** Story 4.1: score — null before session is scored. */
+  score: ScoreResponse | null
 }
 
 // Story 3.3: chat message types for the streaming ChatPanel.
@@ -52,6 +64,17 @@ export type ChatMessageKind =
   | 'user_answer'
   | 'ai_feedback'
   | 'ai_feedback_streaming'
+  | 'ai_score'
+
+/** Story 4.1: score data carried by `ai_score` messages. */
+export interface ScoreData {
+  depth: number
+  accuracy: number
+  completeness: number
+  insight: number
+  verdict: string
+  gaps: string[]
+}
 
 export interface ChatMessage {
   id: string
@@ -62,6 +85,8 @@ export interface ChatMessage {
   fileRefs: string[]
   createdAt: string
   isStreaming: boolean
+  /** Story 4.1: score data — only present when kind === 'ai_score'. */
+  score?: ScoreData
 }
 
 /**
