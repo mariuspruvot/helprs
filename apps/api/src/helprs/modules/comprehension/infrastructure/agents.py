@@ -42,15 +42,26 @@ https://github.com/pydantic/pydantic-ai/blob/v1.71.0/docs/models/anthropic.md
     provider=AnthropicProvider(api_key=...))``
 """
 
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
+from helprs.modules.comprehension.domain.services import derive_verdict
 from helprs.modules.comprehension.domain.value_objects import SessionRole
-from helprs.modules.comprehension.infrastructure.diff_refs import FileChangeStats
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from uuid import UUID
+
+    from helprs.modules.comprehension.domain.entities import Score
+    from helprs.modules.comprehension.infrastructure.diff_refs import FileChangeStats
 
 # Model ID — Story 3.3 pinned ``claude-sonnet-4-5``. Story 3.5 does not
 # change the model — prompt-quality experiments with smaller / cheaper
@@ -216,11 +227,6 @@ Output rules:
 """
 
 
-# TODO(story-4.1): role-adaptive feedback prompt with author/reviewer
-# branching + structured-output format for per-question score + gap
-# extraction. The Story 3.4 scaffold below stays as-is — feedback
-# role-adaptation is explicitly out of scope for Story 3.5 (it belongs
-# with scoring in Epic 4).
 FEEDBACK_SYSTEM_PROMPT = """\
 You are a Socratic code reviewer giving feedback on a developer's answer
 to a question about their pull request.
@@ -245,6 +251,74 @@ or "incorrect" — describe what was right and what was missed instead.
 Do NOT ask follow-up questions; the next question is generated
 separately.\
 """
+
+
+# -- Story 4.1: scoring prompts + structured output model ---------------
+
+AUTHOR_SCORING_SYSTEM_PROMPT = """\
+You are a senior staff engineer evaluating how well a developer
+understands their own pull request. They wrote the code. Your job is to
+assess the quality of their answers to Socratic questions across four
+dimensions.
+
+Scoring criteria (AUTHOR role — weight toward decisions, tradeoffs,
+and edge-case awareness):
+
+1. **Depth** (0-10): Did the developer show deep understanding of
+   their own decisions, tradeoffs, and internal code mechanics?
+2. **Accuracy** (0-10): Were the developer's factual claims about
+   the code correct?
+3. **Completeness** (0-10): Did the developer address each question
+   thoroughly, covering the full scope of what was asked?
+4. **Insight** (0-10): Did the developer show understanding beyond
+   the obvious — edge cases, downstream implications, alternatives
+   they considered?
+
+For the "gaps" field: identify 2-4 specific areas where the developer
+could deepen their understanding. Use growth-oriented language —
+"Areas to deepen", not "weaknesses". Be concrete: reference specific
+topics, patterns, or code areas rather than generic advice.\
+"""
+
+REVIEWER_SCORING_SYSTEM_PROMPT = """\
+You are a senior staff engineer evaluating how well a developer
+understands a pull request they are REVIEWING. They did NOT write the
+code. Your job is to assess the quality of their answers to Socratic
+questions across four dimensions.
+
+Scoring criteria (REVIEWER role — weight toward impact awareness,
+behavioral understanding, and quality signals):
+
+1. **Depth** (0-10): Did the developer demonstrate understanding of
+   what the code does internally and how it interacts with the system?
+2. **Accuracy** (0-10): Were the developer's factual claims about
+   the code's behavior and impact correct?
+3. **Completeness** (0-10): Did the developer address each question
+   thoroughly, including blast radius and side effects?
+4. **Insight** (0-10): Did the developer identify non-obvious risks,
+   testing gaps, or rollout concerns beyond what is visible in the diff?
+
+For the "gaps" field: identify 2-4 specific areas where the developer
+could deepen their review skills. Use growth-oriented language. Be
+concrete: reference specific topics, patterns, or code areas.\
+"""
+
+
+class ScoringResult(BaseModel):
+    """Structured output schema for the scoring agent.
+
+    The LLM produces dimension scores (0-10) + gap bullets. The
+    ``Verdict`` is derived deterministically in Python (not by the LLM)
+    via ``derive_verdict``.
+    """
+
+    depth: int = Field(ge=0, le=10, description="How deeply the developer understands the code's internals")
+    accuracy: int = Field(ge=0, le=10, description="How factually correct the developer's answers were")
+    completeness: int = Field(ge=0, le=10, description="How thoroughly the developer addressed each question")
+    insight: int = Field(ge=0, le=10, description="Whether the developer showed understanding beyond the obvious")
+    gaps: list[str] = Field(
+        min_length=2, max_length=4, description="2-4 areas where the developer could deepen understanding"
+    )
 
 
 class NullLLMProvider:
@@ -304,6 +378,18 @@ class NullLLMProvider:
         role: SessionRole,
         api_key: str,
     ) -> str:
+        raise NotImplementedError("LLMProvider is wired in Story 3.3")
+
+    async def generate_score(
+        self,
+        *,
+        session_id: UUID,
+        session_role: SessionRole,
+        pr_title: str,
+        questions_and_answers: list[tuple[str, str, str]],
+        pr_metadata: PRPromptContext,
+        api_key: str,
+    ):
         raise NotImplementedError("LLMProvider is wired in Story 3.3")
 
 
@@ -497,6 +583,50 @@ class PydanticAILLMProvider:
             "diff when the change warrants it."
         )
 
+    async def generate_score(
+        self,
+        *,
+        session_id: UUID,
+        session_role: SessionRole,
+        pr_title: str,
+        questions_and_answers: list[tuple[str, str, str]],
+        pr_metadata: PRPromptContext,
+        api_key: str,
+    ) -> Score:
+        """Evaluate the complete Q&A session and return a ``Score``.
+
+        Non-streaming structured output via ``output_type=ScoringResult``.
+        The LLM produces four dimension scores + gap bullets; Python
+        derives the ``Verdict`` deterministically.
+        """
+        from helprs.modules.comprehension.domain.entities import Score as ScoreEntity
+
+        agent = self._build_score_agent(api_key, role=session_role)
+        prompt = self._render_score_prompt(
+            pr_title=pr_title,
+            pr_metadata=pr_metadata,
+            questions_and_answers=questions_and_answers,
+        )
+        result = await agent.run(prompt)
+        scoring: ScoringResult = result.output
+
+        verdict = derive_verdict(scoring.depth, scoring.accuracy, scoring.completeness, scoring.insight)
+
+        return ScoreEntity(
+            session_id=session_id,
+            depth=scoring.depth,
+            accuracy=scoring.accuracy,
+            completeness=scoring.completeness,
+            insight=scoring.insight,
+            verdict=verdict,
+            gap_summary=tuple(scoring.gaps),
+            created_at=datetime.now(UTC),
+        )
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
     def _build_feedback_agent(self, api_key: str) -> Agent:
         """Construct a fresh feedback ``Agent`` with the per-call key.
 
@@ -530,4 +660,49 @@ class PydanticAILLMProvider:
             f"The question you asked was:\n{question_text}\n\n"
             f"The developer answered:\n{answer_text}\n\n"
             "Give your feedback now."
+        )
+
+    def _build_score_agent(self, api_key: str, *, role: SessionRole) -> Agent:
+        """Construct a fresh scoring ``Agent`` with structured output.
+
+        Story 4.1: uses ``output_type=ScoringResult`` so Pydantic AI
+        forces the LLM to return valid JSON matching the schema.
+        Role-adaptive system prompt picks AUTHOR vs REVIEWER scoring
+        criteria. Same zero-retention rule: fresh Agent per call.
+        """
+        model = AnthropicModel(
+            _ANTHROPIC_MODEL_ID,
+            provider=AnthropicProvider(api_key=api_key),
+        )
+        if role is SessionRole.AUTHOR:
+            system = AUTHOR_SCORING_SYSTEM_PROMPT
+        elif role is SessionRole.REVIEWER:
+            system = REVIEWER_SCORING_SYSTEM_PROMPT
+        else:
+            raise ValueError(f"_build_score_agent received unhandled SessionRole: {role!r}")
+        return Agent(model, system_prompt=system, output_type=ScoringResult)
+
+    def _render_score_prompt(
+        self,
+        *,
+        pr_title: str,
+        pr_metadata: PRPromptContext,
+        questions_and_answers: list[tuple[str, str, str]],
+    ) -> str:
+        """Render the scoring prompt with the complete Q&A history."""
+        safe_title = _sanitize_pr_title(pr_title)
+
+        qa_block_parts: list[str] = []
+        for i, (q, a, f) in enumerate(questions_and_answers, 1):
+            qa_block_parts.append(f"--- Question {i} ---\nQ: {q}\nA: {a}\nFeedback given: {f}")
+        qa_block = "\n\n".join(qa_block_parts) if qa_block_parts else "(no Q&A pairs)"
+
+        return (
+            f"PR title: {safe_title}\n"
+            f"Changed files: {pr_metadata.changed_file_count}\n"
+            f"Total lines changed: {pr_metadata.total_lines_changed}\n\n"
+            f"Complete Q&A session ({len(questions_and_answers)} questions):\n\n"
+            f"{qa_block}\n\n"
+            "Now evaluate the developer's overall comprehension across the four dimensions "
+            "and identify 2-4 specific areas to deepen."
         )

@@ -6,6 +6,7 @@ import { useSSE, type SSEError } from '../../shared/hooks/useSSE'
 import { consumeSSEStream } from '../../shared/hooks/parseSSE'
 import AnswerInput from './AnswerInput'
 import ChatMessage, { DiffFilePathsContext } from './ChatMessage'
+import ScoreCard from './ScoreCard'
 import { useSessionStore } from './store'
 import type { ChatMessage as ChatMessageType, FeedbackPayload, SessionResponse } from './types'
 
@@ -81,6 +82,8 @@ export default function ChatPanel({ session }: ChatPanelProps) {
   const appendFeedbackToken = useSessionStore((s) => s.appendFeedbackToken)
   const commitStreamingFeedback = useSessionStore((s) => s.commitStreamingFeedback)
   const setAnswerInputDisabled = useSessionStore((s) => s.setAnswerInputDisabled)
+  const commitScore = useSessionStore((s) => s.commitScore)
+  const sessionCompleted = useSessionStore((s) => s.sessionCompleted)
   const resetForNewSession = useSessionStore((s) => s.resetForNewSession)
 
   const [sseError, setSseError] = useState<string | null>(null)
@@ -239,6 +242,23 @@ export default function ChatPanel({ session }: ChatPanelProps) {
         isStreaming: false,
       })
     }
+    // Story 4.1: if the session is COMPLETED with a score, append
+    // a score message to the placeholders for resume.
+    if (session.status === 'completed' && session.score) {
+      placeholders.push({
+        id: 'session-score',
+        kind: 'ai_score',
+        questionNumber: 0,
+        total,
+        text: '',
+        fileRefs: [],
+        createdAt: session.updated_at ?? new Date().toISOString(),
+        isStreaming: false,
+        score: session.score,
+      })
+      // Mark completed so input is disabled and SSE doesn't connect.
+      useSessionStore.setState({ sessionCompleted: true, answerInputDisabled: true })
+    }
     if (placeholders.length > 0) {
       // Story 3.4 v1.3.0 (BLOCKER #3): PREPEND rather than append so a
       // racing Q_next that already streamed into the store stays
@@ -284,6 +304,20 @@ export default function ChatPanel({ session }: ChatPanelProps) {
     [commitStreamingQuestion, diffFilePaths, highlightActiveFile],
   )
 
+  const [scoringInProgress, setScoringInProgress] = useState(false)
+
+  const handleScoring = useCallback(() => {
+    setScoringInProgress(true)
+  }, [])
+
+  const handleScore = useCallback(
+    (payload: { depth: number; accuracy: number; completeness: number; insight: number; verdict: string; gaps: string[] }) => {
+      setScoringInProgress(false)
+      commitScore(payload)
+    },
+    [commitScore],
+  )
+
   const handleError = useCallback((err: SSEError) => {
     if (err.kind === 'server') {
       setSseError('The question stream reported an error. Please retry.')
@@ -305,7 +339,7 @@ export default function ChatPanel({ session }: ChatPanelProps) {
   // absolute (against `API_BASE`) because the frontend dev server
   // (`localhost:5173`) does not proxy to the API (`localhost:8000`).
   const accessToken = useAuthStore((s) => s.accessToken)
-  const sseEnabled = session.status !== 'completed' && accessToken !== null
+  const sseEnabled = session.status !== 'completed' && !sessionCompleted && accessToken !== null
   const sseUrl = accessToken
     ? `${API_BASE}/api/v1/sessions/${session.id}/stream?access_token=${encodeURIComponent(accessToken)}`
     : ''
@@ -314,6 +348,8 @@ export default function ChatPanel({ session }: ChatPanelProps) {
     enabled: sseEnabled,
     onQuestionToken: handleQuestionToken,
     onQuestion: handleQuestion,
+    onScoring: handleScoring,
+    onScore: handleScore,
     onDone: handleDone,
     onError: handleError,
   })
@@ -572,8 +608,8 @@ export default function ChatPanel({ session }: ChatPanelProps) {
 
   const hasContent = messages.length > 0 || streamingQuestion !== null
 
-  // Disable the input if there's no committed question yet.
-  const inputDisabledFinal = answerInputDisabled || currentQuestionNumber === 0
+  // Disable the input if there's no committed question yet or session is completed.
+  const inputDisabledFinal = answerInputDisabled || sessionCompleted || currentQuestionNumber === 0
 
   return (
     <DiffFilePathsContext.Provider value={diffFilePaths}>
@@ -630,20 +666,33 @@ export default function ChatPanel({ session }: ChatPanelProps) {
 
             {hasContent && (
               <div data-testid="chat-message-list">
-                {messages.map((m) => (
-                  <ChatMessage key={m.id} message={m} />
-                ))}
+                {messages.map((m) =>
+                  m.kind === 'ai_score' && m.score ? (
+                    <ScoreCard key={m.id} score={m.score} />
+                  ) : (
+                    <ChatMessage key={m.id} message={m} />
+                  ),
+                )}
                 {streamingQuestion && (
                   <ChatMessage key={streamingQuestion.id} message={streamingQuestion} />
                 )}
                 {streamingFeedback && (
                   <ChatMessage key={streamingFeedback.id} message={streamingFeedback} />
                 )}
+                {scoringInProgress && (
+                  <div
+                    data-testid="scoring-indicator"
+                    className="text-[14px] text-text-muted"
+                    style={{ padding: '12px 16px' }}
+                  >
+                    Computing your comprehension score...
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
-        <AnswerInput disabled={inputDisabledFinal} onSubmit={submitAnswer} />
+        <AnswerInput disabled={inputDisabledFinal} sessionCompleted={sessionCompleted} onSubmit={submitAnswer} />
       </div>
     </DiffFilePathsContext.Provider>
   )

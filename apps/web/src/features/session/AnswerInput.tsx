@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 
 interface AnswerInputProps {
   disabled: boolean
+  sessionCompleted?: boolean
   onSubmit: (text: string) => void
 }
 
@@ -21,7 +22,7 @@ const MAX_HEIGHT_PX = 200
  * `readOnly` + `aria-disabled` so AT users get the same signal as
  * sighted users.
  */
-export default function AnswerInput({ disabled, onSubmit }: AnswerInputProps) {
+export default function AnswerInput({ disabled, sessionCompleted, onSubmit }: AnswerInputProps) {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -80,7 +81,7 @@ export default function AnswerInput({ disabled, onSubmit }: AnswerInputProps) {
         readOnly={disabled}
         aria-disabled={disabled}
         aria-multiline="true"
-        placeholder={disabled ? 'Generating feedback...' : 'Type your answer...'}
+        placeholder={sessionCompleted ? 'Session complete' : disabled ? 'Generating feedback...' : 'Type your answer...'}
         rows={1}
         style={{
           minHeight: MIN_HEIGHT_PX,

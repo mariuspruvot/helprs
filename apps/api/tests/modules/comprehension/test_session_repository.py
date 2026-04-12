@@ -468,3 +468,73 @@ class TestAppendAnswer:
 
         with pytest.raises(DomainValidationError, match="answer already submitted"):
             await repo.append_answer(question_id=q.id, text_hash="g" * 64, latency_ms=200)
+
+
+# ----------------------------------------------------------------------
+# Story 4.1: score persistence
+# ----------------------------------------------------------------------
+
+
+class TestPersistScore:
+    async def test_persist_and_load_score(self, db_session, test_installation):
+        from datetime import UTC, datetime
+
+        from helprs.modules.comprehension.domain.entities import Score
+        from helprs.modules.comprehension.domain.value_objects import Verdict
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        score = Score(
+            session_id=author.id,
+            depth=7,
+            accuracy=8,
+            completeness=6,
+            insight=9,
+            verdict=Verdict.STRONG,
+            gap_summary=("area 1", "area 2"),
+            created_at=datetime.now(UTC),
+        )
+        await repo.persist_score(score=score)
+
+        loaded = await repo.get_score_by_session_id(session_id=author.id)
+        assert loaded is not None
+        assert loaded.session_id == author.id
+        assert loaded.depth == 7
+        assert loaded.accuracy == 8
+        assert loaded.completeness == 6
+        assert loaded.insight == 9
+        assert loaded.verdict == Verdict.STRONG
+        assert loaded.gap_summary == ("area 1", "area 2")
+
+    async def test_returns_none_for_unscored_session(self, db_session, test_installation):
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        result = await repo.get_score_by_session_id(session_id=author.id)
+        assert result is None
+
+    async def test_unique_constraint_rejects_duplicate_score(self, db_session, test_installation):
+        from datetime import UTC, datetime
+
+        from helprs.modules.comprehension.domain.entities import Score
+        from helprs.modules.comprehension.domain.value_objects import Verdict
+
+        repo = SqlAlchemySessionRepository(db_session)
+        author, _ = await repo.add_pair(pr_ctx=_pr_ctx(test_installation.id))
+
+        score = Score(
+            session_id=author.id,
+            depth=5,
+            accuracy=5,
+            completeness=5,
+            insight=5,
+            verdict=Verdict.ADEQUATE,
+            gap_summary=("gap",),
+            created_at=datetime.now(UTC),
+        )
+        await repo.persist_score(score=score)
+
+        with pytest.raises(IntegrityError):
+            await repo.persist_score(score=score)
+        await db_session.rollback()

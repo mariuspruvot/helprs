@@ -75,9 +75,13 @@ from helprs.modules.comprehension.infrastructure.github_diff import fetch_pr_dif
 from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemySessionRepository
 from helprs.modules.comprehension.presentation.answer_pubsub import (
     clear_session,
+    get_answer_text,
+    get_feedback_text,
     get_question_text,
     is_feedback_committed,
     mark_feedback_committed,
+    stash_answer_text,
+    stash_feedback_text,
     stash_question_text,
 )
 from helprs.modules.comprehension.presentation.dependencies import get_llm_provider
@@ -494,6 +498,90 @@ async def stream_session(
                     session_id=session_id,
                 )
 
+            # Story 4.1: scoring phase. All questions answered — invoke
+            # the scoring agent, persist the score, transition session to
+            # COMPLETED, and emit the score SSE frame before ``done``.
+            yield _sse_frame(
+                "scoring",
+                {"text": "Computing your comprehension score..."},
+            )
+
+            # Collect Q&A pairs from the in-memory registry for the
+            # scoring prompt. Each entry is (question_text, answer_text,
+            # feedback_text) — ephemeral, never persisted.
+            qa_pairs: list[tuple[str, str, str]] = []
+            all_question_entities = list(existing_questions)
+            for num in range(len(existing_questions) + 1, actual_count + 1):
+                q_entity = existing_by_number.get(num)
+                if q_entity is not None:
+                    all_question_entities.append(q_entity)
+            for q in all_question_entities:
+                q_text = get_question_text(session_id, q.id)
+                a_text = get_answer_text(session_id, q.id)
+                f_text = get_feedback_text(session_id, q.id)
+                if q_text is not None and a_text is not None:
+                    qa_pairs.append((q_text, a_text, f_text or ""))
+
+            try:
+                score_entity = await llm.generate_score(
+                    session_id=session_id,
+                    session_role=session_role,
+                    pr_title=pr_title,
+                    questions_and_answers=qa_pairs,
+                    pr_metadata=pr_metadata,
+                    api_key=api_key,
+                )
+
+                # Persist score + transition session to COMPLETED
+                async with get_db_context() as tx:
+                    score_repo = SqlAlchemySessionRepository(tx)
+                    await score_repo.persist_score(score=score_entity)
+                    # Transition session status to COMPLETED
+                    from sqlalchemy import update as sa_update
+
+                    from helprs.modules.comprehension.infrastructure.models import SessionModel
+
+                    await tx.execute(
+                        sa_update(SessionModel)
+                        .where(SessionModel.id == session_id)
+                        .values(status=SessionStatus.COMPLETED.value)
+                    )
+
+                yield _sse_frame(
+                    "score",
+                    {
+                        "depth": score_entity.depth,
+                        "accuracy": score_entity.accuracy,
+                        "completeness": score_entity.completeness,
+                        "insight": score_entity.insight,
+                        "verdict": score_entity.verdict.value,
+                        "gaps": list(score_entity.gap_summary),
+                    },
+                )
+                await logger.ainfo(
+                    "sse_stream_score_emitted",
+                    verdict=score_entity.verdict.value,
+                    depth=score_entity.depth,
+                    accuracy=score_entity.accuracy,
+                    completeness=score_entity.completeness,
+                    insight=score_entity.insight,
+                )
+            except Exception:
+                await logger.aexception("sse_scoring_failed")
+                yield _sse_frame(
+                    "error",
+                    {
+                        "error": "scoring_failed",
+                        "message": "Score computation failed. Please reload to retry.",
+                        "retryable": True,
+                    },
+                )
+                # Do NOT emit "done" — the session is still ACTIVE in
+                # the DB (the status update is inside the try block).
+                # Omitting "done" lets the frontend reconnect and retry
+                # scoring on the next SSE connection.
+                return
+
             yield _sse_frame(
                 "done",
                 {"session_id": session_id_str, "question_count": actual_count},
@@ -654,6 +742,11 @@ async def submit_answer(
                 },
             ) from exc
 
+        # Story 4.1: stash the verbatim answer text for the scoring
+        # phase. Same lifecycle as question text — cleared by
+        # clear_session.
+        stash_answer_text(session_id, question.id, answer_text)
+
         # Story 3.4: look up the verbatim question text from the
         # in-memory registry. ``None`` means the server restarted
         # between question commit and the POST landing — surface a
@@ -742,14 +835,17 @@ async def submit_answer(
             else:
                 full_text = "".join(parts)
 
+            # Story 4.1: stash feedback text for the scoring phase.
+            stash_feedback_text(session_id, question_id, full_text)
+
             yield _sse_frame(
                 "feedback",
                 {
                     "answer_id": answer_id_str,
                     "question_id": str(question_id),
                     "text": full_text,
-                    "score": None,  # TODO(story-4.1): per-question scoring
-                    "gaps": [],  # TODO(story-4.1): structured-output gap extraction
+                    "score": None,  # Story 4.1: session-level scoring, not per-question
+                    "gaps": [],  # Story 4.1: gaps are session-level, not per-feedback
                 },
             )
 

@@ -18,9 +18,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.core.exceptions import DomainValidationError
-from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Session
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic
-from helprs.modules.comprehension.infrastructure.models import AnswerModel, QuestionModel, SessionModel
+from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Score, Session
+from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic, Verdict
+from helprs.modules.comprehension.infrastructure.models import AnswerModel, QuestionModel, ScoreModel, SessionModel
 
 
 def _to_domain(row: SessionModel) -> Session:
@@ -77,6 +77,20 @@ def _to_domain_answer(row: AnswerModel) -> Answer:
         question_id=row.question_id,
         text_hash=row.text_hash,
         latency_ms=row.latency_ms,
+        created_at=row.created_at,
+    )
+
+
+def _to_domain_score(row: ScoreModel) -> Score:
+    """Map an ORM ``ScoreModel`` row to a domain ``Score``."""
+    return Score(
+        session_id=row.session_id,
+        depth=row.depth,
+        accuracy=row.accuracy,
+        completeness=row.completeness,
+        insight=row.insight,
+        verdict=Verdict(row.verdict),
+        gap_summary=tuple(row.gap_summary),
         created_at=row.created_at,
     )
 
@@ -341,3 +355,40 @@ class SqlAlchemySessionRepository:
             await savepoint.commit()
         await self._session.refresh(row)
         return _to_domain_answer(row)
+
+    # ------------------------------------------------------------------
+    # Story 4.1: score persistence
+    # ------------------------------------------------------------------
+
+    async def persist_score(self, *, score: Score) -> None:
+        """Insert a score row for the session.
+
+        One score per session — the unique constraint on ``session_id``
+        prevents duplicates. Uses a savepoint so a duplicate on SSE
+        reconnect raises ``DomainValidationError`` instead of crashing.
+        Flushes but does NOT commit.
+        """
+        row = ScoreModel(
+            session_id=score.session_id,
+            depth=score.depth,
+            accuracy=score.accuracy,
+            completeness=score.completeness,
+            insight=score.insight,
+            verdict=score.verdict.value,
+            gap_summary=list(score.gap_summary),
+        )
+        self._session.add(row)
+        savepoint = await self._session.begin_nested()
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            await savepoint.rollback()
+            raise DomainValidationError("score already exists for session") from exc
+        else:
+            await savepoint.commit()
+
+    async def get_score_by_session_id(self, *, session_id: UUID) -> Score | None:
+        """Load the score for a session, or ``None`` if not yet scored."""
+        result = await self._session.execute(select(ScoreModel).where(ScoreModel.session_id == session_id).limit(1))
+        row = result.scalar_one_or_none()
+        return _to_domain_score(row) if row is not None else None

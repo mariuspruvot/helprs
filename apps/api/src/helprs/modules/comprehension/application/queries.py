@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.entities import Session
+from helprs.modules.comprehension.domain.entities import Score, Session
 
 if TYPE_CHECKING:
     from helprs.modules.identity.models import GitHubUser
@@ -71,6 +71,8 @@ class GetSessionResult:
     # Tuple keeps the dataclass frozen-friendly. Empty for sessions
     # whose question stream has not started yet.
     progress: tuple[QuestionProgressEntry, ...] = field(default_factory=tuple)
+    # Story 4.1: score breakdown — None for unscored sessions.
+    score: "Score | None" = None
 
     def __repr__(self) -> str:  # pragma: no cover — debug aid
         return (

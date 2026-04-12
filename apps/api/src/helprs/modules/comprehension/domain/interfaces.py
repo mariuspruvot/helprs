@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from uuid import UUID
 
-    from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Session
+    from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Score, Session
     from helprs.modules.comprehension.domain.value_objects import SessionRole, Topic
     from helprs.modules.comprehension.infrastructure.agents import PRPromptContext
 
@@ -168,10 +168,26 @@ class SessionRepository(Protocol):
         "exactly one answer per question". On collision the
         implementation translates the ``IntegrityError`` to
         ``DomainValidationError`` so the POST handler can map it to
-        409. Flushes but does NOT commit — the caller (the request-
+        409. Flushes but does NOT commit ��� the caller (the request-
         scoped ``db`` for the POST handler's DB phase) owns the
         transaction boundary.
         """
+        ...
+
+    # ------------------------------------------------------------------
+    # Story 4.1: score persistence (metadata-only)
+    # ------------------------------------------------------------------
+
+    async def persist_score(self, *, score: Score) -> None:
+        """Insert the session's score row.
+
+        One score per session (unique constraint on ``session_id``).
+        Flushes but does NOT commit — the caller owns the transaction.
+        """
+        ...
+
+    async def get_score_by_session_id(self, *, session_id: UUID) -> Score | None:
+        """Load the score for a session, or ``None`` if not yet scored."""
         ...
 
 
@@ -251,5 +267,26 @@ class LLMProvider(Protocol):
         """Non-streaming convenience: consume ``stream_feedback`` fully
         and return the concatenated text. Kept symmetric with
         ``generate_question``.
+        """
+        ...
+
+    async def generate_score(
+        self,
+        *,
+        session_id: UUID,
+        session_role: SessionRole,
+        pr_title: str,
+        questions_and_answers: list[tuple[str, str, str]],
+        pr_metadata: PRPromptContext,
+        api_key: str,
+    ) -> Score:
+        """Evaluate the complete Q&A session and return a ``Score``.
+
+        Story 4.1: non-streaming structured output. ``questions_and_answers``
+        is a list of ``(question_text, answer_text, feedback_text)`` triples
+        — ephemeral, never persisted. The LLM produces four dimension scores
+        (0-10) + gap bullets; the caller derives the ``Verdict`` deterministically.
+
+        Fresh Agent per call with BYOK key (zero-retention FR34).
         """
         ...

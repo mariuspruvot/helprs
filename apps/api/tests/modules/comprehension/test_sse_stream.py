@@ -255,6 +255,25 @@ class _ScriptedLLM:
     async def generate_feedback(self, **kwargs) -> str:
         raise NotImplementedError
 
+    async def generate_score(self, **kwargs):
+        from datetime import UTC, datetime
+
+        from helprs.modules.comprehension.domain.entities import Score
+        from helprs.modules.comprehension.domain.services import derive_verdict
+
+        sid = kwargs.get("session_id") or __import__("uuid").UUID(int=0)
+        verdict = derive_verdict(7, 7, 7, 7)
+        return Score(
+            session_id=sid,
+            depth=7,
+            accuracy=7,
+            completeness=7,
+            insight=7,
+            verdict=verdict,
+            gap_summary=("test gap 1", "test gap 2"),
+            created_at=datetime.now(UTC),
+        )
+
 
 class _RaisingLLM:
     """Fake provider that yields one chunk then raises httpx.TimeoutException."""
