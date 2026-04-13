@@ -19,6 +19,22 @@ export interface QuestionProgress {
   topic: string
 }
 
+/** Story 4.2: report reason enum — mirrors backend ReportReason. */
+export type ReportReason =
+  | 'irrelevant'
+  | 'factually_incorrect'
+  | 'ambiguous'
+  | 'too_easy'
+  | 'too_hard'
+  | 'other'
+
+/** Story 4.2: session feedback from `GET /sessions/{id}`. */
+export interface SessionFeedbackResponse {
+  rating: boolean
+  comment: string | null
+  created_at: string
+}
+
 /** Story 4.1: score response from `GET /sessions/{id}`. */
 export interface ScoreResponse {
   depth: number
@@ -53,6 +69,8 @@ export interface SessionResponse {
   progress: QuestionProgress[]
   /** Story 4.1: score — null before session is scored. */
   score: ScoreResponse | null
+  /** Story 4.2: post-session feedback — null before feedback submitted. */
+  feedback: SessionFeedbackResponse | null
 }
 
 // Story 3.3: chat message types for the streaming ChatPanel.

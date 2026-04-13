@@ -13,7 +13,7 @@ structlog at ``debug`` level (gated by env) instead.
 
 import uuid
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -185,3 +185,51 @@ class ScoreModel(Base):
     insight: Mapped[int] = mapped_column(Integer, nullable=False)
     verdict: Mapped[str] = mapped_column(String(20), nullable=False)
     gap_summary: Mapped[list] = mapped_column(JSONB, nullable=False)
+
+
+class QuestionReportModel(Base):
+    """A developer's flag on a problematic question.
+
+    Story 4.2: one report per question per session (enforced by unique
+    constraint on ``(session_id, question_number)``). Stores the reason
+    enum only — no verbatim question text (FR35/NFR14).
+    """
+
+    __tablename__ = "question_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "question_number",
+            name="uq_question_reports_session_question",
+        ),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    question_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class SessionFeedbackModel(Base):
+    """Post-session thumbs up/down + optional comment.
+
+    Story 4.2: one feedback per session (enforced by unique constraint on
+    ``session_id``). ``rating`` is True for thumbs-up, False for
+    thumbs-down. ``comment`` is user-authored text (max 2000 chars),
+    not AI content — safe to persist.
+    """
+
+    __tablename__ = "session_feedback"
+    __table_args__ = (
+        UniqueConstraint("session_id", name="uq_session_feedback_session_id"),
+        CheckConstraint("length(comment) <= 2000", name="ck_session_feedback_comment_length"),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rating: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)

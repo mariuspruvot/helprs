@@ -274,6 +274,8 @@ async def stream_session(
     pr_title = session.pr_title  # Story 3.5: feeds into PRPromptContext
     session_role = session.role
     session_id_str = str(session_id)
+    github_installation_id = session.github_installation_id
+    pr_head_sha = session.pr_head_sha
 
     # ==================================================================
     # HTTP / STREAM phase
@@ -581,6 +583,33 @@ async def stream_session(
                 # Omitting "done" lets the frontend reconnect and retry
                 # scoring on the next SSE connection.
                 return
+
+            # Story 4.2: post informational status check on the PR's
+            # head commit. Fire-and-forget — GitHub API failure must NOT
+            # block the "done" event or fail the session.
+            try:
+                from helprs.modules.installation.service import mint_installation_token, post_commit_status
+
+                avg_score = (
+                    score_entity.depth + score_entity.accuracy + score_entity.completeness + score_entity.insight
+                ) / 4
+                status_token = await mint_installation_token(github_installation_id, settings)
+                await post_commit_status(
+                    owner=repo_owner,
+                    repo=repo_name,
+                    sha=pr_head_sha,
+                    state="success",
+                    description=f"{score_entity.verdict.value.capitalize()} — Score: {avg_score:.1f}/10",
+                    context="helPRs/comprehension",
+                    installation_token=status_token,
+                )
+                await logger.ainfo(
+                    "github_status_check_posted",
+                    verdict=score_entity.verdict.value,
+                    avg_score=f"{avg_score:.1f}",
+                )
+            except Exception:
+                await logger.aexception("github_status_check_failed")
 
             yield _sse_frame(
                 "done",

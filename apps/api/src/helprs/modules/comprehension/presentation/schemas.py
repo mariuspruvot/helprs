@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus
+from helprs.modules.comprehension.domain.value_objects import ReportReason, SessionRole, SessionStatus
 
 
 class QuestionProgress(BaseModel):
@@ -44,6 +44,14 @@ class ScoreResponse(BaseModel):
     gaps: list[str]
 
 
+class SessionFeedbackResponse(BaseModel):
+    """Story 4.2: serialized post-session feedback."""
+
+    rating: bool
+    comment: str | None
+    created_at: datetime
+
+
 class SessionResponse(BaseModel):
     """Serialized shape of ``GET /api/v1/sessions/{id}``.
 
@@ -72,6 +80,8 @@ class SessionResponse(BaseModel):
     progress: list[QuestionProgress]
     # Story 4.1: score breakdown — null before session is scored.
     score: ScoreResponse | None = None
+    # Story 4.2: post-session feedback — null before feedback submitted.
+    feedback: SessionFeedbackResponse | None = None
 
 
 class SubmitAnswerRequest(BaseModel):
@@ -100,3 +110,30 @@ class SubmitAnswerRequest(BaseModel):
         if not stripped:
             raise ValueError("text must not be blank or whitespace-only")
         return v
+
+
+# ------------------------------------------------------------------
+# Story 4.2: question report + session feedback schemas
+# ------------------------------------------------------------------
+
+
+class QuestionReportRequest(BaseModel):
+    """Body of ``POST /api/v1/sessions/{id}/questions/{qnum}/report``."""
+
+    reason: ReportReason
+
+
+class QuestionReportResponse(BaseModel):
+    """Confirmation of a question report."""
+
+    session_id: UUID
+    question_number: int
+    reason: ReportReason
+    created_at: datetime
+
+
+class SessionFeedbackRequest(BaseModel):
+    """Body of ``POST /api/v1/sessions/{id}/feedback``."""
+
+    rating: bool
+    comment: str | None = Field(None, max_length=2000)

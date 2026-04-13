@@ -37,6 +37,17 @@ class ScoreDimension(StrEnum):
     INSIGHT = "insight"
 
 
+class ReportReason(StrEnum):
+    """Reason a developer flags a question as problematic (UX-DR9)."""
+
+    IRRELEVANT = "irrelevant"
+    FACTUALLY_INCORRECT = "factually_incorrect"
+    AMBIGUOUS = "ambiguous"
+    TOO_EASY = "too_easy"
+    TOO_HARD = "too_hard"
+    OTHER = "other"
+
+
 class Topic(StrEnum):
     """Scoring dimensions questions can attach to.
 

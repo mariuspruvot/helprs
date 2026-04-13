@@ -300,10 +300,14 @@ class GetSessionHandler:
         # Story 4.1: load score if available.
         score = await repo.get_score_by_session_id(session_id=query.session_id)
 
+        # Story 4.2: load session feedback if available.
+        feedback = await repo.get_session_feedback(session_id=query.session_id)
+
         return GetSessionResult(
             session=domain_session,
             installation_token=installation_token,
             question_count=question_count,
             progress=progress,
             score=score,
+            feedback=feedback,
         )

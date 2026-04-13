@@ -18,9 +18,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.core.exceptions import DomainValidationError
-from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Score, Session
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic, Verdict
-from helprs.modules.comprehension.infrastructure.models import AnswerModel, QuestionModel, ScoreModel, SessionModel
+from helprs.modules.comprehension.domain.entities import (
+    Answer,
+    PRContext,
+    Question,
+    QuestionReport,
+    Score,
+    Session,
+    SessionFeedback,
+)
+from helprs.modules.comprehension.domain.value_objects import ReportReason, SessionRole, SessionStatus, Topic, Verdict
+from helprs.modules.comprehension.infrastructure.models import (
+    AnswerModel,
+    QuestionModel,
+    QuestionReportModel,
+    ScoreModel,
+    SessionFeedbackModel,
+    SessionModel,
+)
 
 
 def _to_domain(row: SessionModel) -> Session:
@@ -77,6 +92,26 @@ def _to_domain_answer(row: AnswerModel) -> Answer:
         question_id=row.question_id,
         text_hash=row.text_hash,
         latency_ms=row.latency_ms,
+        created_at=row.created_at,
+    )
+
+
+def _to_domain_question_report(row: QuestionReportModel) -> QuestionReport:
+    """Map an ORM ``QuestionReportModel`` row to a domain ``QuestionReport``."""
+    return QuestionReport(
+        session_id=row.session_id,
+        question_number=row.question_number,
+        reason=ReportReason(row.reason),
+        created_at=row.created_at,
+    )
+
+
+def _to_domain_session_feedback(row: SessionFeedbackModel) -> SessionFeedback:
+    """Map an ORM ``SessionFeedbackModel`` row to a domain ``SessionFeedback``."""
+    return SessionFeedback(
+        session_id=row.session_id,
+        rating=row.rating,
+        comment=row.comment,
         created_at=row.created_at,
     )
 
@@ -392,3 +427,73 @@ class SqlAlchemySessionRepository:
         result = await self._session.execute(select(ScoreModel).where(ScoreModel.session_id == session_id).limit(1))
         row = result.scalar_one_or_none()
         return _to_domain_score(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # Story 4.2: question reports + session feedback
+    # ------------------------------------------------------------------
+
+    async def persist_question_report(
+        self,
+        *,
+        session_id: UUID,
+        question_number: int,
+        reason: ReportReason,
+    ) -> QuestionReport:
+        """Insert a question report row (one per question per session).
+
+        Uses savepoint + IntegrityError catch so a duplicate raises
+        ``DomainValidationError`` (mapped to 409 by the endpoint).
+        """
+        savepoint = await self._session.begin_nested()
+        try:
+            row = QuestionReportModel(
+                session_id=session_id,
+                question_number=question_number,
+                reason=reason.value,
+            )
+            self._session.add(row)
+            await self._session.flush()
+        except IntegrityError as exc:
+            await savepoint.rollback()
+            raise DomainValidationError("question already reported") from exc
+        else:
+            await savepoint.commit()
+        await self._session.refresh(row)
+        return _to_domain_question_report(row)
+
+    async def persist_session_feedback(
+        self,
+        *,
+        session_id: UUID,
+        rating: bool,
+        comment: str | None,
+    ) -> SessionFeedback:
+        """Insert session feedback (one per session).
+
+        Uses savepoint + IntegrityError catch so a duplicate raises
+        ``DomainValidationError`` (mapped to 409 by the endpoint).
+        """
+        savepoint = await self._session.begin_nested()
+        try:
+            row = SessionFeedbackModel(
+                session_id=session_id,
+                rating=rating,
+                comment=comment,
+            )
+            self._session.add(row)
+            await self._session.flush()
+        except IntegrityError as exc:
+            await savepoint.rollback()
+            raise DomainValidationError("feedback already submitted") from exc
+        else:
+            await savepoint.commit()
+        await self._session.refresh(row)
+        return _to_domain_session_feedback(row)
+
+    async def get_session_feedback(self, *, session_id: UUID) -> SessionFeedback | None:
+        """Load session feedback, or ``None`` if not yet submitted."""
+        result = await self._session.execute(
+            select(SessionFeedbackModel).where(SessionFeedbackModel.session_id == session_id).limit(1)
+        )
+        row = result.scalar_one_or_none()
+        return _to_domain_session_feedback(row) if row is not None else None
