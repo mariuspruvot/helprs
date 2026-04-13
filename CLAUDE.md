@@ -14,13 +14,13 @@ Monorepo with two apps and shared infra:
 ```
 apps/api/          — FastAPI backend (Python 3.12, uv)
   src/helprs/
-    core/          — config, database, dependencies, middleware, security
+    core/          — config, database, dependencies, exceptions, middleware, security
     modules/       — domain modules: identity, installation, webhook, billing, comprehension
     admin/         — SQLAdmin panel
   tests/           — mirrors modules/ structure
   alembic/         — DB migrations
 apps/web/          — React frontend (Vite, TypeScript)
-  src/features/    — feature modules
+  src/features/    — feature modules: auth, demo, installation, session
   src/shared/      — shared components/utils
 infra/
   docker/          — Dockerfiles (api, web)
@@ -30,7 +30,9 @@ infra/
 ## Key Patterns
 
 - **App factory**: `helprs.main:create_app()` — lifespan manages DB engine
-- **Module structure**: each module has `router.py`, `service.py`, `models.py`, `schemas.py`
+- **Flat modules** (identity, installation, webhook, billing): `router.py`, `service.py`, `models.py`, `schemas.py`
+- **Layered modules** (comprehension): DDD layout — `domain/`, `application/`, `infrastructure/`, `presentation/`
+- **AI agents**: comprehension uses pydantic-ai agents (`infrastructure/agents.py`) with SSE streaming responses
 - **API prefix**: all routes under `/api/v1`
 - **Admin panel**: SQLAdmin at `/admin`, configured in `admin/views.py`
 
@@ -43,9 +45,11 @@ infra/
 ## Testing
 
 ```bash
-cd apps/api && uv run pytest                    # All API tests
-cd apps/api && uv run pytest tests/modules/identity/  # Single module
-cd apps/web && npx vitest run                   # All frontend tests
+cd apps/api && uv run pytest                              # All API tests
+cd apps/api && uv run pytest tests/modules/identity/      # Single module
+cd apps/api && uv run pytest tests/modules/comprehension/test_story_4_2.py  # Single file
+cd apps/web && npx vitest run                             # All frontend tests
+cd apps/api && uv run alembic revision --autogenerate -m "description"  # New migration
 ```
 
 - Tests use `AsyncClient` with `ASGITransport` (no real server)

@@ -148,6 +148,44 @@ async def post_pr_comment_with_retry(
     raise ExternalServiceError("Failed to post PR comment after 3 attempts") from last_exc
 
 
+async def post_commit_status(
+    *,
+    owner: str,
+    repo: str,
+    sha: str,
+    state: str,
+    description: str,
+    context: str,
+    installation_token: str,
+) -> None:
+    """Post a commit status on a SHA via the GitHub REST API.
+
+    Story 4.2: used to post the comprehension score as an informational
+    status check on the PR's head commit. Always ``state="success"`` —
+    never merge-blocking (FR14).
+
+    Fire-and-forget: callers wrap this in try/except so GitHub API
+    failures do not block session completion.
+    """
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/statuses/{sha}"
+    headers = {
+        "Authorization": f"Bearer {installation_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            url,
+            json={
+                "state": state,
+                "description": description[:140],
+                "context": context,
+            },
+            headers=headers,
+        )
+        resp.raise_for_status()
+
+
 async def create_installation(session: AsyncSession, webhook_data: dict) -> Installation:
     """Create an installation record from an installation.created webhook payload.
 

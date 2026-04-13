@@ -25,8 +25,16 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from uuid import UUID
 
-    from helprs.modules.comprehension.domain.entities import Answer, PRContext, Question, Score, Session
-    from helprs.modules.comprehension.domain.value_objects import SessionRole, Topic
+    from helprs.modules.comprehension.domain.entities import (
+        Answer,
+        PRContext,
+        Question,
+        QuestionReport,
+        Score,
+        Session,
+        SessionFeedback,
+    )
+    from helprs.modules.comprehension.domain.value_objects import ReportReason, SessionRole, Topic
     from helprs.modules.comprehension.infrastructure.agents import PRPromptContext
 
 
@@ -188,6 +196,42 @@ class SessionRepository(Protocol):
 
     async def get_score_by_session_id(self, *, session_id: UUID) -> Score | None:
         """Load the score for a session, or ``None`` if not yet scored."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Story 4.2: question reports + session feedback
+    # ------------------------------------------------------------------
+
+    async def persist_question_report(
+        self,
+        *,
+        session_id: UUID,
+        question_number: int,
+        reason: ReportReason,
+    ) -> QuestionReport:
+        """Persist a question report (one per question per session).
+
+        Uses savepoint + IntegrityError catch for duplicate detection.
+        Flushes but does NOT commit.
+        """
+        ...
+
+    async def persist_session_feedback(
+        self,
+        *,
+        session_id: UUID,
+        rating: bool,
+        comment: str | None,
+    ) -> SessionFeedback:
+        """Persist post-session feedback (one per session).
+
+        Uses savepoint + IntegrityError catch for duplicate detection.
+        Flushes but does NOT commit.
+        """
+        ...
+
+    async def get_session_feedback(self, *, session_id: UUID) -> SessionFeedback | None:
+        """Load session feedback, or ``None`` if not yet submitted."""
         ...
 
 

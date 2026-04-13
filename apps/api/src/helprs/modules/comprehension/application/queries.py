@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.entities import Score, Session
+from helprs.modules.comprehension.domain.entities import Score, Session, SessionFeedback
 
 if TYPE_CHECKING:
     from helprs.modules.identity.models import GitHubUser
@@ -73,6 +73,8 @@ class GetSessionResult:
     progress: tuple[QuestionProgressEntry, ...] = field(default_factory=tuple)
     # Story 4.1: score breakdown — None for unscored sessions.
     score: "Score | None" = None
+    # Story 4.2: post-session feedback — None if not yet submitted.
+    feedback: "SessionFeedback | None" = None
 
     def __repr__(self) -> str:  # pragma: no cover — debug aid
         return (

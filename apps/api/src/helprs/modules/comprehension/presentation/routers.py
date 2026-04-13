@@ -11,11 +11,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request
 
 from helprs.core.dependencies import DbSession, GetSettings, get_current_user
+from helprs.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from helprs.core.middleware import limiter
 from helprs.modules.comprehension.application.handlers import GetSessionHandler
 from helprs.modules.comprehension.application.queries import GetSessionQuery
+from helprs.modules.comprehension.domain.value_objects import SessionStatus
 from helprs.modules.comprehension.infrastructure.github_diff import fetch_pr_diff
-from helprs.modules.comprehension.presentation.schemas import QuestionProgress, ScoreResponse, SessionResponse
+from helprs.modules.comprehension.infrastructure.repositories import SqlAlchemySessionRepository
+from helprs.modules.comprehension.presentation.schemas import (
+    QuestionProgress,
+    QuestionReportRequest,
+    QuestionReportResponse,
+    ScoreResponse,
+    SessionFeedbackRequest,
+    SessionFeedbackResponse,
+    SessionResponse,
+)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -74,6 +85,15 @@ async def get_session(
             gaps=list(result.score.gap_summary),
         )
 
+    # Story 4.2: include feedback if available.
+    feedback_response = None
+    if result.feedback is not None:
+        feedback_response = SessionFeedbackResponse(
+            rating=result.feedback.rating,
+            comment=result.feedback.comment,
+            created_at=result.feedback.created_at,
+        )
+
     return SessionResponse(
         id=session.id,
         repo_full_name=session.repo_full_name,
@@ -90,4 +110,93 @@ async def get_session(
         updated_at=session.updated_at,
         progress=progress,
         score=score_response,
+        feedback=feedback_response,
+    )
+
+
+@router.post(
+    "/{session_id}/questions/{question_number}/report",
+    response_model=QuestionReportResponse,
+    status_code=201,
+)
+@limiter.limit("30/minute")
+async def report_question(
+    session_id: UUID,
+    question_number: int,
+    body: QuestionReportRequest,
+    request: Request,
+    db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+) -> QuestionReportResponse:
+    """Flag a question as problematic (AC #2, #3).
+
+    One report per question per session. Returns 409 if already reported.
+    """
+    handler = GetSessionHandler(db, settings)
+    result = await handler.handle(GetSessionQuery(session_id=session_id, requesting_user=user))
+    session = result.session
+
+    # Validate question exists
+    repo = SqlAlchemySessionRepository(db)
+    question = await repo.get_question_by_number(session_id=session.id, number=question_number)
+    if question is None:
+        raise NotFoundError(f"Question {question_number} not found in session {session_id}")
+
+    try:
+        report = await repo.persist_question_report(
+            session_id=session.id,
+            question_number=question_number,
+            reason=body.reason,
+        )
+    except DomainValidationError as exc:
+        raise ConflictError(str(exc)) from exc
+
+    return QuestionReportResponse(
+        session_id=report.session_id,
+        question_number=report.question_number,
+        reason=report.reason,
+        created_at=report.created_at,
+    )
+
+
+@router.post(
+    "/{session_id}/feedback",
+    response_model=SessionFeedbackResponse,
+    status_code=201,
+)
+@limiter.limit("10/minute")
+async def submit_feedback(
+    session_id: UUID,
+    body: SessionFeedbackRequest,
+    request: Request,
+    db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+) -> SessionFeedbackResponse:
+    """Submit post-session feedback (AC #4, #5).
+
+    Session must be COMPLETED. One feedback per session. Returns 409 if already submitted.
+    """
+    handler = GetSessionHandler(db, settings)
+    result = await handler.handle(GetSessionQuery(session_id=session_id, requesting_user=user))
+    session = result.session
+
+    if session.status != SessionStatus.COMPLETED:
+        raise DomainValidationError("Feedback can only be submitted for completed sessions")
+
+    repo = SqlAlchemySessionRepository(db)
+    try:
+        feedback = await repo.persist_session_feedback(
+            session_id=session.id,
+            rating=body.rating,
+            comment=body.comment,
+        )
+    except DomainValidationError as exc:
+        raise ConflictError(str(exc)) from exc
+
+    return SessionFeedbackResponse(
+        rating=feedback.rating,
+        comment=feedback.comment,
+        created_at=feedback.created_at,
     )

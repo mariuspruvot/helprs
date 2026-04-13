@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from helprs.modules.comprehension.domain.value_objects import SessionRole, SessionStatus, Topic, Verdict
+from helprs.modules.comprehension.domain.value_objects import ReportReason, SessionRole, SessionStatus, Topic, Verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,4 +134,34 @@ class Score:
     insight: int  # 0-10
     verdict: Verdict
     gap_summary: tuple[str, ...]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionReport:
+    """A developer's flag on a problematic question.
+
+    Frozen — reports are immutable after submission. References the
+    question by ``session_id + question_number`` (metadata-only, no
+    verbatim text stored — FR35/NFR14).
+    """
+
+    session_id: UUID
+    question_number: int
+    reason: ReportReason
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SessionFeedback:
+    """Post-session thumbs up/down + optional comment.
+
+    Frozen — feedback is immutable after submission. ``rating`` is
+    True for thumbs-up, False for thumbs-down. ``comment`` is
+    user-authored text, not AI content.
+    """
+
+    session_id: UUID
+    rating: bool
+    comment: str | None
     created_at: datetime
