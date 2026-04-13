@@ -175,7 +175,7 @@ export default function SettingsView() {
         </div>
 
         {/* BYOK Section */}
-        <section className="bg-[var(--oc-dark-surface)] rounded-lg p-6 space-y-4">
+        <section className="bg-[var(--color-surface)] rounded-lg p-6 space-y-4">
           <h2 className="text-[18px] font-semibold">Anthropic API Key</h2>
 
           {installation.byok_configured ? (
@@ -226,7 +226,7 @@ export default function SettingsView() {
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder="sk-ant-api03-..."
-                className="w-full px-4 py-3 rounded-lg bg-primary border border-[var(--oc-dark-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
+                className="w-full px-4 py-3 rounded-lg bg-primary border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
               />
               {keyError && <p className="text-[var(--warning)] text-[14px]">{keyError}</p>}
               {keySuccess && <p className="text-[var(--success)] text-[14px]">{keySuccess}</p>}
@@ -263,7 +263,7 @@ export default function SettingsView() {
                 </button>
                 <button
                   onClick={() => setShowDeleteConfirm(false)}
-                  className="px-4 py-2 rounded-lg bg-[var(--oc-dark-surface)] text-text-secondary text-[14px]"
+                  className="px-4 py-2 rounded-lg bg-[var(--color-surface)] text-text-secondary text-[14px]"
                 >
                   Cancel
                 </button>
@@ -273,7 +273,7 @@ export default function SettingsView() {
         </section>
 
         {/* Suppression Labels Section */}
-        <section className="bg-[var(--oc-dark-surface)] rounded-lg p-6 space-y-4">
+        <section className="bg-[var(--color-surface)] rounded-lg p-6 space-y-4">
           <h2 className="text-[18px] font-semibold">Suppression Labels</h2>
           <p className="text-text-secondary text-[14px]">
             PRs with these labels will skip helPRs sessions.

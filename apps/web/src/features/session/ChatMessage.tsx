@@ -73,18 +73,24 @@ export default function ChatMessage({ message }: ChatMessageProps) {
   const isFeedback =
     message.kind === 'ai_feedback' || message.kind === 'ai_feedback_streaming'
 
-  let backgroundColor = '#201d1d'
+  let backgroundColor = '#2c2727'
+  let boxShadow = 'rgba(255,255,255,0.06) 0 0 0 1px, rgba(0,0,0,0.2) 0 2px 8px, inset rgba(255,255,255,0.03) 0 1px 0 0'
   let srOnlyPrefix = 'helPRs asks:'
   let visibleHeader: string | null = `AI question ${message.questionNumber} of ${message.total}`
+  let headerColor = '#E2A039'
 
   if (isUserAnswer) {
-    backgroundColor = '#302c2c'
+    backgroundColor = '#332e2e'
+    boxShadow = 'rgba(255,255,255,0.04) 0 0 0 1px, rgba(0,0,0,0.15) 0 1px 4px'
     srOnlyPrefix = 'You answered:'
-    visibleHeader = null // no visible label for user answers
+    visibleHeader = null
+    headerColor = '#9a9898'
   } else if (isFeedback) {
-    backgroundColor = '#201d1d'
+    backgroundColor = '#2c2727'
+    boxShadow = 'rgba(255,255,255,0.06) 0 0 0 1px, rgba(0,0,0,0.2) 0 2px 8px, inset rgba(255,255,255,0.03) 0 1px 0 0'
     srOnlyPrefix = 'Feedback:'
     visibleHeader = 'AI feedback'
+    headerColor = '#9a9898'
   }
 
   // ----- Markdown component overrides ------------------------------
@@ -126,9 +132,12 @@ export default function ChatMessage({ message }: ChatMessageProps) {
       data-question-number={message.questionNumber}
       className="w-full text-[15px] leading-[1.6] text-text-primary"
       style={{
+        fontFamily: 'var(--font-family-sans)',
+        letterSpacing: '0.2px',
         backgroundColor,
+        boxShadow,
         padding: 16,
-        borderRadius: 8,
+        borderRadius: 12,
         marginBottom: 16,
       }}
     >
@@ -136,8 +145,8 @@ export default function ChatMessage({ message }: ChatMessageProps) {
       <span className="sr-only">{srOnlyPrefix}</span>
       {visibleHeader !== null && (
         <header
-          className="text-[12px] uppercase text-text-muted"
-          style={{ marginBottom: 8, letterSpacing: '0.05em' }}
+          className="text-[12px] uppercase font-medium"
+          style={{ marginBottom: 8, letterSpacing: '0.08em', color: headerColor }}
         >
           {visibleHeader}
         </header>

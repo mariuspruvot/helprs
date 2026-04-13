@@ -109,9 +109,9 @@ describe('ChatView — data loading', () => {
     expect(screen.getByTestId('chat-panel')).toBeTruthy()
     expect(screen.getByTestId('diff-viewer')).toBeTruthy()
 
-    // First file tab is active.
-    const firstTab = screen.getByTestId('diff-file-tab-0')
-    expect(firstTab.getAttribute('aria-selected')).toBe('true')
+    // File dropdown is present and first file is selected.
+    const fileSelect = screen.getByTestId('diff-file-select') as HTMLSelectElement
+    expect(fileSelect.value).toBe('0')
   })
 
   test('renders 403 error screen when fetch returns 403', async () => {
@@ -228,22 +228,21 @@ describe('ChatView — responsive breakpoints', () => {
 })
 
 describe('ChatView — file tab interaction', () => {
-  test('clicking the second file tab updates activeFileIndex in the store', async () => {
+  test('selecting the second file in dropdown updates activeFileIndex in the store', async () => {
     mockApiFetchOnce(mockedApiFetch, jsonResponse(makeSession()))
 
     renderAtSessionRoute(<ChatView />)
 
     await waitFor(() => {
-      expect(screen.getByTestId('diff-file-tab-1')).toBeTruthy()
+      expect(screen.getByTestId('diff-file-select')).toBeTruthy()
     })
 
-    const secondTab = screen.getByTestId('diff-file-tab-1')
-    fireEvent.click(secondTab)
+    const select = screen.getByTestId('diff-file-select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '1' } })
 
     await waitFor(() => {
       expect(useSessionStore.getState().activeFileIndex).toBe(1)
     })
-    expect(secondTab.getAttribute('aria-selected')).toBe('true')
   })
 })
 

@@ -46,6 +46,7 @@ export function makeSession(overrides: Partial<SessionResponse> = {}): SessionRe
     updated_at: '2026-04-10T00:00:00Z',
     progress: [],
     score: null,
+    feedback: null,
     ...overrides,
   }
 }
