@@ -116,7 +116,7 @@ export default function SetupView() {
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="sk-ant-api03-..."
-              className="w-full px-4 py-3 rounded-lg bg-[var(--oc-dark-surface)] border border-[var(--oc-dark-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
+              className="w-full px-4 py-3 rounded-lg bg-[var(--color-surface)] border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
             />
             {error && (
               <p className="text-[var(--warning)] text-[14px]">{error}</p>
@@ -146,7 +146,7 @@ export default function SetupView() {
               {labels.map((label) => (
                 <span
                   key={label}
-                  className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-[var(--oc-dark-surface)] text-[14px]"
+                  className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-[var(--color-surface)] text-[14px]"
                 >
                   {label}
                   <button
@@ -165,11 +165,11 @@ export default function SetupView() {
                 onChange={(e) => setNewLabel(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addLabel()}
                 placeholder="Add label..."
-                className="flex-1 px-4 py-2 rounded-lg bg-[var(--oc-dark-surface)] border border-[var(--oc-dark-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
+                className="flex-1 px-4 py-2 rounded-lg bg-[var(--color-surface)] border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
               />
               <button
                 onClick={addLabel}
-                className="px-4 py-2 rounded-lg bg-[var(--oc-dark-surface)] hover:opacity-80"
+                className="px-4 py-2 rounded-lg bg-[var(--color-surface)] hover:opacity-80"
               >
                 Add
               </button>
@@ -187,7 +187,7 @@ export default function SetupView() {
               </button>
               <button
                 onClick={() => setStep('complete')}
-                className="px-6 py-3 rounded-lg bg-[var(--oc-dark-surface)] text-text-secondary hover:opacity-80"
+                className="px-6 py-3 rounded-lg bg-[var(--color-surface)] text-text-secondary hover:opacity-80"
               >
                 Skip
               </button>
@@ -199,7 +199,7 @@ export default function SetupView() {
           <div className="space-y-4 text-center">
             <div className="text-[var(--success)] text-[36px]">&#10003;</div>
             <h2 className="text-[20px] font-semibold">Setup Complete</h2>
-            <div className="bg-[var(--oc-dark-surface)] rounded-lg p-4 text-left space-y-2 text-[14px]">
+            <div className="bg-[var(--color-surface)] rounded-lg p-4 text-left space-y-2 text-[14px]">
               {byokResult && (
                 <>
                   <div className="flex justify-between">
@@ -222,7 +222,7 @@ export default function SetupView() {
             </p>
             <button
               onClick={() => navigate(`/installations/${installationId}/settings`)}
-              className="w-full py-3 rounded-lg bg-[var(--oc-dark-surface)] text-text-primary hover:opacity-80 transition-opacity"
+              className="w-full py-3 rounded-lg bg-[var(--color-surface)] text-text-primary hover:opacity-80 transition-opacity"
             >
               Go to Settings
             </button>

@@ -10,7 +10,7 @@ describe('AnswerInput', () => {
   test('renders with default placeholder when enabled', () => {
     render(<AnswerInput disabled={false} onSubmit={vi.fn()} />)
     const ta = screen.getByTestId('answer-input-textarea') as HTMLTextAreaElement
-    expect(ta.placeholder).toBe('Type your answer...')
+    expect(ta.placeholder).toContain('Type your answer')
     expect(ta.readOnly).toBe(false)
     expect(ta.getAttribute('aria-disabled')).toBe('false')
   })

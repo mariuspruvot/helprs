@@ -16,7 +16,7 @@ interface ScoreCardProps {
 }
 
 const DIMENSIONS = [
-  { key: 'depth' as const, label: 'Depth', color: '#007aff' },
+  { key: 'depth' as const, label: 'Depth', color: '#E2A039' },
   { key: 'accuracy' as const, label: 'Accuracy', color: '#30d158' },
   { key: 'completeness' as const, label: 'Completeness', color: '#ff9f0a' },
   { key: 'insight' as const, label: 'Insight', color: '#ff3b30' },
@@ -24,7 +24,7 @@ const DIMENSIONS = [
 
 const VERDICT_COLORS: Record<string, string> = {
   exceptional: '#30d158',
-  strong: '#007aff',
+  strong: '#E2A039',
   adequate: '#9a9898',
   weak: '#ff9f0a',
   insufficient: '#ff9f0a',
@@ -41,7 +41,12 @@ export default function ScoreCard({ score }: ScoreCardProps) {
     <article
       data-testid="score-card"
       className="w-full text-text-primary"
-      style={{ padding: 24, borderRadius: 8, backgroundColor: '#201d1d' }}
+      style={{
+        padding: 24,
+        borderRadius: 12,
+        backgroundColor: '#252121',
+        boxShadow: 'rgba(255,255,255,0.05) 0 0 0 1px',
+      }}
     >
       {/* Screen-reader-only prefix */}
       <span className="sr-only">Comprehension score results:</span>

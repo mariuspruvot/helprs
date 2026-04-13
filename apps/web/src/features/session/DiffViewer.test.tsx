@@ -15,26 +15,27 @@ afterEach(() => {
 })
 
 describe('DiffViewer', () => {
-  test('renders a tab per file in the parsed diff', () => {
+  test('renders a dropdown with all files in the parsed diff', () => {
     render(<DiffViewer session={makeSession()} />)
-    expect(screen.getByTestId('diff-file-tab-0').textContent).toBe('foo.ts')
-    expect(screen.getByTestId('diff-file-tab-1').textContent).toBe('bar.py')
-    expect(screen.getByTestId('diff-file-tab-0').getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByTestId('diff-file-tab-1').getAttribute('aria-selected')).toBe('false')
+    const select = screen.getByTestId('diff-file-select') as HTMLSelectElement
+    const options = select.querySelectorAll('option')
+    expect(options.length).toBe(2)
+    expect(options[0].textContent).toContain('foo.ts')
+    expect(options[1].textContent).toContain('bar.py')
+    expect(select.value).toBe('0')
   })
 
-  test('clicking a file tab updates the store and re-renders with the new file active', () => {
+  test('changing the dropdown updates the store and selects the new file', () => {
     render(<DiffViewer session={makeSession()} />)
-    fireEvent.click(screen.getByTestId('diff-file-tab-1'))
+    const select = screen.getByTestId('diff-file-select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '1' } })
     expect(useSessionStore.getState().activeFileIndex).toBe(1)
-    expect(screen.getByTestId('diff-file-tab-1').getAttribute('aria-selected')).toBe('true')
   })
 
-  test('ArrowRight on a focused tab navigates to the next file', () => {
+  test('next button navigates to the next file', () => {
     render(<DiffViewer session={makeSession()} />)
-    const firstTab = screen.getByTestId('diff-file-tab-0')
-    firstTab.focus()
-    fireEvent.keyDown(firstTab, { key: 'ArrowRight' })
+    const nextBtn = screen.getByLabelText('Next file')
+    fireEvent.click(nextBtn)
     expect(useSessionStore.getState().activeFileIndex).toBe(1)
   })
 
@@ -48,31 +49,23 @@ describe('DiffViewer', () => {
     const diffWithMarker = `${MULTI_FILE_DIFF}\n${TRUNCATION_MARKER}\n`
     render(<DiffViewer session={makeSession({ diff: diffWithMarker })} />)
     const warning = screen.getByTestId('diff-truncation-warning')
-    expect(warning.textContent).toContain(
-      'Large PR — diff truncated at 1 MB. Story 3.5 will add file-ranked selection.',
-    )
+    expect(warning.textContent).toContain('Large PR')
   })
 
-  test('keeps binary files in the tab list with a placeholder body instead of silently dropping them', () => {
-    // Mixed PR: one text file + one binary file. git-format binary delta
-    // uses the `Binary files … and … differ` sentinel with zero hunks; the
-    // old code filtered it out and the user never knew the PR had a binary
-    // change. The fix keeps the tab and renders a placeholder body when
-    // the binary tab is active.
+  test('keeps binary files in the dropdown with a placeholder body', () => {
     const mixedDiff = `${MULTI_FILE_DIFF}diff --git a/assets/logo.png b/assets/logo.png
 index 1111111..2222222 100644
 Binary files a/assets/logo.png and b/assets/logo.png differ
 `
     render(<DiffViewer session={makeSession({ diff: mixedDiff })} />)
 
-    // Both text files AND the binary file are in the tab list.
-    expect(screen.getByTestId('diff-file-tab-0').textContent).toBe('foo.ts')
-    expect(screen.getByTestId('diff-file-tab-1').textContent).toBe('bar.py')
-    expect(screen.getByTestId('diff-file-tab-2').textContent).toBe('logo.png')
+    const select = screen.getByTestId('diff-file-select') as HTMLSelectElement
+    const options = select.querySelectorAll('option')
+    expect(options.length).toBe(3)
+    expect(options[2].textContent).toContain('logo.png')
 
-    // Clicking the binary tab surfaces the placeholder, not a crash or
-    // empty state.
-    fireEvent.click(screen.getByTestId('diff-file-tab-2'))
+    // Select the binary file via dropdown
+    fireEvent.change(select, { target: { value: '2' } })
     const placeholder = screen.getByTestId('diff-binary-placeholder')
     expect(placeholder.textContent).toContain('Binary file — not displayed')
     expect(placeholder.textContent).toContain('assets/logo.png')

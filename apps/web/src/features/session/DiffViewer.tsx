@@ -29,7 +29,7 @@ import type { SessionResponse } from './types'
 // of this so the fade-in + fade-out are both visible.
 const FILE_HIGHLIGHT_DURATION_MS = 600
 const FILE_HIGHLIGHT_TRANSITION_MS = 300
-const FILE_HIGHLIGHT_COLOR = '#007aff'
+const FILE_HIGHLIGHT_COLOR = '#E2A039'
 
 // Story 3.4 (AC #12): how long a clicked code-link's row stays
 // highlighted with the accent overlay before fading.
@@ -37,6 +37,7 @@ const LINE_HIGHLIGHT_DURATION_MS = 1500
 
 interface DiffViewerProps {
   session: SessionResponse
+  onClose?: () => void
 }
 
 /**
@@ -101,7 +102,7 @@ function makeAnchorID(change: ChangeData): string {
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer(
-  { session },
+  { session, onClose },
   ref,
 ) {
   const activeFileIndex = useSessionStore((s) => s.activeFileIndex)
@@ -325,60 +326,123 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
     >
       {isTruncated && (
         <div
-          className="px-3 py-1 border-b border-border text-[12px] text-warning bg-surface shrink-0"
+          className="px-3 py-1 text-[12px] text-warning shrink-0"
+          style={{ background: '#1e1a1a', boxShadow: 'inset 0 -1px 0 rgba(255,255,255,0.06)' }}
           data-testid="diff-truncation-warning"
         >
-          Large PR — diff truncated at 1 MB. Story 3.5 will add file-ranked selection.
+          Large PR — diff truncated at 1 MB.
         </div>
       )}
+      {/* File toolbar: prev/next + dropdown + close */}
       <div
-        role="tablist"
-        aria-label="Changed files"
-        className="flex items-stretch h-10 bg-surface border-b border-border overflow-x-auto shrink-0"
+        className="flex items-center gap-2 px-3 shrink-0"
+        style={{
+          background: '#1e1a1a',
+          boxShadow: 'inset 0 -1px 0 rgba(255,255,255,0.06)',
+          height: 44,
+          fontFamily: 'var(--font-family-sans)',
+        }}
         data-testid="diff-file-tabs"
       >
-        {files.map((file, index) => {
-          const isActive = index === safeIndex
-          const label = fileBasename(file)
-          const title = fileDisplayPath(file)
-          const highlighted = isActive && isHighlighted
-          const activeStyle: React.CSSProperties | undefined = isActive
-            ? {
-                transition: `border-bottom-color ${FILE_HIGHLIGHT_TRANSITION_MS}ms ease-in-out`,
-                borderBottomColor: highlighted ? FILE_HIGHLIGHT_COLOR : undefined,
-              }
-            : undefined
-          return (
-            <button
-              key={`${file.oldRevision}-${file.newRevision}-${index}`}
-              ref={(el) => {
-                tabRefs.current[index] = el
-              }}
-              role="tab"
-              type="button"
-              aria-selected={isActive}
-              aria-current={highlighted ? 'true' : undefined}
-              data-highlighted={highlighted ? 'true' : undefined}
-              tabIndex={isActive ? 0 : -1}
-              title={title}
-              onClick={() => setActiveFile(index)}
-              onKeyDown={onTabKeyDown}
-              style={activeStyle}
-              className={`px-3 flex items-center whitespace-nowrap text-[14px] ${
-                isActive
-                  ? 'font-bold text-text-primary border-b-2 border-accent'
-                  : 'font-medium text-text-secondary'
-              }`}
-              data-testid={`diff-file-tab-${index}`}
-            >
-              {label}
-            </button>
-          )
-        })}
+        {/* Prev / Next arrows */}
+        <button
+          type="button"
+          onClick={() => setActiveFile((safeIndex - 1 + files.length) % files.length)}
+          aria-label="Previous file"
+          disabled={files.length <= 1}
+          style={{
+            background: 'none', border: 'none', color: '#9a9898', fontSize: 16,
+            cursor: files.length > 1 ? 'pointer' : 'default',
+            opacity: files.length > 1 ? 1 : 0.3,
+            padding: '4px 6px', borderRadius: 6,
+          }}
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveFile((safeIndex + 1) % files.length)}
+          aria-label="Next file"
+          disabled={files.length <= 1}
+          style={{
+            background: 'none', border: 'none', color: '#9a9898', fontSize: 16,
+            cursor: files.length > 1 ? 'pointer' : 'default',
+            opacity: files.length > 1 ? 1 : 0.3,
+            padding: '4px 6px', borderRadius: 6,
+          }}
+        >
+          ›
+        </button>
+
+        {/* File dropdown */}
+        <select
+          value={safeIndex}
+          onChange={(e) => setActiveFile(Number(e.target.value))}
+          aria-label="Select file"
+          data-testid="diff-file-select"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: '#2a2626',
+            color: '#fdfcfc',
+            border: 'none',
+            borderRadius: 8,
+            padding: '6px 10px',
+            fontSize: 13,
+            fontFamily: 'var(--font-family-mono)',
+            boxShadow: 'rgba(255,255,255,0.06) 0 0 0 1px',
+            cursor: 'pointer',
+            outline: 'none',
+            appearance: 'none',
+            WebkitAppearance: 'none',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%239a9898' stroke-width='1.5'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 10px center',
+            paddingRight: 28,
+          }}
+        >
+          {files.map((file, index) => (
+            <option key={`${file.oldRevision}-${file.newRevision}-${index}`} value={index}>
+              {fileDisplayPath(file)}
+            </option>
+          ))}
+        </select>
+
+        {/* Counter */}
+        <span style={{ fontSize: 12, color: '#6e6e73', whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>
+          {safeIndex + 1}/{files.length}
+        </span>
+
+        {/* Close button */}
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            title="Hide diff"
+            aria-label="Close diff panel"
+            style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 28,
+              height: 28,
+              background: 'rgba(255,255,255,0.04)',
+              color: '#6e6e73',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 16,
+              cursor: 'pointer',
+            }}
+          >
+            ×
+          </button>
+        )}
       </div>
       <div
         ref={scrollContainerRef}
-        className="flex-1 min-h-0 overflow-auto bg-surface"
+        className="flex-1 min-h-0 overflow-auto"
+        style={{ background: '#1a1717' }}
         data-testid="diff-scroll-container"
       >
         {activeFile && isBinaryFile(activeFile) && (

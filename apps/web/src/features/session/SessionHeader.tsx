@@ -14,25 +14,18 @@ interface RoleBadgeStyle {
 const ROLE_BADGE: Record<SessionRole, RoleBadgeStyle> = {
   author: {
     label: 'AUTHOR',
-    background: 'rgba(0, 122, 255, 0.15)',
-    color: '#007aff',
+    background: 'rgba(226, 160, 57, 0.12)',
+    color: '#E2A039',
   },
   reviewer: {
     label: 'REVIEWING',
-    background: 'rgba(255, 159, 10, 0.15)',
+    background: 'rgba(255, 159, 10, 0.12)',
     color: '#ff9f0a',
   },
 }
 
-// Note: the header is intentionally `font-mono` inherited from the root.
-// Do not set a font-family here. Colours come from CSS variables except
-// for the exact rgba()/hex role badge tones which are load-bearing per UX.
 export default function SessionHeader({ session }: SessionHeaderProps) {
   const badge = ROLE_BADGE[session.role]
-  // Story 3.4: count COMPLETED CYCLES (ai_feedback messages) rather
-  // than just questions. A question that has been asked but not yet
-  // answered does NOT advance the counter. The cycle is "complete"
-  // only once feedback has shipped.
   const completedCycles = useSessionStore((s) =>
     s.messages.filter((m) => m.kind === 'ai_feedback').length,
   )
@@ -43,32 +36,36 @@ export default function SessionHeader({ session }: SessionHeaderProps) {
 
   return (
     <header
-      className="h-12 w-full flex items-center gap-4 px-4 border-b border-border bg-primary shrink-0"
-      style={{ paddingTop: 12, paddingBottom: 12 }}
+      className="w-full flex items-center gap-4 px-4 shrink-0"
+      style={{
+        height: 48,
+        background: '#1e1a1a',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.04)',
+      }}
       data-testid="session-header"
     >
       <span
-        className="text-[16px] font-bold text-text-primary shrink-0"
+        className="text-[14px] font-bold text-text-primary shrink-0 font-mono"
         data-testid="session-header-repo"
       >
         {session.repo_full_name}
       </span>
       <span
-        className="text-[16px] font-normal text-text-secondary flex-1 min-w-0 truncate"
+        className="text-[14px] text-text-secondary flex-1 min-w-0 truncate"
+        style={{ fontFamily: 'var(--font-family-sans)' }}
         title={session.pr_title}
         data-testid="session-header-pr-title"
       >
         {session.pr_title}
       </span>
       <span
-        className="text-[12px] font-medium uppercase rounded shrink-0"
+        className="text-[11px] font-semibold uppercase shrink-0"
         style={{
-          paddingLeft: 8,
-          paddingRight: 8,
-          paddingTop: 2,
-          paddingBottom: 2,
+          padding: '3px 10px',
+          borderRadius: 9999,
           backgroundColor: badge.background,
           color: badge.color,
+          letterSpacing: '0.04em',
         }}
         data-testid="session-header-role-badge"
       >
@@ -76,13 +73,15 @@ export default function SessionHeader({ session }: SessionHeaderProps) {
       </span>
       <span
         aria-live="polite"
-        className="text-[14px] font-normal text-text-secondary shrink-0"
+        className="text-[13px] text-text-muted shrink-0"
+        style={{ fontFamily: 'var(--font-family-sans)' }}
         data-testid="session-header-progress"
       >
         {progressLabel}
       </span>
       <span
-        className="text-[12px] font-normal text-text-muted shrink-0"
+        className="text-[11px] text-text-muted shrink-0 hidden lg:inline"
+        style={{ opacity: 0.5, fontFamily: 'var(--font-family-sans)' }}
         data-testid="session-header-ai-disclaimer"
       >
         AI-generated content may be inaccurate

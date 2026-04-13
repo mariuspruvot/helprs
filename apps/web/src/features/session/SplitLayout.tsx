@@ -11,22 +11,43 @@ interface SplitLayoutProps {
 const CHAT_PANEL_ID = 'session-chat-panel'
 const DIFF_PANEL_ID = 'session-diff-panel'
 
-// NOTE — react-resizable-panels v4 API (`Group`/`Separator`) replaced the
-// v2 `PanelGroup`/`PanelResizeHandle` mentioned in the story. v4's
-// `Separator` already honours AC #3 without any custom code: it installs a
-// native DOM `keydown` listener on the separator element and steps the
-// layout by 5% on ArrowLeft / ArrowRight (verified at
-// `node_modules/react-resizable-panels/dist/react-resizable-panels.js`
-// lines 966/970 — the step is hardcoded to `H(t, ±5)`). The library's
-// handler also calls `event.preventDefault()` unconditionally, so Cmd+Arrow
-// / Alt+Arrow / Shift+Arrow passthrough is NOT supported by the library;
-// we do not attempt to work around that here because fighting the library's
-// internal listener via capture-phase `stopImmediatePropagation` is a
-// fragile coupling to v4 internals. Drag still bounds-checks via `minSize`
-// / `maxSize` on the `Panel`s and the store's own `[0.3, 0.8]` clamp.
 export default function SplitLayout({ session }: SplitLayoutProps) {
   const panelRatio = useSessionStore((s) => s.panelRatio)
   const setPanelRatio = useSessionStore((s) => s.setPanelRatio)
+  const diffCollapsed = useSessionStore((s) => s.diffCollapsed)
+  const toggleDiffCollapsed = useSessionStore((s) => s.toggleDiffCollapsed)
+
+  if (diffCollapsed) {
+    return (
+      <div className="h-full w-full flex flex-col">
+        <div className="h-full bg-primary relative">
+          <ChatPanel session={session} />
+          <button
+            type="button"
+            onClick={toggleDiffCollapsed}
+            title="Show diff"
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              background: '#2c2727',
+              color: '#9a9898',
+              border: 'none',
+              borderRadius: 8,
+              padding: '6px 12px',
+              fontSize: 13,
+              fontFamily: 'var(--font-family-sans)',
+              cursor: 'pointer',
+              boxShadow: 'rgba(255,255,255,0.06) 0 0 0 1px, rgba(0,0,0,0.2) 0 2px 6px',
+              zIndex: 5,
+            }}
+          >
+            Show diff
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   const defaultChat = `${(panelRatio * 100).toFixed(0)}%`
   const defaultDiff = `${((1 - panelRatio) * 100).toFixed(0)}%`
@@ -35,10 +56,6 @@ export default function SplitLayout({ session }: SplitLayoutProps) {
     <Group
       orientation="horizontal"
       className="h-full w-full flex"
-      // Use `onLayoutChanged` (past tense) — the library docs call this out
-      // explicitly: `onLayoutChange` fires every pointer frame during drag
-      // (N renders per drag); `onLayoutChanged` fires once on pointer release,
-      // which is what we want for syncing the store.
       onLayoutChanged={(layout) => {
         const chat = layout[CHAT_PANEL_ID]
         if (typeof chat === 'number') {
@@ -57,13 +74,13 @@ export default function SplitLayout({ session }: SplitLayoutProps) {
         <ChatPanel session={session} />
       </Panel>
       <Separator
-        // 12px hit area (outer padding), 4px visual line centred.
         className="group relative flex items-stretch justify-center cursor-col-resize focus:outline-none"
         style={{ width: 12 }}
         data-testid="session-resize-handle"
       >
         <span
-          className="block w-[4px] h-full bg-border-strong group-focus-visible:border-l-2 group-focus-visible:border-r-2 group-focus-visible:border-accent"
+          className="block w-[2px] h-full group-focus-visible:border-l-2 group-focus-visible:border-r-2 group-focus-visible:border-accent"
+          style={{ background: 'rgba(255,255,255,0.08)' }}
           aria-hidden
         />
       </Separator>
@@ -71,10 +88,11 @@ export default function SplitLayout({ session }: SplitLayoutProps) {
         id={DIFF_PANEL_ID}
         defaultSize={defaultDiff}
         minSize="20%"
-        className="h-full bg-surface"
+        className="h-full"
+        style={{ background: '#1a1717' }}
         data-testid="diff-panel-container"
       >
-        <DiffViewer session={session} />
+        <DiffViewer session={session} onClose={toggleDiffCollapsed} />
       </Panel>
     </Group>
   )

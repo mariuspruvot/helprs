@@ -6,7 +6,9 @@ import { useSSE, type SSEError } from '../../shared/hooks/useSSE'
 import { consumeSSEStream } from '../../shared/hooks/parseSSE'
 import AnswerInput from './AnswerInput'
 import ChatMessage, { DiffFilePathsContext } from './ChatMessage'
+import ReportButton from './ReportButton'
 import ScoreCard from './ScoreCard'
+import SessionFeedback from './SessionFeedback'
 import { useSessionStore } from './store'
 import type { ChatMessage as ChatMessageType, FeedbackPayload, SessionResponse } from './types'
 
@@ -621,6 +623,7 @@ export default function ChatPanel({ session }: ChatPanelProps) {
           ref={scrollContainerRef}
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto flex flex-col"
+          style={{ background: '#1a1717' }}
         >
           <div className="max-w-[720px] w-full mx-auto px-4 py-6 flex-1 flex flex-col">
             {sseError && (
@@ -668,7 +671,29 @@ export default function ChatPanel({ session }: ChatPanelProps) {
               <div data-testid="chat-message-list">
                 {messages.map((m) =>
                   m.kind === 'ai_score' && m.score ? (
-                    <ScoreCard key={m.id} score={m.score} />
+                    <div key={m.id}>
+                      <ScoreCard score={m.score} />
+                      <SessionFeedback
+                        sessionId={session.id}
+                        existingFeedback={session.feedback}
+                      />
+                    </div>
+                  ) : m.kind === 'ai_question' && !m.isStreaming && !m.id.startsWith('resume-q-') ? (
+                    <div key={m.id} style={{ position: 'relative' }}>
+                      <ChatMessage message={m} />
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: 16,
+                          right: 16,
+                        }}
+                      >
+                        <ReportButton
+                          sessionId={session.id}
+                          questionNumber={m.questionNumber}
+                        />
+                      </span>
+                    </div>
                   ) : (
                     <ChatMessage key={m.id} message={m} />
                   ),

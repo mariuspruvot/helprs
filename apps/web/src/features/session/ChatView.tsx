@@ -31,7 +31,13 @@ function ErrorScreen({ title, message, onRetry }: ErrorScreenProps) {
         {onRetry && (
           <button
             onClick={onRetry}
-            className="px-6 py-3 rounded-lg bg-[var(--color-accent)] text-white font-semibold hover:opacity-90 transition-opacity"
+            className="px-6 py-3 font-semibold transition-opacity hover:opacity-90"
+            style={{
+              borderRadius: 8,
+              background: '#E2A039',
+              color: '#1a1400',
+              boxShadow: 'rgba(226,160,57,0.4) 0 0 0 1px, inset rgba(255,255,255,0.15) 0 1px 0 0',
+            }}
           >
             Retry
           </button>

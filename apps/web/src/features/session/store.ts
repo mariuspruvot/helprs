@@ -20,6 +20,9 @@ export interface SessionUIState {
   answerInputDisabled: boolean
   // Story 4.1: session completion state.
   sessionCompleted: boolean
+  // Story 4.2: report + feedback state persisted across navigation.
+  reportedQuestions: number[]
+  feedbackSubmitted: boolean
   // Story 3.3 (AC #11): monotonic counter that ticks every time a
   // question commit cites a file. DiffViewer watches this and flashes
   // the active file tab's bottom border to #007aff for ~600ms with a
@@ -27,12 +30,14 @@ export interface SessionUIState {
   // paths (which must NOT flash). Starts at 0 so the initial render
   // does not trigger a bogus flash.
   highlightFileTrigger: number
+  diffCollapsed: boolean
 
   setSession: (s: SessionResponse | null) => void
   clearSession: () => void
   setActiveFile: (index: number) => void
   highlightActiveFile: (index: number) => void
   setPanelRatio: (n: number) => void
+  toggleDiffCollapsed: () => void
 
   // Story 3.3: chat-message mutations. Kept as explicit actions (not a
   // free-for-all `setState`) so the store's invariants live in one place.
@@ -57,6 +62,9 @@ export interface SessionUIState {
   setAnswerInputDisabled: (disabled: boolean) => void
   // Story 4.1: commit a score message + mark session completed.
   commitScore: (score: ScoreData) => void
+  // Story 4.2: mark a question as reported / feedback as submitted.
+  markQuestionReported: (questionNumber: number) => void
+  markFeedbackSubmitted: () => void
   // Story 3.4 v1.2.0 (code-review F3): full-reset of all per-session
   // chat state when the user navigates from one session to another.
   // Without this, the module-level store leaks messages from session A
@@ -79,7 +87,10 @@ export const useSessionStore = create<SessionUIState>((set) => ({
   streamingFeedback: null,
   answerInputDisabled: false,
   sessionCompleted: false,
+  reportedQuestions: [],
+  feedbackSubmitted: false,
   highlightFileTrigger: 0,
+  diffCollapsed: false,
 
   setSession: (s) => set({ session: s, activeFileIndex: 0 }),
   clearSession: () =>
@@ -92,7 +103,10 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       streamingFeedback: null,
       answerInputDisabled: false,
       sessionCompleted: false,
+      reportedQuestions: [],
+      feedbackSubmitted: false,
       highlightFileTrigger: 0,
+      diffCollapsed: false,
     }),
   setActiveFile: (index) => set({ activeFileIndex: index }),
   // AC #11: selects the file AND ticks the highlight counter so the
@@ -105,6 +119,7 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       highlightFileTrigger: state.highlightFileTrigger + 1,
     })),
   setPanelRatio: (n) => set({ panelRatio: clampPanelRatio(n) }),
+  toggleDiffCollapsed: () => set((state) => ({ diffCollapsed: !state.diffCollapsed })),
 
   // First call with a given questionId creates a streamingQuestion with
   // the token as its entire text. Subsequent calls with the SAME id
@@ -297,6 +312,15 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       }
     }),
 
+  // Story 4.2: report + feedback store actions.
+  markQuestionReported: (questionNumber) =>
+    set((state) => ({
+      reportedQuestions: state.reportedQuestions.includes(questionNumber)
+        ? state.reportedQuestions
+        : [...state.reportedQuestions, questionNumber],
+    })),
+  markFeedbackSubmitted: () => set({ feedbackSubmitted: true }),
+
   // Story 3.4 v1.2.0 (code-review F3): clear every per-session chat
   // field so the next session starts with a blank slate. Preserves
   // ``session``, ``activeFileIndex``, ``panelRatio``,
@@ -309,5 +333,7 @@ export const useSessionStore = create<SessionUIState>((set) => ({
       streamingFeedback: null,
       answerInputDisabled: false,
       sessionCompleted: false,
+      reportedQuestions: [],
+      feedbackSubmitted: false,
     }),
 }))

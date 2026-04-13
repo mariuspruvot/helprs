@@ -46,7 +46,8 @@ export default function TabbedLayout({ session }: TabbedLayoutProps) {
       <div
         role="tablist"
         aria-label="Session view"
-        className="flex border-b border-border bg-primary shrink-0"
+        className="flex bg-primary shrink-0"
+        style={{ boxShadow: 'inset 0 -1px 0 rgba(255,255,255,0.06)' }}
       >
         {TABS.map((tab) => {
           const isActive = tab.id === activeTab
