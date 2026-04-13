@@ -1,8 +1,9 @@
 {
   "workflow_version": "1.2.0",
   "timestamps": {
-    "started": "2026-04-09T22:00:00Z",
-    "last_updated": "2026-04-09T22:00:00Z"
+    "started": "2026-04-13T10:00:00Z",
+    "last_updated": "2026-04-13T10:15:00Z",
+    "completed": "2026-04-13T10:15:00Z"
   },
   "mode": "initial_scan",
   "scan_level": "deep",
@@ -15,13 +16,43 @@
     {"part_id": "infra", "project_type_id": "infra", "display_name": "Docker/Coolify Infrastructure"}
   ],
   "completed_steps": [
-    {"step": "step_0.5", "status": "completed", "timestamp": "2026-04-09T22:00:00Z", "summary": "Loaded documentation requirements for 12 project types"},
-    {"step": "step_1", "status": "completed", "timestamp": "2026-04-09T22:01:00Z", "summary": "Classified as monorepo with 3 parts: api (backend), web (web), infra (infra)"}
+    {"step": "step_0.5", "status": "completed", "timestamp": "2026-04-13T10:00:00Z", "summary": "Loaded documentation requirements for 12 project types"},
+    {"step": "step_1", "status": "completed", "timestamp": "2026-04-13T10:01:00Z", "summary": "Classified as monorepo with 3 parts: api (backend), web (web), infra (infra)"},
+    {"step": "step_2", "status": "completed", "timestamp": "2026-04-13T10:02:00Z", "summary": "Found 5 existing docs. User context: none"},
+    {"step": "step_3", "status": "completed", "timestamp": "2026-04-13T10:03:00Z", "summary": "Tech stack: Python 3.12/FastAPI (api), TypeScript/React 19/Vite 8 (web), Docker/Coolify (infra)"},
+    {"step": "step_4", "status": "completed", "timestamp": "2026-04-13T10:08:00Z", "summary": "Deep scan complete via 3 parallel agents: API (18 endpoints, 10 tables), Web (17 components, 2 stores, 12 API calls), Infra (2 Dockerfiles, 2 CI/CD workflows)"},
+    {"step": "step_5", "status": "completed", "timestamp": "2026-04-13T10:09:00Z", "summary": "Source tree documented with 10 critical folders annotated"},
+    {"step": "step_6", "status": "completed", "timestamp": "2026-04-13T10:10:00Z", "summary": "Development guide and deployment guide written"},
+    {"step": "step_7", "status": "completed", "timestamp": "2026-04-13T10:11:00Z", "summary": "Integration architecture documented: 4 integration points (web->api, api->GitHub, api->Anthropic, api->PostgreSQL)"},
+    {"step": "step_8", "status": "completed", "timestamp": "2026-04-13T10:12:00Z", "summary": "Architecture docs written for 3 parts (api, web, infra)"},
+    {"step": "step_9", "status": "completed", "timestamp": "2026-04-13T10:13:00Z", "summary": "Supporting docs: project-overview, component-inventory-web, project-parts.json"},
+    {"step": "step_10", "status": "completed", "timestamp": "2026-04-13T10:14:00Z", "summary": "Master index.md generated with links to all 12 documents"},
+    {"step": "step_11", "status": "completed", "timestamp": "2026-04-13T10:14:30Z", "summary": "Validation complete — no incomplete markers found"},
+    {"step": "step_12", "status": "completed", "timestamp": "2026-04-13T10:15:00Z", "summary": "Workflow complete"}
   ],
-  "current_step": "step_2",
+  "current_step": "completed",
   "findings": {
-    "project_classification": "Monorepo with 3 parts: api (Python/FastAPI), web (React/TS/Vite), infra (Docker/Coolify)"
+    "project_classification": "Monorepo with 3 parts: api (Python/FastAPI), web (React/TS/Vite), infra (Docker/Coolify)",
+    "technology_stack": "Python 3.12 + FastAPI + SQLAlchemy async (api), TypeScript + React 19 + Vite 8 (web), Docker + Coolify + GitHub Actions (infra)",
+    "api_endpoints": "18 endpoints across 5 route groups (health, auth, installations, webhooks, sessions)",
+    "database_tables": "10 tables: github_users, installations, byok_configs, webhook_events, sessions, questions, answers, scores, question_reports, session_feedback",
+    "frontend_components": "17 session components, 4 auth/install components, 2 landing components, 4 shared hooks",
+    "integration_points": "4 integration points: web->api (REST+SSE), api->GitHub (REST+webhooks), api->Anthropic (Pydantic AI), api->PostgreSQL (asyncpg)"
   },
-  "outputs_generated": ["project-scan-report.json"],
-  "resume_instructions": "Starting from step 2"
+  "outputs_generated": [
+    "project-scan-report.json",
+    "api-contracts-api.md",
+    "data-models-api.md",
+    "architecture-api.md",
+    "architecture-web.md",
+    "architecture-infra.md",
+    "source-tree-analysis.md",
+    "component-inventory-web.md",
+    "integration-architecture.md",
+    "development-guide.md",
+    "deployment-guide.md",
+    "project-overview.md",
+    "project-parts.json",
+    "index.md"
+  ]
 }
