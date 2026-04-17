@@ -1,9 +1,0 @@
-{
-  "name": "challenge-me",
-  "version": "1.4.0",
-  "description": "Challenge yourself on PRs and codebase — quizzes, analysis, learning, and progress tracking",
-  "author": {
-    "name": "papernest"
-  },
-  "keywords": ["code-review", "pr", "learning", "socratic", "challenge"]
-}
