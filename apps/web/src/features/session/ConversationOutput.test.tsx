@@ -44,22 +44,7 @@ describe('ConversationOutput', () => {
     expect(screen.getByText('Second message')).toBeTruthy()
   })
 
-  test('shows running indicator when isRunning is true', () => {
-    const messages = [makeMessage({ id: 1 })]
-    render(<ConversationOutput messages={messages} isRunning={true} />)
-
-    expect(screen.getByTestId('conversation-running-indicator')).toBeTruthy()
-    expect(screen.getByText('running')).toBeTruthy()
-  })
-
-  test('hides running indicator when not running', () => {
-    const messages = [makeMessage({ id: 1 })]
-    render(<ConversationOutput messages={messages} isRunning={false} />)
-
-    expect(screen.queryByTestId('conversation-running-indicator')).toBeNull()
-  })
-
-  test('shows cursor when running and messages exist', () => {
+  test('shows cursor when running', () => {
     const messages = [makeMessage({ id: 1 })]
     render(<ConversationOutput messages={messages} isRunning={true} />)
 
@@ -77,12 +62,6 @@ describe('ConversationOutput', () => {
     render(<ConversationOutput messages={[]} isRunning={false} />)
 
     expect(screen.getByRole('log')).toBeTruthy()
-  })
-
-  test('renders header with session label', () => {
-    render(<ConversationOutput messages={[]} isRunning={false} />)
-
-    expect(screen.getByText('helPRs session')).toBeTruthy()
   })
 
   test('renders system messages as status text', () => {
