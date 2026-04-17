@@ -59,14 +59,8 @@ export default function ContainerSession({
   const MAX_RECONNECTS = 5
   const RECONNECT_BASE_DELAY_MS = 2000
 
-  const lastTextRef = useRef('')
-
   const appendLine = useCallback((text: string, kind?: TerminalLine['kind']) => {
     if (!mountedRef.current) return
-    // Dedup: Claude Code can emit the same assistant text twice
-    // (partial + final event). Skip exact consecutive duplicates.
-    if (kind === 'text' && text === lastTextRef.current) return
-    lastTextRef.current = text
     lineIdRef.current += 1
     const line: TerminalLine = {
       id: lineIdRef.current,
