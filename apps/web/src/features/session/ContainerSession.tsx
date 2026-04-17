@@ -3,7 +3,7 @@
  *
  * 1. POSTs to create a session
  * 2. Connects to SSE stream for real-time output
- * 3. Displays output in a terminal panel
+ * 3. Displays output as a conversation with markdown rendering
  * 4. Provides stop/back controls
  */
 
@@ -17,15 +17,15 @@ import {
   sendMessage,
   stopContainerSession,
 } from './containerApi'
-import TerminalOutput from './TerminalOutput'
+import ConversationOutput from './ConversationOutput'
 import {
-  parseStoredEvent,
-  parseStreamEvent,
+  parseStoredMessage,
+  parseStreamMessage,
 } from './containerTypes'
 import type {
   ContainerSessionResponse,
   ContainerStatus,
-  TerminalLine,
+  StreamMessage,
 } from './containerTypes'
 
 interface ContainerSessionProps {
@@ -47,14 +47,14 @@ export default function ContainerSession({
   existingSessionId,
 }: ContainerSessionProps) {
   const [session, setSession] = useState<ContainerSessionResponse | null>(null)
-  const [lines, setLines] = useState<TerminalLine[]>([])
+  const [messages, setMessages] = useState<StreamMessage[]>([])
   const [status, setStatus] = useState<ContainerStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
   const [userInput, setUserInput] = useState('')
   const [sending, setSending] = useState(false)
 
-  const lineIdRef = useRef(0)
+  const msgIdRef = useRef(0)
   const sseOffsetRef = useRef(0)
   const reconnectCountRef = useRef(0)
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -64,38 +64,55 @@ export default function ContainerSession({
   const MAX_RECONNECTS = 5
   const RECONNECT_BASE_DELAY_MS = 2000
 
-  const appendLine = useCallback((text: string, kind?: TerminalLine['kind']) => {
+  const appendMessage = useCallback((partial: Omit<StreamMessage, 'id' | 'timestamp'>) => {
     if (!mountedRef.current) return
-    lineIdRef.current += 1
-    const line: TerminalLine = {
-      id: lineIdRef.current,
-      text,
+    msgIdRef.current += 1
+    const msg: StreamMessage = {
+      ...partial,
+      id: msgIdRef.current,
       timestamp: Date.now(),
-      kind,
     }
-    setLines((prev) => [...prev, line])
+    setMessages((prev) => [...prev, msg])
   }, [])
+
+  /** Helper: append a system-role status message. */
+  const appendStatus = useCallback((text: string, subtype?: string) => {
+    appendMessage({
+      role: 'system',
+      blocks: [{ type: 'text', text }],
+      subtype,
+    })
+  }, [appendMessage])
+
+  /** Helper: append an error message. */
+  const appendError = useCallback((text: string) => {
+    appendMessage({
+      role: 'result',
+      blocks: [{ type: 'text', text }],
+      isError: true,
+    })
+  }, [appendMessage])
 
   // Create session on mount
   useEffect(() => {
     mountedRef.current = true
     const abortController = new AbortController()
-    lineIdRef.current = 0
+    msgIdRef.current = 0
     sseOffsetRef.current = 0
     reconnectCountRef.current = 0
-    setLines([])
+    setMessages([])
 
     async function loadStoredEvents(sessionId: string) {
       try {
         const resp = await getSessionEvents(sessionId)
         for (const evt of resp.events) {
-          const parsed = parseStoredEvent(evt.data)
+          const parsed = parseStoredMessage(evt.data)
           if (parsed) {
-            appendLine(parsed.text, parsed.kind)
+            appendMessage(parsed)
           }
         }
       } catch {
-        appendLine('[error] Failed to load session history.')
+        appendError('Failed to load session history.')
       }
     }
 
@@ -118,7 +135,7 @@ export default function ContainerSession({
         }
 
         setStatus('starting')
-        appendLine(`Starting ${skillName} for ${repoFullName}#${prNumber}...`)
+        appendStatus(`Starting ${skillName} for ${repoFullName}#${prNumber}...`)
 
         const created = await createContainerSession(
           {
@@ -139,14 +156,14 @@ export default function ContainerSession({
           connectStream(created.id)
         } else if (created.status === 'failed') {
           setError('Container failed to start')
-          appendLine('[error] Container failed to start.')
+          appendError('Container failed to start.')
         }
       } catch (err) {
         if (abortController.signal.aborted) return
         const msg = err instanceof Error ? err.message : 'Unknown error'
         setError(msg)
         setStatus('failed')
-        appendLine(`[error] ${msg}`)
+        appendError(msg)
       }
     }
 
@@ -155,7 +172,7 @@ export default function ContainerSession({
       if (reconnectCountRef.current > MAX_RECONNECTS) {
         setStatus('failed')
         setError('Lost connection to session')
-        appendLine('[error] Lost connection after multiple retries.')
+        appendError('Lost connection after multiple retries.')
         return
       }
 
@@ -169,11 +186,11 @@ export default function ContainerSession({
         if (!mountedRef.current) return
         setStatus(fresh.status)
         if (fresh.status === 'completed') {
-          appendLine('Session completed.')
+          appendStatus('Session completed.')
           await loadStoredEvents(sessionId)
         } else if (fresh.status === 'failed') {
           setError('Container failed')
-          appendLine('[error] Container failed.')
+          appendError('Container failed.')
           await loadStoredEvents(sessionId)
         } else if (fresh.status === 'running') {
           connectStream(sessionId)
@@ -182,7 +199,7 @@ export default function ContainerSession({
         if (!mountedRef.current) return
         setStatus('failed')
         setError('Lost connection to session')
-        appendLine('[error] Lost connection to session.')
+        appendError('Lost connection to session.')
       }
     }
 
@@ -200,20 +217,18 @@ export default function ContainerSession({
       source.addEventListener('open', () => {
         if (!mountedRef.current) return
         setStatus('running')
-        // Connection succeeded — reset reconnect counter
         reconnectCountRef.current = 0
       })
 
       // Default message event — parse Claude Code stream-json
       source.onmessage = (event: MessageEvent) => {
         if (!mountedRef.current) return
-        // Track the last event id so reconnects can skip already-received events
         if (event.lastEventId) {
           sseOffsetRef.current = parseInt(event.lastEventId, 10) || sseOffsetRef.current
         }
-        const parsed = parseStreamEvent(event.data as string)
+        const parsed = parseStreamMessage(event.data as string)
         if (parsed) {
-          appendLine(parsed.text, parsed.kind)
+          appendMessage(parsed)
         }
       }
 
@@ -225,7 +240,7 @@ export default function ContainerSession({
             setStatus(parsed.status as ContainerStatus)
           }
           if (parsed.message) {
-            appendLine(`[status] ${parsed.message}`)
+            appendStatus(parsed.message)
           }
         } catch {
           // ignore malformed status frames
@@ -239,15 +254,14 @@ export default function ContainerSession({
         setStatus('completed')
         try {
           const parsed = JSON.parse(event.data as string) as { message?: string }
-          appendLine(parsed.message ?? 'Session completed.')
+          appendStatus(parsed.message ?? 'Session completed.')
         } catch {
-          appendLine('Session completed.')
+          appendStatus('Session completed.')
         }
       })
 
       source.addEventListener('error', (event: Event) => {
         if (!mountedRef.current) return
-        // Check if this is a server-framed error (MessageEvent with data)
         const isServerFramed =
           'data' in event && typeof (event as MessageEvent).data === 'string'
 
@@ -258,16 +272,14 @@ export default function ContainerSession({
           try {
             const parsed = JSON.parse((event as MessageEvent).data as string) as { message?: string }
             setError(parsed.message ?? 'Stream error')
-            appendLine(`[error] ${parsed.message ?? 'Stream error'}`)
+            appendError(parsed.message ?? 'Stream error')
           } catch {
             setError('Stream error')
-            appendLine('[error] Stream error')
+            appendError('Stream error')
           }
           return
         }
 
-        // Native error — connection dropped. Poll backend for actual status
-        // instead of immediately marking as failed.
         if (source.readyState === EventSource.CLOSED) {
           eventSourceRef.current = null
           pollSessionStatus(sessionId)
@@ -285,7 +297,7 @@ export default function ContainerSession({
         eventSourceRef.current = null
       }
     }
-  }, [installationId, repoFullName, prNumber, skillName, existingSessionId, appendLine])
+  }, [installationId, repoFullName, prNumber, skillName, existingSessionId, appendMessage, appendStatus, appendError])
 
   const handleStop = useCallback(async () => {
     if (!session) return
@@ -297,31 +309,35 @@ export default function ContainerSession({
         eventSourceRef.current = null
       }
       setStatus('stopped')
-      appendLine('[stopped] Session stopped by user.')
+      appendStatus('Session stopped by user.')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to stop'
-      appendLine(`[error] ${msg}`)
+      appendError(msg)
     } finally {
       setStopping(false)
     }
-  }, [session, appendLine])
+  }, [session, appendStatus, appendError])
 
   const handleSendMessage = useCallback(async () => {
     if (!session || !userInput.trim() || sending) return
     const content = userInput.trim()
     setSending(true)
     setUserInput('')
-    appendLine(`> ${content}`)
+    // Show user's input as a user message in the conversation
+    appendMessage({
+      role: 'user',
+      blocks: [{ type: 'text', text: content }],
+    })
     try {
       await sendMessage(session.id, content)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to send'
-      appendLine(`[error] ${msg}`)
+      appendError(msg)
     } finally {
       setSending(false)
       inputRef.current?.focus()
     }
-  }, [session, userInput, sending, appendLine])
+  }, [session, userInput, sending, appendMessage, appendError])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -339,7 +355,7 @@ export default function ContainerSession({
   return (
     <div
       data-testid="container-session"
-      className="min-h-screen h-screen bg-primary text-text-primary font-mono flex flex-col"
+      className="min-h-screen h-screen bg-primary text-text-primary flex flex-col"
     >
       {/* Header */}
       <div
@@ -356,11 +372,11 @@ export default function ContainerSession({
 
         <span className="text-text-muted text-[12px]">|</span>
 
-        <span className="text-text-primary text-[13px]">{repoFullName}</span>
+        <span className="text-text-primary text-[13px] font-sans">{repoFullName}</span>
         <span className="text-text-muted text-[12px]">#{prNumber}</span>
 
         <span
-          className="text-[11px] px-2 py-0.5 rounded-full font-medium"
+          className="text-[11px] px-2 py-0.5 rounded-full font-medium font-mono"
           style={{
             color: '#E2A039',
             background: 'rgba(226, 160, 57, 0.1)',
@@ -373,7 +389,7 @@ export default function ContainerSession({
         {/* Status badge */}
         <span
           data-testid="session-status"
-          className="text-[11px] px-2 py-0.5 rounded-full font-medium ml-auto"
+          className="text-[11px] px-2 py-0.5 rounded-full font-medium font-mono ml-auto"
           style={{
             color: isRunning
               ? '#30d158'
@@ -427,9 +443,9 @@ export default function ContainerSession({
         </div>
       )}
 
-      {/* Terminal output */}
+      {/* Conversation output */}
       <div className="flex-1 min-h-0">
-        <TerminalOutput lines={lines} isRunning={isRunning} />
+        <ConversationOutput messages={messages} isRunning={isRunning} />
       </div>
 
       {/* Message input */}
@@ -448,7 +464,7 @@ export default function ContainerSession({
             onKeyDown={handleKeyDown}
             placeholder="Type your answer..."
             disabled={sending}
-            className="flex-1 bg-transparent text-text-primary text-[14px] font-mono outline-none placeholder:text-text-muted disabled:opacity-50"
+            className="flex-1 bg-transparent text-text-primary text-[14px] font-sans outline-none placeholder:text-text-muted disabled:opacity-50"
             autoFocus
           />
           <button

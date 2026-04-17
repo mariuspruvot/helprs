@@ -1,23 +1,43 @@
 /**
- * TerminalOutput — renders streamed SSE output in a terminal-like panel.
+ * ConversationOutput — renders streamed session events as a conversation.
  *
- * Dark background, monospace font, auto-scroll to bottom as new output
- * arrives. Amber accent for status indicators.
+ * Replaces the old TerminalOutput with structured markdown rendering,
+ * syntax-highlighted code blocks, and collapsible tool activity.
+ * Preserves auto-scroll, running indicator, and accessible log role.
  */
 
-import { useEffect, useRef } from 'react'
-import type { TerminalLine } from './containerTypes'
+import { useEffect, useMemo, useRef } from 'react'
+import type { StreamMessage, ContentBlockData } from './containerTypes'
+import MessageBlock from './MessageBlock'
 
-interface TerminalOutputProps {
-  lines: TerminalLine[]
+interface ConversationOutputProps {
+  messages: StreamMessage[]
   isRunning: boolean
 }
 
-export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps) {
+/**
+ * Build a map of tool_use_id -> tool_result block by scanning user messages.
+ * This allows ToolUseBlock to display its paired result inline.
+ */
+function buildToolResultsMap(messages: StreamMessage[]): Map<string, ContentBlockData> {
+  const map = new Map<string, ContentBlockData>()
+  for (const msg of messages) {
+    if (msg.role !== 'user') continue
+    for (const block of msg.blocks) {
+      if (block.type === 'tool_result' && block.tool_use_id) {
+        map.set(block.tool_use_id, block)
+      }
+    }
+  }
+  return map
+}
+
+export default function ConversationOutput({ messages, isRunning }: ConversationOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
 
-  // Track whether user has scrolled up (disable auto-scroll).
+  const toolResults = useMemo(() => buildToolResultsMap(messages), [messages])
+
   function handleScroll() {
     const el = containerRef.current
     if (!el) return
@@ -25,21 +45,20 @@ export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps
     shouldAutoScrollRef.current = distanceFromBottom < 40
   }
 
-  // Auto-scroll to bottom when new lines arrive.
   useEffect(() => {
     const el = containerRef.current
     if (el && shouldAutoScrollRef.current) {
       el.scrollTop = el.scrollHeight
     }
-  }, [lines.length])
+  }, [messages.length])
 
   return (
     <div
-      data-testid="terminal-output"
+      data-testid="conversation-output"
       className="flex flex-col h-full"
       style={{ background: '#0D0D0D' }}
     >
-      {/* Terminal header bar */}
+      {/* Header bar */}
       <div
         className="flex items-center gap-2 px-4 py-2 border-b"
         style={{
@@ -47,7 +66,6 @@ export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps
           background: '#111111',
         }}
       >
-        {/* macOS-style window dots */}
         <div className="flex gap-1.5">
           <span className="w-3 h-3 rounded-full" style={{ background: '#FF5F57' }} />
           <span className="w-3 h-3 rounded-full" style={{ background: '#FEBC2E' }} />
@@ -61,7 +79,7 @@ export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps
         </span>
         {isRunning && (
           <span
-            data-testid="terminal-running-indicator"
+            data-testid="conversation-running-indicator"
             className="ml-auto text-[11px] font-mono flex items-center gap-1.5"
             style={{ color: '#E2A039' }}
           >
@@ -71,38 +89,26 @@ export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps
         )}
       </div>
 
-      {/* Terminal body */}
+      {/* Conversation body */}
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden p-4 font-mono text-[13px] leading-relaxed"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
         style={{ color: '#E0E0E0' }}
         role="log"
         aria-live="polite"
-        aria-label="Terminal output"
+        aria-label="Session output"
       >
-        {lines.length === 0 && !isRunning && (
-          <p className="text-text-muted text-[13px]">No output yet.</p>
+        {messages.length === 0 && !isRunning && (
+          <p className="text-text-muted text-[13px] font-sans">No output yet.</p>
         )}
-        {lines.map((line) => (
-          <div
-            key={line.id}
-            className="whitespace-pre-wrap break-words"
-            style={
-              line.kind === 'error'
-                ? { color: '#ff6961' }
-                : line.kind === 'status'
-                  ? { color: '#9a9898', fontStyle: 'italic' }
-                  : undefined
-            }
-          >
-            {line.text}
-          </div>
+        {messages.map((message) => (
+          <MessageBlock key={message.id} message={message} toolResults={toolResults} />
         ))}
-        {isRunning && lines.length > 0 && (
+        {isRunning && messages.length > 0 && (
           <span
-            data-testid="terminal-cursor"
-            className="inline-block w-2 h-4 animate-pulse"
+            data-testid="conversation-cursor"
+            className="inline-block w-2 h-4 animate-pulse mt-2"
             style={{ background: '#E2A039' }}
           />
         )}
