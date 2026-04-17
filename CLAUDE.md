@@ -15,13 +15,13 @@ Monorepo with two apps, skills, and shared infra. See [ADR-001](docs/adr-001-cla
 apps/api/          — FastAPI backend (Python 3.12, uv)
   src/helprs/
     core/          — config, database, dependencies, exceptions, middleware, security
-    modules/       — domain modules: identity, installation, webhook, container (Phase 2)
+    modules/       — domain modules: identity, installation, webhook, container
     admin/         — SQLAdmin panel + credential management
   tests/           — mirrors modules/ structure
   alembic/         — DB migrations
 apps/web/          — React frontend (Vite, TypeScript)
-  src/features/    — feature modules: auth, dashboard, installation, session
-  src/shared/      — shared components/utils
+  src/features/    — feature modules: auth, landing, installation, session
+  src/shared/      — API client (shared/api/client.ts)
 skills/            — Claude Code skill definitions (mounted into ephemeral containers)
 infra/
   docker/          — Dockerfiles (api, web, claude-runner)
@@ -57,8 +57,6 @@ Skills are pluggable Claude Code agent definitions in `skills/`. See `skills/SKI
 | Skill | Purpose | PR fetch strategy |
 |-------|---------|-------------------|
 | `challenge-me` | Socratic quiz on PR changes | Shallow clone |
-| `code-review` | Multi-layer adversarial review | Shallow clone |
-| `security-audit` | Vulnerability scan on diff | Diff only |
 
 ## Code Style
 

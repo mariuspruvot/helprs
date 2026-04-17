@@ -1,6 +1,6 @@
 # Data Models -- Backend
 
-> Auto-generated on 2026-04-17 (post-pivot rewrite)
+> Updated 2026-04-17 (post-cleanup)
 
 ## Database Schema
 
@@ -55,7 +55,7 @@ All tables inherit from `Base` which provides:
 
 ### byok_configs
 
-Stores encrypted Claude credentials per installation. Post-pivot, this stores Claude Code credentials (not just API keys).
+Stores encrypted Claude credentials per installation.
 
 | Column | Type | Constraints | Default | Description |
 |--------|------|-------------|---------|-------------|
@@ -91,30 +91,42 @@ Stores encrypted Claude credentials per installation. Post-pivot, this stores Cl
 
 ---
 
-### Container Session Models -- Coming in Phase 2
+### container_sessions
 
-The container module will introduce new models for tracking container sessions. Expected tables:
+Tracks ephemeral Docker containers running skills against PRs.
 
-| Table | Purpose |
-|-------|---------|
-| `container_sessions` | Tracks ephemeral container lifecycle (skill, status, start/end time, installation link) |
+| Column | Type | Constraints | Default | Description |
+|--------|------|-------------|---------|-------------|
+| id | UUID | PK | uuid4() | inherited |
+| installation_id | UUID | FK(installations.id), NOT NULL, INDEX | -- | Parent installation |
+| user_id | UUID | FK(github_users.id), nullable, INDEX | -- | User who triggered the session |
+| pr_number | Integer | NOT NULL | -- | Pull request number |
+| repo_full_name | String(255) | NOT NULL, INDEX | -- | Repository in `owner/repo` format |
+| skill_name | String(100) | NOT NULL | -- | Skill executed (e.g. `challenge-me`) |
+| container_id | String(128) | nullable | -- | Docker container ID (set when running) |
+| status | Enum(ContainerStatus) | NOT NULL, INDEX | `"pending"` | `pending` / `running` / `completed` / `failed` / `timeout` |
+| started_at | DateTime(tz) | nullable | -- | When container started |
+| completed_at | DateTime(tz) | nullable | -- | When container finished |
+| created_at | DateTime(tz) | NOT NULL | now() | inherited |
+| updated_at | DateTime(tz) | NOT NULL | now() | inherited |
 
-Exact schema will be defined during container module implementation. The existing `sessions`, `questions`, `answers`, `scores`, `question_reports`, and `session_feedback` tables from the comprehension module will be removed.
+**Status enum:** `ContainerStatus` -- `pending`, `running`, `completed`, `failed`, `timeout`
 
 ---
 
 ## Entity Relationship Diagram
 
 ```
+github_users --------+
+                     |
+                     | (user_id FK, nullable)
+                     v
 installations --1:1-- byok_configs
       |
-      | 1:N
-      v
-webhook_events
-
-github_users (standalone)
-
-container_sessions (Coming in Phase 2)
+      | (installation_id FK)
+      +-----> webhook_events (via github_installation_id, no FK)
+      |
+      +-----> container_sessions
 ```
 
 ---
@@ -174,20 +186,57 @@ container_sessions (Coming in Phase 2)
 | byok_validated_at | datetime \| None | Validation time |
 | suppression_labels | list[str] | Labels |
 
+### Container Module
+
+#### CreateSessionRequest
+
+| Field | Type | Validation | Description |
+|-------|------|------------|-------------|
+| installation_id | UUID | Required | Parent installation |
+| pr_number | int | >= 1 | Pull request number |
+| repo_full_name | str | `owner/repo` format | Target repository |
+| skill_name | str | Alphanumeric + hyphens/underscores | Skill to execute |
+
+#### ContainerSessionResponse
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Session ID |
+| installation_id | UUID | Parent installation |
+| user_id | UUID \| None | Triggering user |
+| pr_number | int | PR number |
+| repo_full_name | str | Repository |
+| skill_name | str | Skill name |
+| container_id | str \| None | Docker container ID |
+| status | str | Current status |
+| started_at | datetime \| None | Start time |
+| completed_at | datetime \| None | Completion time |
+| created_at | datetime | Created |
+| updated_at | datetime | Updated |
+
+#### StopSessionResponse
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Session ID |
+| status | str | Final status |
+| message | str | Result message |
+
 ---
 
-## Migration History (Pre-Pivot)
+## Migration History
 
-| Revision | Date | Description |
-|----------|------|-------------|
-| `f91a5f49775b` | 2026-04-09 | Add `github_users` table |
-| `bcc0b5382ffd` | 2026-04-09 | Add `installations` table |
-| `792dfdfd0924` | 2026-04-09 | Add `byok_configs` table + `suppression_labels` column |
-| `98dc1b6e754e` | 2026-04-10 | Add `webhook_events` table |
-| `9036c7377667` | 2026-04-10 | Add `sessions` table |
-| `a1b2c3d4e5f6` | 2026-04-10 | Add `questions` table |
-| `b2c3d4e5f6a7` | 2026-04-11 | Add `answers` table |
-| `c3d4e5f6a7b8` | 2026-04-12 | Add `scores` table |
-| `d4e5f6a7b8c9` | 2026-04-12 | Add `question_reports` and `session_feedback` tables |
+| Revision | Description |
+|----------|-------------|
+| `f91a5f49775b` | Add `github_users` table |
+| `bcc0b5382ffd` | Add `installations` table |
+| `792dfdfd0924` | Add `byok_configs` table + `suppression_labels` column |
+| `98dc1b6e754e` | Add `webhook_events` table |
+| `9036c7377667` | Add `sessions` table (pre-pivot, comprehension) |
+| `a1b2c3d4e5f6` | Add `questions` table (pre-pivot, comprehension) |
+| `b2c3d4e5f6a7` | Add `answers` table (pre-pivot, comprehension) |
+| `c3d4e5f6a7b8` | Add `scores` table (pre-pivot, comprehension) |
+| `d4e5f6a7b8c9` | Add `question_reports` and `session_feedback` tables (pre-pivot, comprehension) |
+| `e5f6a7b8c9d0` | Add `container_sessions` table |
 
-Post-pivot migrations will remove comprehension-related tables (`sessions`, `questions`, `answers`, `scores`, `question_reports`, `session_feedback`) and add `container_sessions`.
+Note: migrations `9036c7377667` through `d4e5f6a7b8c9` create pre-pivot comprehension tables (`sessions`, `questions`, `answers`, `scores`, `question_reports`, `session_feedback`). The corresponding backend code has been removed but the migration files remain in the alembic history. A future squash migration should clean these up.

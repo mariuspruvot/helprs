@@ -57,8 +57,6 @@ sequenceDiagram
 | **webhook** | `apps/api/src/helprs/modules/webhook/` | Webhook signature verification, event dispatch, persistent event storage, crash-recovery replay, periodic reaper |
 | **container** | `apps/api/src/helprs/modules/container/` | Container session CRUD, Docker lifecycle (create/start/stop/remove), SSE log streaming, TTL-based cleanup |
 | **admin** | `apps/api/src/helprs/admin/` | SQLAdmin panel at `/admin` for credential management |
-| **comprehension** | `apps/api/src/helprs/modules/comprehension/` | Pre-pivot DDD module (empty -- only `__pycache__` remains) |
-| **billing** | `apps/api/src/helprs/modules/billing/` | Removed per open-source pivot (empty -- only `__pycache__` remains) |
 
 ### Frontend features
 
@@ -67,8 +65,8 @@ sequenceDiagram
 | **auth** | `apps/web/src/features/auth/` | OAuth callback handler, protected route wrapper, Zustand auth store |
 | **landing** | `apps/web/src/features/landing/` | Landing page with GitHub App install CTA |
 | **installation** | `apps/web/src/features/installation/` | Post-install setup flow (SetupView) and settings management (SettingsView) |
-| **session** | `apps/web/src/features/session/` | Skill selection UI (SkillSelector), container session management (ContainerSession), terminal output renderer (TerminalOutput), plus pre-pivot components (ChatPanel, ChatView, ScoreCard, etc.) |
-| **shared** | `apps/web/src/shared/` | SSE parser hook (`useSSE`), reduced-motion hook, viewport hook, theme tokens |
+| **session** | `apps/web/src/features/session/` | Skill selection UI (SkillSelector), container session management (ContainerSession), terminal output renderer (TerminalOutput) |
+| **shared** | `apps/web/src/shared/` | API client with auth token management |
 
 ### Skills system
 
@@ -91,7 +89,7 @@ Skills are mounted read-only into ephemeral containers via Docker volume binds.
 
 ## 3. What's Built
 
-### Backend (35 source files, 25 test files)
+### Backend (25 source files, 25 test files)
 
 **Core infrastructure** -- stable, tested:
 - App factory with async lifespan managing DB engine (`apps/api/src/helprs/main.py`)
@@ -113,7 +111,7 @@ Skills are mounted read-only into ephemeral containers via Docker volume binds.
 - BYOK credential storage (Fernet-encrypted Anthropic API keys)
 - Installation access token minting via GitHub API
 - PR comment posting with retry logic
-- 4 test files (router, service, BYOK router, BYOK service, suppression service)
+- 5 test files (router, service, BYOK router, BYOK service, suppression service)
 
 **Webhook module** -- stable, tested:
 - HMAC-SHA256 signature verification
@@ -121,9 +119,9 @@ Skills are mounted read-only into ephemeral containers via Docker volume binds.
 - Persistent webhook event storage for crash recovery
 - Replay system: boot-time replay + periodic reaper (5-minute interval)
 - PR opened handler: creates container session + posts PR comment with session link
-- 5 test files (dispatcher, handlers, repository, replay, router, verification)
+- 6 test files (dispatcher, handlers, repository, replay, router, verification)
 
-**Container module** -- new, tested (no real Docker integration yet):
+**Container module** -- tested (no real Docker integration yet):
 - `ContainerSession` ORM model with status enum (pending/running/completed/failed/timeout)
 - `DockerClient` protocol + `AioDockerClient` production implementation (aiodocker)
 - Session CRUD: create, get, get-or-404
@@ -133,13 +131,9 @@ Skills are mounted read-only into ephemeral containers via Docker volume binds.
 - Resource limits: 512MB memory, 1 CPU, 15-minute TTL
 - 3 test files + 1 integration test (service, router, models, container flow)
 
-**Alembic migrations** -- 10 migration files:
-- `github_users`, `installations`, `webhook_events`, `sessions`
-- `byok_configs`, `suppression` (installation settings)
-- `questions`, `answers`, `scores`, `reports_and_feedback` (pre-pivot, may need cleanup)
-- `container_sessions` (new)
+**Alembic migrations** -- 10 migration files covering all tables. Note: 5 pre-pivot comprehension migrations remain in history (sessions, questions, answers, scores, reports_and_feedback) -- the backend code is removed but migration files are retained for history.
 
-### Frontend (42 source files, 23 test files)
+### Frontend (14 source files, 6 test files)
 
 **Auth flow** -- stable:
 - `OAuthCallback.tsx` -- handles GitHub OAuth redirect, exchanges code for token
@@ -154,31 +148,16 @@ Skills are mounted read-only into ephemeral containers via Docker volume binds.
 - `SetupView.tsx` -- post-install configuration wizard
 - `SettingsView.tsx` -- installation settings management
 
-**Session flow** -- new container components + pre-pivot comprehension components:
-
-New (container-based):
+**Session flow** -- container-based:
 - `SkillSelector.tsx` -- displays available skills as cards (challenge-me, code-review, security-audit), 1 test
 - `ContainerSession.tsx` -- manages container lifecycle (create session, connect SSE, display output, stop), 1 test
-- `TerminalOutput.tsx` -- terminal-like renderer with macOS-style window chrome, auto-scroll, amber accent, 1 test
+- `TerminalOutput.tsx` -- terminal-like renderer with macOS-style window chrome, auto-scroll, 1 test
 - `containerApi.ts` -- API client for container endpoints
 - `containerTypes.ts` -- TypeScript types for container sessions
 - `SessionView.tsx` -- route component orchestrating SkillSelector and ContainerSession
 
-Pre-pivot (still in tree, partially orphaned):
-- `ChatPanel.tsx`, `ChatView.tsx`, `ChatMessage.tsx` -- interactive Q&A session UI (pre-pivot comprehension flow)
-- `ScoreCard.tsx`, `SessionFeedback.tsx`, `ReportButton.tsx` -- scoring and feedback components
-- `DiffViewer.tsx`, `CodeLink.tsx` -- code diff rendering
-- `AnswerInput.tsx`, `SessionHeader.tsx` -- session interaction components
-- `SplitLayout.tsx`, `MobileLayout.tsx`, `TabbedLayout.tsx` -- layout components
-- `store.ts`, `useSession.ts`, `types.ts` -- session state management
-- 17 test files for pre-pivot components
-
-**Shared** -- stable:
-- `useSSE.ts` -- SSE connection hook with reconnection logic, 1 test
-- `parseSSE.ts` -- SSE event parser, 1 test
-- `useReducedMotion.ts` -- accessibility hook for reduced motion preference
-- `useViewport.ts` -- responsive viewport hook
-- `tokens.ts` -- design system theme tokens
+**Shared**:
+- `api/client.ts` -- fetch wrapper with auth header injection, 401 retry, re-auth redirect
 
 **Routing** (`app.tsx`):
 - `/` -- Landing page
@@ -239,14 +218,11 @@ Pre-pivot (still in tree, partially orphaned):
 ### Frontend integration
 
 - **Frontend calls the right endpoints but hasn't been tested against a running backend.** The `containerApi.ts` client, `ContainerSession.tsx` SSE connection, and `TerminalOutput.tsx` renderer are built but only unit-tested with mocks.
-- **No dashboard page exists.** The app routes from landing -> install -> settings -> session, but there's no `/dashboard` showing all installations and their sessions. (Referenced in project memory as a known gap.)
+- **No dashboard page exists.** The app routes from landing -> install -> settings -> session, but there's no `/dashboard` showing all installations and their sessions.
 
-### Cleanup needed
+### Package cleanup
 
-- **Pre-pivot comprehension components**: 15+ files in `apps/web/src/features/session/` (ChatPanel, ChatView, ChatMessage, ScoreCard, DiffViewer, AnswerInput, SessionHeader, etc.) with 17 test files are from the pre-pivot interactive Q&A approach. They are not used by the new container-based flow but remain in the tree.
-- **Pre-pivot comprehension module**: `apps/api/src/helprs/modules/comprehension/` has empty directory structure (domain, application, infrastructure, presentation) with only `__pycache__`.
-- **Pre-pivot billing module**: `apps/api/src/helprs/modules/billing/` is empty (only `__pycache__`).
-- **Pre-pivot migrations**: `questions`, `answers`, `scores`, `reports_and_feedback` tables were created for the comprehension flow and are no longer needed by the container approach. They add schema weight without serving the current architecture.
+- `react-diff-view` and `react-resizable-panels` remain in `package.json` but are no longer used by any component. They should be removed.
 
 ---
 
@@ -268,7 +244,7 @@ Pre-pivot (still in tree, partially orphaned):
 3. **Error handling and retry logic.** Container creation failures, Docker daemon unavailability, SSE connection drops.
 4. **Logging and monitoring.** Structured logs for container lifecycle events are in place; add metrics (container count, duration, success rate) and alerting.
 5. **Rate limiting per installation.** Current rate limits are per-IP; add per-installation limits to prevent abuse.
-6. **Pre-pivot code cleanup.** Remove empty `comprehension` and `billing` modules, pre-pivot frontend components, and orphaned database migrations.
+6. **Remove unused npm packages.** `react-diff-view`, `react-resizable-panels`, `refractor`, `react-markdown`, `remark-gfm` are leftover from the pre-pivot UI and no longer imported.
 
 ### P2 -- Feature expansion
 
@@ -285,7 +261,6 @@ Pre-pivot (still in tree, partially orphaned):
 2. **Mobile responsive layout.** Terminal output and skill selection on small screens.
 3. **Documentation site.** MkDocs config exists (`mkdocs.yml`) but is not deployed.
 4. **Contributing guide for skill authors.** How to create a new skill, test it locally, submit a PR.
-5. **Accessibility.** `useReducedMotion` hook exists but is not wired to all animated components.
 
 ---
 
@@ -325,9 +300,6 @@ Pre-pivot (still in tree, partially orphaned):
 | Zustand | ^5.0.12 | State management |
 | React Query | ^5.97.0 | Server state / data fetching |
 | React Router | ^7.14.0 | Client-side routing |
-| react-markdown | 10.1.0 | Markdown rendering |
-| react-diff-view | 3.3.3 | Diff rendering (pre-pivot) |
-| react-resizable-panels | 4.9.0 | Split panel layout (pre-pivot) |
 | Vitest | ^4.1.4 | Testing |
 | Testing Library | ^16.3.2 | Component testing utilities |
 | ESLint | ^10.2.0 | Linting |

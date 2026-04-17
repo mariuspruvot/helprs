@@ -1,6 +1,6 @@
 # Architecture -- Backend (api)
 
-> Auto-generated on 2026-04-17 (post-pivot rewrite)
+> Updated 2026-04-17 (post-cleanup)
 
 ## Executive Summary
 
@@ -15,7 +15,7 @@ FastAPI backend serving as a container orchestrator, webhook receiver, and admin
 | ORM | SQLAlchemy | >= 2.0.36 | Async ORM (asyncpg driver) |
 | Migrations | Alembic | >= 1.14 | Schema migrations |
 | Settings | Pydantic Settings | >= 2.7 | Typed env var config |
-| Container | Docker SDK | TBD | Ephemeral container lifecycle |
+| Container | aiodocker | >= 0.23 | Async Docker client for ephemeral container lifecycle |
 | Logging | structlog | >= 24.4 | Structured logging |
 | Monitoring | Sentry SDK | >= 2.19 | Error tracking |
 | Rate Limiting | SlowAPI | >= 0.1.9 | Per-IP rate limiting |
@@ -25,8 +25,6 @@ FastAPI backend serving as a container orchestrator, webhook receiver, and admin
 | Admin | SQLAdmin | >= 0.20 | Admin panel + credential management |
 | Testing | pytest + pytest-asyncio | >= 8.3 | Test framework |
 | Linting | ruff | >= 0.8 | Linter + formatter |
-
-**Removed:** pydantic-ai (no longer needed -- AI runs in containers)
 
 ## Architecture Pattern
 
@@ -50,14 +48,16 @@ FastAPI backend serving as a container orchestrator, webhook receiver, and admin
          |   +-- middleware.py     CORS, timing
          |   +-- security.py      JWT, Fernet, HMAC
          |
-         +-- modules/
-             +-- identity/       (Flat: router -> service -> model)
-             +-- installation/   (Flat: router -> service -> model)
-             +-- webhook/        (Flat: router -> dispatcher -> handlers -> model)
-             +-- container/      (NEW: container orchestration + result relay)
+         +-- modules/        (All flat pattern)
+             +-- identity/       (router -> service -> model)
+             +-- installation/   (router -> service -> model)
+             +-- webhook/        (router -> dispatcher -> handlers -> model)
+             +-- container/      (router -> service -> model)
 ```
 
-### Flat Modules (identity, installation, webhook)
+### Flat Module Pattern
+
+All four modules use the same structure:
 
 ```
 module/
@@ -67,20 +67,9 @@ module/
 +-- schemas.py   # Pydantic request/response schemas
 ```
 
-### Container Module (new)
+The webhook module adds `dispatcher.py`, `handlers.py`, `verification.py`, `tasks.py`, and `repository.py` for its event processing pipeline.
 
-```
-container/               # Coming in Phase 2
-+-- router.py            # Container session endpoints + SSE relay
-+-- service.py           # Container lifecycle (provision, inject creds, destroy)
-+-- orchestrator.py      # Docker SDK integration (create, start, stream, remove)
-+-- models.py            # ContainerSession SQLAlchemy model
-+-- schemas.py           # Request/response schemas
-```
-
-**Removed:** `comprehension/` DDD module (domain/, application/, infrastructure/, presentation/) and `billing/` stub.
-
-## Backend Role (Post-Pivot)
+## Backend Role
 
 The backend is a **thin orchestrator**, not an AI host:
 
@@ -120,5 +109,5 @@ The backend is a **thin orchestrator**, not an AI host:
 1. **No AI in the backend**: all AI logic runs inside ephemeral containers
 2. **BYOK model**: each installation provides their own Claude credentials
 3. **SSE passthrough**: backend relays container output, does not generate AI responses
-4. **Flat modules only**: removed DDD layer -- all modules use the simple flat pattern
+4. **Flat modules only**: all modules use the simple flat pattern (router/service/models/schemas)
 5. **Background webhook processing**: raw events persisted first, dispatched async with retry
