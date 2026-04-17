@@ -91,11 +91,9 @@ export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps
             style={
               line.kind === 'error'
                 ? { color: '#ff6961' }
-                : line.kind === 'user'
-                  ? { color: '#E2A039' }
-                  : line.kind === 'result'
-                    ? { color: '#E0E0E0', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }
-                    : undefined
+                : line.kind === 'status'
+                  ? { color: '#9a9898', fontStyle: 'italic' }
+                  : undefined
             }
           >
             {line.text}

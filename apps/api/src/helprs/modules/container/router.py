@@ -126,7 +126,17 @@ async def stream_container_output(
     Accepts an ``offset`` query parameter: the number of events to skip.
     Clients should pass the last received event ``id`` so that reconnects
     resume from where they left off instead of replaying the full log.
+
+    Also reads the ``Last-Event-ID`` header (sent automatically by
+    EventSource on native auto-reconnect) as a fallback when the query
+    parameter is absent or zero.
     """
+    # EventSource auto-reconnect sends Last-Event-ID header, not query params.
+    if offset == 0:
+        last_event_id = request.headers.get("last-event-id", "")
+        if last_event_id.isdigit():
+            offset = int(last_event_id)
+
     cs = await get_session_or_404(db, session_id)
 
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
