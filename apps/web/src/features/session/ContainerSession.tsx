@@ -70,6 +70,8 @@ export default function ContainerSession({
   useEffect(() => {
     mountedRef.current = true
     const abortController = new AbortController()
+    lineIdRef.current = 0
+    setLines([])
 
     async function init() {
       try {
