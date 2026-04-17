@@ -1,4 +1,4 @@
-.PHONY: dev lint test build migrate types
+.PHONY: dev lint test build build-runner migrate types
 
 dev:
 	docker compose up --build
@@ -14,6 +14,9 @@ test:
 
 build:
 	docker compose -f infra/coolify/docker-compose.prod.yml build
+
+build-runner:
+	docker build -t helprs/claude-runner:latest infra/docker/claude-runner/
 
 migrate:
 	cd apps/api && uv run alembic upgrade head
