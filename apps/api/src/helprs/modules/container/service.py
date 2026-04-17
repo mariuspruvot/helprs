@@ -138,7 +138,9 @@ class AioDockerClient:
 
     async def container_logs(self, container_id: str, follow: bool = False) -> AsyncIterator[str]:
         container = await self._docker.containers.get(container_id)
-        async for line in container.log(stdout=True, stderr=True, follow=follow):
+        # Only read stdout — Claude Code writes stream-json to stdout.
+        # stderr contains verbose/diagnostic output that duplicates events.
+        async for line in container.log(stdout=True, stderr=False, follow=follow):
             yield line
 
     async def write_to_container(self, container_id: str, data: str) -> None:
