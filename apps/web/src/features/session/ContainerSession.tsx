@@ -12,6 +12,7 @@ import { useAuthStore } from '../auth/store'
 import {
   buildStreamUrl,
   createContainerSession,
+  getContainerSession,
   sendMessage,
   stopContainerSession,
 } from './containerApi'
@@ -68,21 +69,24 @@ export default function ContainerSession({
   // Create session on mount
   useEffect(() => {
     mountedRef.current = true
-    let cancelled = false
+    const abortController = new AbortController()
 
     async function init() {
       try {
         setStatus('starting')
         appendLine(`Starting ${skillName} for ${repoFullName}#${prNumber}...`)
 
-        const created = await createContainerSession({
-          installation_id: installationId,
-          pr_number: prNumber,
-          repo_full_name: repoFullName,
-          skill_name: skillName,
-        })
+        const created = await createContainerSession(
+          {
+            installation_id: installationId,
+            pr_number: prNumber,
+            repo_full_name: repoFullName,
+            skill_name: skillName,
+          },
+          abortController.signal,
+        )
 
-        if (cancelled) return
+        if (abortController.signal.aborted) return
 
         setSession(created)
         setStatus(created.status)
@@ -94,11 +98,33 @@ export default function ContainerSession({
           appendLine('[error] Container failed to start.')
         }
       } catch (err) {
-        if (cancelled) return
+        if (abortController.signal.aborted) return
         const msg = err instanceof Error ? err.message : 'Unknown error'
         setError(msg)
         setStatus('failed')
         appendLine(`[error] ${msg}`)
+      }
+    }
+
+    async function pollSessionStatus(sessionId: string) {
+      try {
+        const fresh = await getContainerSession(sessionId)
+        if (!mountedRef.current) return
+        setStatus(fresh.status)
+        if (fresh.status === 'completed') {
+          appendLine('Session completed.')
+        } else if (fresh.status === 'failed') {
+          setError('Container failed')
+          appendLine('[error] Container failed.')
+        } else if (fresh.status === 'running') {
+          appendLine('[reconnecting] Stream dropped, container still running...')
+          connectStream(sessionId)
+        }
+      } catch {
+        if (!mountedRef.current) return
+        setStatus('failed')
+        setError('Lost connection to session')
+        appendLine('[error] Lost connection to session.')
       }
     }
 
@@ -176,11 +202,11 @@ export default function ContainerSession({
           return
         }
 
-        // Native error — connection dropped
+        // Native error — connection dropped. Poll backend for actual status
+        // instead of immediately marking as failed.
         if (source.readyState === EventSource.CLOSED) {
           eventSourceRef.current = null
-          // Only mark as failed if we haven't already completed
-          setStatus((prev) => (prev === 'completed' ? prev : 'failed'))
+          pollSessionStatus(sessionId)
         }
       })
     }
@@ -188,7 +214,7 @@ export default function ContainerSession({
     init()
 
     return () => {
-      cancelled = true
+      abortController.abort()
       mountedRef.current = false
       if (eventSourceRef.current) {
         eventSourceRef.current.close()

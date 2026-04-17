@@ -129,7 +129,7 @@ async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> No
         comment_body = (
             f"**helPRs** session created for this PR.\n\n"
             f"Skill: `challenge-me` | "
-            f"[Open session]({settings.APP_BASE_URL}/session/{cs.id})"
+            f"[Open session]({settings.APP_BASE_URL}/session/{installation.id}/{repo_full_name}/{pr_number})"
         )
         await post_pr_comment_with_retry(
             owner=owner,
