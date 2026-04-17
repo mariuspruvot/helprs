@@ -15,7 +15,8 @@ import base64
 import contextlib
 import json
 import os
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -49,6 +50,14 @@ SKILLS_BASE_PATH = _DOCKER_SKILLS_PATH if _DOCKER_SKILLS_PATH.exists() else _LOC
 # The API container can't use its own /app/skills path as a bind mount source
 # for child containers; Docker needs the HOST filesystem path.
 SKILLS_HOST_PATH = os.environ.get("SKILLS_HOST_PATH", str(SKILLS_BASE_PATH))
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerInfo:
+    """Minimal container metadata returned by list_containers."""
+
+    container_id: str
+    labels: dict[str, str]
 
 
 class DockerClient(Protocol):
@@ -91,6 +100,10 @@ class DockerClient(Protocol):
         """Wait for a container to exit. Returns exit code."""
         ...
 
+    async def list_containers(self, label_filter: str) -> list[ContainerInfo]:
+        """List containers that have the given label key present."""
+        ...
+
 
 class AioDockerClient:
     """Production Docker client wrapping aiodocker."""
@@ -114,6 +127,7 @@ class AioDockerClient:
             "Env": env_list,
             "Labels": labels,
             "OpenStdin": True,
+            "StopTimeout": 10,
             "HostConfig": {
                 "Binds": binds,
                 "Memory": 512 * 1024 * 1024,  # 512MB
@@ -161,6 +175,20 @@ class AioDockerClient:
         container = await self._docker.containers.get(container_id)
         result = await container.wait()
         return result["StatusCode"]
+
+    async def list_containers(self, label_filter: str) -> list[ContainerInfo]:
+        """List containers that have the given label key present."""
+        raw = await self._docker.containers.list(
+            all=True,
+            filters=json.dumps({"label": [label_filter]}),
+        )
+        return [
+            ContainerInfo(
+                container_id=c.id,
+                labels=c["Labels"],
+            )
+            for c in raw
+        ]
 
     async def close(self) -> None:
         await self._docker.close()
@@ -493,3 +521,95 @@ async def cleanup_expired(
         await logger.ainfo("expired_sessions_cleaned", count=cleaned)
 
     return cleaned
+
+
+async def reconcile_on_startup(
+    db: AsyncSession,
+    docker: DockerClient,
+) -> tuple[int, int]:
+    """Reconcile DB sessions with actual Docker container state at API startup.
+
+    Three-way reconciliation:
+    1. Docker containers with helprs labels but no matching active DB session
+       -> orphan container: stop and remove.
+    2. DB sessions past TTL -> mark TIMEOUT, remove container if present.
+    3. DB sessions whose container vanished from Docker -> mark FAILED.
+
+    Returns (containers_removed, sessions_updated).
+    Never raises — logs errors and returns (0, 0) if Docker is unreachable.
+    """
+    try:
+        docker_containers = await docker.list_containers(label_filter="helprs.session_id")
+    except Exception:
+        await logger.aerror("reconcile_list_containers_failed")
+        return (0, 0)
+
+    # Build lookups from Docker state
+    docker_by_id: dict[str, ContainerInfo] = {c.container_id: c for c in docker_containers}
+    docker_session_ids: set[str] = set()
+    for c in docker_containers:
+        sid = c.labels.get("helprs.session_id", "")
+        if sid:
+            docker_session_ids.add(sid)
+
+    # Get all active DB sessions
+    result = await db.execute(
+        select(ContainerSession).where(
+            ContainerSession.status.in_([ContainerStatus.RUNNING, ContainerStatus.PENDING]),
+        )
+    )
+    active_sessions = list(result.scalars().all())
+    active_session_ids: set[str] = {str(cs.id) for cs in active_sessions}
+
+    now = datetime.now(UTC)
+    cutoff_dt = now - timedelta(seconds=CONTAINER_TTL_SECONDS)
+    containers_removed = 0
+    sessions_updated = 0
+
+    # Step 1: Orphan containers — in Docker but no matching active DB session
+    for container in docker_containers:
+        session_label = container.labels.get("helprs.session_id", "")
+        if session_label not in active_session_ids:
+            try:
+                await docker.stop_container(container.container_id)
+            except Exception:
+                await logger.awarning("reconcile_stop_orphan_failed", container_id=container.container_id)
+            try:
+                await docker.remove_container(container.container_id, force=True)
+            except Exception:
+                await logger.awarning("reconcile_remove_orphan_failed", container_id=container.container_id)
+            containers_removed += 1
+
+    # Step 2: Stale DB sessions — reconcile against Docker state
+    for cs in active_sessions:
+        if cs.created_at < cutoff_dt:
+            # Past TTL -> TIMEOUT, remove container if it exists
+            if cs.container_id and cs.container_id in docker_by_id:
+                with contextlib.suppress(Exception):
+                    await docker.stop_container(cs.container_id)
+                with contextlib.suppress(Exception):
+                    await docker.remove_container(cs.container_id, force=True)
+                containers_removed += 1
+            cs.status = ContainerStatus.TIMEOUT
+            cs.completed_at = now
+            sessions_updated += 1
+        elif cs.container_id and cs.container_id not in docker_by_id:
+            # Container vanished from Docker -> FAILED
+            cs.status = ContainerStatus.FAILED
+            cs.completed_at = now
+            sessions_updated += 1
+        elif not cs.container_id:
+            # Stuck PENDING with no container_id -> FAILED
+            cs.status = ContainerStatus.FAILED
+            cs.completed_at = now
+            sessions_updated += 1
+
+    if sessions_updated:
+        await db.flush()
+
+    await logger.ainfo(
+        "startup_reconciliation_complete",
+        containers_removed=containers_removed,
+        sessions_updated=sessions_updated,
+    )
+    return (containers_removed, sessions_updated)

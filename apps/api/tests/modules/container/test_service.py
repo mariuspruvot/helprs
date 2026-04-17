@@ -11,11 +11,13 @@ from helprs.core.database import Base
 from helprs.modules.container.models import ContainerStatus
 from helprs.modules.container.service import (
     CONTAINER_TTL_SECONDS,
+    ContainerInfo,
     cleanup_expired,
     create_session,
     get_session,
     get_session_or_404,
     mark_completed,
+    reconcile_on_startup,
     start_container,
     stop_container,
     stream_output,
@@ -40,12 +42,16 @@ class FakeDockerClient:
         fail_on_create: bool = False,
         fail_on_stop: bool = False,
         log_lines: list[str] | None = None,
+        listed_containers: list[ContainerInfo] | None = None,
+        fail_on_list: bool = False,
     ):
         self._container_id = container_id
         self._exit_code = exit_code
         self._fail_on_create = fail_on_create
         self._fail_on_stop = fail_on_stop
+        self._fail_on_list = fail_on_list
         self._log_lines = log_lines or ["line 1", "line 2"]
+        self._listed_containers = listed_containers or []
         self.created: list[dict] = []
         self.started: list[str] = []
         self.stopped: list[str] = []
@@ -80,6 +86,11 @@ class FakeDockerClient:
 
     async def wait_container(self, container_id: str) -> int:
         return self._exit_code
+
+    async def list_containers(self, label_filter: str) -> list[ContainerInfo]:
+        if self._fail_on_list:
+            raise RuntimeError("Docker daemon unreachable")
+        return self._listed_containers
 
 
 # ---------------------------------------------------------------------------
@@ -539,3 +550,143 @@ class TestCleanupExpired:
 
         cleaned = await cleanup_expired(db=db, docker=docker)
         assert cleaned == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: reconcile_on_startup
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileOnStartup:
+    async def test_removes_orphan_docker_containers(self, db: AsyncSession, installation: Installation):
+        """Docker container exists but has no matching active DB session."""
+        orphan = ContainerInfo(
+            container_id="orphan-container-123",
+            labels={"helprs.session_id": str(uuid.uuid4())},
+        )
+        docker = FakeDockerClient(listed_containers=[orphan])
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert containers_removed == 1
+        assert sessions_updated == 0
+        assert "orphan-container-123" in docker.stopped
+        assert "orphan-container-123" in docker.removed
+
+    async def test_marks_stale_sessions_failed(self, db: AsyncSession, installation: Installation):
+        """DB session is RUNNING but its container_id is not in Docker."""
+        cs = await create_session(
+            db=db,
+            installation_id=installation.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+        )
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "vanished-container-456"
+        await db.flush()
+
+        docker = FakeDockerClient(listed_containers=[])
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert sessions_updated == 1
+        refreshed = await get_session(db, cs.id)
+        assert refreshed is not None
+        assert refreshed.status == ContainerStatus.FAILED
+        assert refreshed.completed_at is not None
+
+    async def test_marks_expired_sessions_timeout(self, db: AsyncSession, installation: Installation):
+        """DB session is RUNNING and past TTL, with container still in Docker."""
+        from datetime import UTC, datetime, timedelta
+
+        cs = await create_session(
+            db=db,
+            installation_id=installation.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+        )
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "expired-container-789"
+        cs.created_at = datetime.now(UTC) - timedelta(seconds=CONTAINER_TTL_SECONDS + 120)
+        await db.flush()
+
+        container_info = ContainerInfo(
+            container_id="expired-container-789",
+            labels={"helprs.session_id": str(cs.id)},
+        )
+        docker = FakeDockerClient(listed_containers=[container_info])
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert containers_removed == 1
+        assert sessions_updated == 1
+        refreshed = await get_session(db, cs.id)
+        assert refreshed is not None
+        assert refreshed.status == ContainerStatus.TIMEOUT
+        assert "expired-container-789" in docker.stopped
+
+    async def test_marks_stuck_pending_failed(self, db: AsyncSession, installation: Installation):
+        """DB session stuck in PENDING with no container_id."""
+        cs = await create_session(
+            db=db,
+            installation_id=installation.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+        )
+        # create_session already sets PENDING and container_id=None
+        docker = FakeDockerClient(listed_containers=[])
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert sessions_updated == 1
+        refreshed = await get_session(db, cs.id)
+        assert refreshed is not None
+        assert refreshed.status == ContainerStatus.FAILED
+
+    async def test_leaves_valid_sessions_untouched(self, db: AsyncSession, installation: Installation):
+        """RUNNING session with recent created_at and matching Docker container."""
+        cs = await create_session(
+            db=db,
+            installation_id=installation.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+        )
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "active-container-abc"
+        await db.flush()
+
+        container_info = ContainerInfo(
+            container_id="active-container-abc",
+            labels={"helprs.session_id": str(cs.id)},
+        )
+        docker = FakeDockerClient(listed_containers=[container_info])
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert containers_removed == 0
+        assert sessions_updated == 0
+        refreshed = await get_session(db, cs.id)
+        assert refreshed is not None
+        assert refreshed.status == ContainerStatus.RUNNING
+
+    async def test_handles_docker_unreachable(self, db: AsyncSession):
+        """list_containers failure returns (0, 0) without crashing."""
+        docker = FakeDockerClient(fail_on_list=True)
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert containers_removed == 0
+        assert sessions_updated == 0
+
+    async def test_noop_on_empty_state(self, db: AsyncSession):
+        """No sessions, no containers -> (0, 0)."""
+        docker = FakeDockerClient(listed_containers=[])
+
+        containers_removed, sessions_updated = await reconcile_on_startup(db, docker)
+
+        assert containers_removed == 0
+        assert sessions_updated == 0

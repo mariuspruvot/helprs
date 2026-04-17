@@ -101,6 +101,37 @@ async def _run_webhook_reaper(app: FastAPI, *, interval_seconds: int = _REAPER_I
         raise
 
 
+async def _reconcile_containers_on_startup(app: FastAPI) -> None:
+    """Reconcile DB container sessions with actual Docker state at boot.
+
+    Mirrors the crash-replay pattern: bounded by a timeout, failures never
+    block startup.
+    """
+    from helprs.modules.container.service import AioDockerClient, reconcile_on_startup
+
+    try:
+        docker = AioDockerClient()
+        try:
+            async with app.state.session_factory() as db:
+                containers_removed, sessions_updated = await asyncio.wait_for(
+                    reconcile_on_startup(db, docker),
+                    timeout=_REPLAY_DISCOVERY_TIMEOUT_SECONDS,
+                )
+                await db.commit()
+                if containers_removed or sessions_updated:
+                    logger.info(
+                        "startup_container_reconciliation",
+                        containers_removed=containers_removed,
+                        sessions_updated=sessions_updated,
+                    )
+        finally:
+            await docker.close()
+    except TimeoutError:
+        logger.warning("container_reconciliation_timeout", timeout=_REPLAY_DISCOVERY_TIMEOUT_SECONDS)
+    except Exception:
+        logger.exception("container_reconciliation_failed")
+
+
 async def _run_container_cleanup(
     app: FastAPI,
     *,
@@ -163,6 +194,11 @@ def create_app() -> FastAPI:
             # after a grace period are re-dispatched. Fire-and-forget so the
             # server starts serving traffic immediately (AC #2).
             await _replay_pending_webhook_events(app)
+
+            # Container reconciliation: sync DB sessions with Docker state
+            # before the periodic reaper starts so orphans are cleaned
+            # immediately on restart.
+            await _reconcile_containers_on_startup(app)
 
             # Periodic reaper: handles rows that get stuck mid-run (e.g.
             # mark_processed commit failure) without waiting for the next
