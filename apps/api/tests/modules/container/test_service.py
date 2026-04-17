@@ -1,23 +1,28 @@
 """Tests for container service functions using test doubles."""
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from helprs.core.database import Base
-from helprs.modules.container.models import ContainerStatus
+from helprs.core.database import Base, clear_session_factory, set_session_factory
+from helprs.modules.container.models import ContainerStatus, SessionEvent
 from helprs.modules.container.service import (
     CONTAINER_TTL_SECONDS,
     cleanup_expired,
     create_session,
     get_session,
+    get_session_events,
     get_session_or_404,
     mark_completed,
     start_container,
     stop_container,
+    stream_and_persist,
+    stream_events,
     stream_output,
 )
 from helprs.modules.installation.models import Installation
@@ -45,7 +50,7 @@ class FakeDockerClient:
         self._exit_code = exit_code
         self._fail_on_create = fail_on_create
         self._fail_on_stop = fail_on_stop
-        self._log_lines = log_lines or ["line 1", "line 2"]
+        self._log_lines = log_lines or ["line 1\n", "line 2\n"]
         self.created: list[dict] = []
         self.started: list[str] = []
         self.stopped: list[str] = []
@@ -100,10 +105,21 @@ async def engine():
 
 @pytest.fixture
 async def db(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as session:
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
         yield session
         await session.rollback()
+
+
+@pytest.fixture
+async def db_with_factory(engine):
+    """DB session + registers the factory for get_db_context (needed by stream_and_persist)."""
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    set_session_factory(factory)
+    async with factory() as session:
+        yield session, factory
+        await session.rollback()
+    clear_session_factory()
 
 
 @pytest.fixture
@@ -352,13 +368,46 @@ class TestStartContainer:
 # ---------------------------------------------------------------------------
 
 
+class TestStreamEvents:
+    async def test_yields_event_id_and_line(self):
+        docker = FakeDockerClient(log_lines=["line1\n", "line2\n"])
+        events = []
+        async for event_id, line in stream_events(docker, "cid"):
+            events.append((event_id, line))
+        assert events == [(1, "line1"), (2, "line2")]
+
+    async def test_skips_blank_lines(self):
+        docker = FakeDockerClient(log_lines=["\n", "data\n", "\n"])
+        events = []
+        async for event_id, line in stream_events(docker, "cid"):
+            events.append((event_id, line))
+        assert events == [(1, "data")]
+
+    async def test_buffers_partial_lines(self):
+        docker = FakeDockerClient(log_lines=["hel", "lo\nworld\n"])
+        events = []
+        async for event_id, line in stream_events(docker, "cid"):
+            events.append((event_id, line))
+        assert events == [(1, "hello"), (2, "world")]
+
+
 class TestStreamOutput:
     async def test_yields_sse_events(self):
-        docker = FakeDockerClient(log_lines=["hello world", "done"])
+        docker = FakeDockerClient(log_lines=["hello world\n", "done\n"])
         lines = []
         async for event in stream_output(docker, "container-123"):
             lines.append(event)
-        assert lines == ["data: hello world\n\n", "data: done\n\n"]
+        assert lines == [
+            "id: 1\ndata: hello world\n\n",
+            "id: 2\ndata: done\n\n",
+        ]
+
+    async def test_respects_offset(self):
+        docker = FakeDockerClient(log_lines=["first\n", "second\n", "third\n"])
+        lines = []
+        async for event in stream_output(docker, "cid", offset=2):
+            lines.append(event)
+        assert lines == ["id: 3\ndata: third\n\n"]
 
 
 # ---------------------------------------------------------------------------
@@ -539,3 +588,151 @@ class TestCleanupExpired:
 
         cleaned = await cleanup_expired(db=db, docker=docker)
         assert cleaned == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: stream_and_persist
+# ---------------------------------------------------------------------------
+
+
+class TestStreamAndPersist:
+    async def test_persists_events_to_db(self, engine, db_with_factory):
+        db, factory = db_with_factory
+        inst = Installation(
+            github_installation_id=77777777,
+            account_login="persist-org",
+            account_id=22222,
+            account_type="Organization",
+            repository_selection="all",
+            app_slug="helprs-test",
+            target_type="Organization",
+        )
+        db.add(inst)
+        await db.flush()
+
+        cs = await create_session(db, inst.id, 1, "org/repo", "challenge-me")
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "fake-cid"
+        await db.flush()
+        await db.commit()
+
+        event_data = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}})
+        docker = FakeDockerClient(log_lines=[f"{event_data}\n"])
+
+        sse_events = []
+        async for sse in stream_and_persist(docker, "fake-cid", cs.id):
+            sse_events.append(sse)
+
+        assert len(sse_events) == 1
+        assert "data:" in sse_events[0]
+
+        async with factory() as verify_db:
+            result = await verify_db.execute(select(SessionEvent).where(SessionEvent.session_id == cs.id))
+            stored = list(result.scalars().all())
+            assert len(stored) == 1
+            assert stored[0].event_id == 1
+            assert stored[0].data["type"] == "assistant"
+
+    async def test_skips_sse_for_offset_but_persists(self, engine, db_with_factory):
+        db, factory = db_with_factory
+        inst = Installation(
+            github_installation_id=77777778,
+            account_login="offset-org",
+            account_id=22223,
+            account_type="Organization",
+            repository_selection="all",
+            app_slug="helprs-test",
+            target_type="Organization",
+        )
+        db.add(inst)
+        await db.flush()
+
+        cs = await create_session(db, inst.id, 1, "org/repo", "challenge-me")
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "fake-cid"
+        await db.flush()
+        await db.commit()
+
+        docker = FakeDockerClient(
+            log_lines=[
+                '{"type":"system","subtype":"init"}\n',
+                '{"type":"assistant","message":{"content":[]}}\n',
+            ]
+        )
+
+        sse_events = []
+        async for sse in stream_and_persist(docker, "fake-cid", cs.id, offset=1):
+            sse_events.append(sse)
+
+        # Only event 2 should be yielded as SSE
+        assert len(sse_events) == 1
+        assert "id: 2" in sse_events[0]
+
+        # Both events should be persisted
+        async with factory() as verify_db:
+            result = await verify_db.execute(
+                select(SessionEvent).where(SessionEvent.session_id == cs.id).order_by(SessionEvent.event_id)
+            )
+            stored = list(result.scalars().all())
+            assert len(stored) == 2
+
+    async def test_stores_non_json_as_raw(self, engine, db_with_factory):
+        db, factory = db_with_factory
+        inst = Installation(
+            github_installation_id=77777779,
+            account_login="raw-org",
+            account_id=22224,
+            account_type="Organization",
+            repository_selection="all",
+            app_slug="helprs-test",
+            target_type="Organization",
+        )
+        db.add(inst)
+        await db.flush()
+
+        cs = await create_session(db, inst.id, 1, "org/repo", "challenge-me")
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "fake-cid"
+        await db.flush()
+        await db.commit()
+
+        docker = FakeDockerClient(log_lines=["not-json-content\n"])
+
+        sse_events = []
+        async for sse in stream_and_persist(docker, "fake-cid", cs.id):
+            sse_events.append(sse)
+
+        async with factory() as verify_db:
+            result = await verify_db.execute(select(SessionEvent).where(SessionEvent.session_id == cs.id))
+            stored = list(result.scalars().all())
+            assert len(stored) == 1
+            assert stored[0].data == {"_raw": "not-json-content"}
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_session_events
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionEvents:
+    async def test_returns_events_ordered(self, db: AsyncSession, installation: Installation):
+        cs = await create_session(db, installation.id, 1, "org/repo", "challenge-me")
+        db.add(SessionEvent(session_id=cs.id, event_id=2, data={"type": "assistant"}))
+        db.add(SessionEvent(session_id=cs.id, event_id=1, data={"type": "system"}))
+        await db.flush()
+
+        events = await get_session_events(db, cs.id)
+        assert len(events) == 2
+        assert events[0].event_id == 1
+        assert events[1].event_id == 2
+
+    async def test_returns_empty_for_no_events(self, db: AsyncSession, installation: Installation):
+        cs = await create_session(db, installation.id, 1, "org/repo", "challenge-me")
+        events = await get_session_events(db, cs.id)
+        assert events == []
+
+    async def test_raises_404_for_unknown_session(self, db: AsyncSession):
+        from helprs.core.exceptions import NotFoundError
+
+        with pytest.raises(NotFoundError):
+            await get_session_events(db, uuid.uuid4())

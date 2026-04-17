@@ -14,17 +14,20 @@ from helprs.modules.container.schemas import (
     CreateSessionRequest,
     SendMessageRequest,
     SendMessageResponse,
+    SessionEventResponse,
+    SessionEventsListResponse,
     StopSessionResponse,
 )
 from helprs.modules.container.service import (
     AioDockerClient,
     ContainerStatus,
     create_session,
+    get_session_events,
     get_session_or_404,
     send_message,
     start_container,
     stop_container,
-    stream_output,
+    stream_and_persist,
 )
 from helprs.modules.installation.service import get_byok_config, mint_installation_token
 
@@ -146,7 +149,7 @@ async def stream_container_output(
 
     async def _event_stream():
         try:
-            async for event in stream_output(docker, cs.container_id, offset=offset):
+            async for event in stream_and_persist(docker, cs.container_id, session_id=session_id, offset=offset):
                 yield event
         finally:
             await docker.close()
@@ -159,6 +162,26 @@ async def stream_container_output(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@router.get("/sessions/{session_id}/events", response_model=SessionEventsListResponse)
+@limiter.limit("30/minute")
+async def get_session_events_endpoint(
+    session_id: UUID,
+    request: Request,
+    db: DbSession,
+):
+    """Retrieve persisted stream-json events for a session.
+
+    Returns all events ordered by ``event_id``, suitable for replaying
+    completed sessions in the frontend without an SSE connection.
+    """
+    events = await get_session_events(db, session_id)
+    return SessionEventsListResponse(
+        session_id=session_id,
+        events=[SessionEventResponse.model_validate(e) for e in events],
+        total=len(events),
     )
 
 

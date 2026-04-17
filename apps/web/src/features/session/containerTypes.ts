@@ -34,6 +34,18 @@ export interface StopSessionResponse {
   message: string
 }
 
+export interface SessionEventItem {
+  event_id: number
+  data: Record<string, unknown>
+  created_at: string
+}
+
+export interface SessionEventsListResponse {
+  session_id: string
+  events: SessionEventItem[]
+  total: number
+}
+
 export interface Skill {
   name: string
   label: string
@@ -162,4 +174,12 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
     default:
       return null
   }
+}
+
+/**
+ * Parse a persisted event (already-parsed JSONB) into displayable content.
+ * Re-serializes to JSON and delegates to {@link parseStreamEvent}.
+ */
+export function parseStoredEvent(data: Record<string, unknown>): { text: string; kind: TerminalLine['kind'] } | null {
+  return parseStreamEvent(JSON.stringify(data))
 }

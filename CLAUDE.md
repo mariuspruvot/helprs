@@ -47,6 +47,7 @@ infra/
 - **Container orchestration**: `container` module manages ephemeral Docker lifecycle, credential injection, result relay
 - **Skills as agents**: each skill is a self-contained folder with workflow definitions, mounted into containers
 - **SSE passthrough**: backend relays container output to frontend (no AI response generation in backend)
+- **Session persistence**: stream-json events are batch-persisted to `session_events` table (JSONB) during SSE streaming via `stream_and_persist()`. Completed sessions can be replayed from `GET /sessions/{id}/events`. The streaming pipeline is layered: `stream_events()` (raw tuples) -> `stream_and_persist()` (SSE + DB writes) or `stream_output()` (SSE only, for tests).
 - **Stream-json protocol**: containers emit NDJSON with 5 event types: `system` (init/retry), `assistant` (one event per content block — thinking/text/tool_use), `user` (tool_result), `result` (session end + metadata), `rate_limit_event`. The `result.result` field duplicates the last assistant text — only display assistant events, use result for status only. No `--include-partial-messages` flag, so no `stream_event` deltas.
 - **API prefix**: all routes under `/api/v1`
 - **Admin panel**: SQLAdmin at `/admin`, configured in `admin/views.py`
@@ -76,6 +77,8 @@ cd apps/api && uv run alembic revision --autogenerate -m "description"  # New mi
 
 - Tests use `AsyncClient` with `ASGITransport` (no real server)
 - `conftest.py` sets env vars (DATABASE_URL, SECRET_KEY, etc.) **before** any app imports — order matters
+- **`FakeDockerClient` log_lines**: must include trailing `\n` for the line-buffering logic in `stream_events()` to split correctly
+- **`get_db_context` in tests**: tests that call `stream_and_persist()` need a `db_with_factory` fixture that calls `set_session_factory()` / `clear_session_factory()` — see `test_service.py` for the pattern
 
 ## Environment
 
