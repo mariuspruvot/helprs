@@ -28,15 +28,17 @@ PROMPT="${PROMPT//\{\{PR_DESCRIPTION\}\}/$PR_DESCRIPTION}"
 PROMPT="${PROMPT//\{\{FILE_LIST\}\}/$FILE_LIST}"
 PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
 
+# JSON-encode the prompt using node (available in the base image)
+PROMPT_JSON=$(node -e "process.stdout.write(JSON.stringify(process.argv[1]))" "$PROMPT")
+
 # Write the initial prompt as the first stream-json message to a FIFO.
-# The API will write subsequent user messages to the container's stdin.
 FIFO=/tmp/claude-input
 mkfifo "$FIFO"
 
 # Feed the initial prompt, then keep the FIFO open for subsequent messages
-# from the container orchestrator (written via docker attach/exec).
+# from the container orchestrator (written via docker exec).
 {
-  echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":$(echo "$PROMPT" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}}"
+  echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":${PROMPT_JSON}}}"
   # Keep stdin open -- the orchestrator sends follow-up messages here
   cat "$FIFO"
 } | exec claude \
