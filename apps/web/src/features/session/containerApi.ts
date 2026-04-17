@@ -67,6 +67,21 @@ export async function getContainerSession(sessionId: string): Promise<ContainerS
  * Build the SSE stream URL for a container session.
  * Auth token is appended as a query parameter since EventSource cannot send headers.
  */
+export async function sendMessage(sessionId: string, content: string): Promise<void> {
+  const resp = await apiFetch(`/api/v1/containers/sessions/${sessionId}/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!resp.ok) {
+    throw new ContainerSessionError(resp.status, `Failed to send message: ${resp.status}`)
+  }
+}
+
+/**
+ * Build the SSE stream URL for a container session.
+ * Auth token is appended as a query parameter since EventSource cannot send headers.
+ */
 export function buildStreamUrl(sessionId: string, accessToken: string): string {
   return `${API_BASE}/api/v1/containers/sessions/${sessionId}/stream?access_token=${encodeURIComponent(accessToken)}`
 }
