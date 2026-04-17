@@ -1,93 +1,133 @@
-# API Contracts — Backend (api)
+# API Contracts -- Backend
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
-All routes are prefixed with `/api/v1`. The admin panel is mounted at `/admin`. A bare `/health` endpoint sits outside the prefix.
+## Overview
 
----
+- Base prefix: `/api/v1`
+- Auth mechanism: JWT Bearer tokens (HS256). Access tokens (15 min) issued after GitHub OAuth. Refresh tokens (7 days) stored as httpOnly cookies.
+- Rate limiting: SlowAPI (per-IP via `get_remote_address`)
+- Error format: `{"error": "<error_code>", "message": "<text>", "detail": <any>}`
+- Webhook auth: HMAC SHA-256 signature verification via `X-Hub-Signature-256` header
 
-## Health
+## Route Groups
 
-| Method | Path | Handler | Auth | Request | Response |
-|--------|------|---------|------|---------|----------|
-| GET | `/health` | `health_check` | None | -- | `{"status": "ok"}` |
+### Health -- /health
 
----
+| Method | Path | Auth | Rate Limit | Description |
+|--------|------|------|------------|-------------|
+| GET | `/health` | None | None | Health check |
 
-## Auth (`/api/v1/auth`)
+#### GET /health
 
-| Method | Path | Handler | Auth | Rate Limit | Request | Response |
-|--------|------|---------|------|------------|---------|----------|
-| GET | `/auth/github` | `github_login` | None | 10/min | -- | 302 redirect to GitHub OAuth |
-| GET | `/auth/github/callback` | `github_callback` | None (CSRF state cookie) | 10/min | `?code=&state=` | 302 redirect to frontend with `access_token` query param; sets `refresh_token` httpOnly cookie |
-| POST | `/auth/refresh` | `refresh` | httpOnly `refresh_token` cookie | 10/min | -- | `TokenResponse {access_token, token_type}` |
-| GET | `/auth/me` | `get_me` | Bearer JWT | 30/min | -- | `UserResponse {id, github_id, github_login, email, avatar_url, created_at}` |
-| POST | `/auth/logout` | `logout` | None | -- | -- | `{"status":"ok"}`; clears `refresh_token` cookie |
-
----
-
-## Installations (`/api/v1/installations`)
-
-| Method | Path | Handler | Auth | Rate Limit | Request | Response |
-|--------|------|---------|------|------------|---------|----------|
-| GET | `/installations` | `list_installations` | Bearer JWT | 30/min | -- | `InstallationListResponse {items[], total}` |
-| GET | `/installations/{installation_id}` | `get_installation` | Bearer JWT + admin permission | 30/min | -- | `InstallationDetailResponse` |
-| POST | `/installations/{installation_id}/byok` | `post_byok` | Bearer JWT + admin permission | 10/min | `BYOKConfigureRequest {api_key}` (must start with `sk-ant-`) | `BYOKConfigResponse {key_hint, key_status, validated_at}` |
-| DELETE | `/installations/{installation_id}/byok` | `delete_byok` | Bearer JWT + admin permission | 10/min | -- | 204 No Content |
-| PUT | `/installations/{installation_id}/suppression-labels` | `put_suppression_labels` | Bearer JWT + admin permission | 10/min | `SuppressionLabelsRequest {labels[]}` (max 20, alphanumeric+hyphens, max 50 chars each) | `SuppressionLabelsResponse {labels[]}` |
-
-> `installation_id` in the path is the **GitHub installation ID** (int), not the internal UUID.
+- Response: `{"status": "ok"}`
+- Notes: Mounted directly on the app, not under `/api/v1`
 
 ---
 
-## Webhooks (`/api/v1/webhooks`)
+### Auth -- /api/v1/auth
 
-| Method | Path | Handler | Auth | Rate Limit | Request | Response |
-|--------|------|---------|------|------------|---------|----------|
-| POST | `/webhooks/github` | `receive_github_webhook` | HMAC SHA-256 (`X-Hub-Signature-256`) | 100/min | Raw JSON body (GitHub webhook payload) | `{"status": "ok", "duplicate": bool}` |
+| Method | Path | Auth | Rate Limit | Description |
+|--------|------|------|------------|-------------|
+| GET | `/api/v1/auth/github` | None | 10/min | Redirect to GitHub OAuth |
+| GET | `/api/v1/auth/github/callback` | None | 10/min | Handle OAuth callback |
+| POST | `/api/v1/auth/refresh` | Refresh cookie | 10/min | Refresh access token |
+| GET | `/api/v1/auth/me` | Bearer JWT | 30/min | Get current user |
+| POST | `/api/v1/auth/logout` | None | None | Clear refresh cookie |
 
-**Dispatched event types:** `installation.created`, `installation.deleted`, `installation.suspended`, `installation.unsuspended`, `pull_request.opened`, `pull_request.synchronize`.
+#### GET /api/v1/auth/github
 
----
+- Response: 302 redirect to `https://github.com/login/oauth/authorize`
+- Sets `oauth_state` cookie (httpOnly, samesite=lax, 600s max-age)
 
-## Sessions (`/api/v1/sessions`)
+#### GET /api/v1/auth/github/callback
 
-### REST Endpoints
+- Query params: `code` (required), `state` (required)
+- Response: 302 redirect to `{frontend_url}/auth/callback?access_token={jwt}`
+- Sets `refresh_token` cookie (httpOnly, 7-day max-age)
 
-| Method | Path | Handler | Auth | Rate Limit | Request | Response |
-|--------|------|---------|------|------------|---------|----------|
-| GET | `/sessions/{session_id}` | `get_session` | Bearer JWT (installation access verified) | 60/min | -- | `SessionResponse` (includes live diff from GitHub, progress, score, feedback) |
-| POST | `/sessions/{session_id}/questions/{question_number}/report` | `report_question` | Bearer JWT | 30/min | `QuestionReportRequest {reason}` (enum: irrelevant, factually_incorrect, ambiguous, too_easy, too_hard, other) | 201 `QuestionReportResponse`. 409 if already reported. |
-| POST | `/sessions/{session_id}/feedback` | `submit_feedback` | Bearer JWT | 10/min | `SessionFeedbackRequest {rating: bool, comment?: str}` (max 2000 chars) | 201 `SessionFeedbackResponse`. 409 if already submitted. Session must be COMPLETED. |
+#### POST /api/v1/auth/refresh
 
-### SSE Streaming Endpoints
+- Auth: `refresh_token` httpOnly cookie
+- Response: `TokenResponse { access_token, token_type }`
 
-| Method | Path | Handler | Auth | Rate Limit | Response Type |
-|--------|------|---------|------|------------|---------------|
-| GET | `/sessions/{session_id}/stream` | `stream_session` | Bearer JWT (also accepts `?access_token=`) | 20/min | `text/event-stream` |
-| POST | `/sessions/{session_id}/answers` | `submit_answer` | Bearer JWT | 60/min | `text/event-stream` |
+#### GET /api/v1/auth/me
 
-**GET /stream SSE events:**
+- Auth: Bearer JWT
+- Response: `UserResponse { id, github_id, github_login, email, avatar_url, created_at }`
 
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `question_token` | `{question_id, token, number, total}` | Streaming delta |
-| `question` | `{question_id, text, number, total, file_refs}` | Complete question |
-| `scoring` | `{text}` | Scoring phase started |
-| `score` | `{depth, accuracy, completeness, insight, verdict, gaps}` | Final score |
-| `done` | `{session_id, question_count}` | Session complete |
-| `error` | `{error, message, retryable}` | LLM/timeout failure |
+#### POST /api/v1/auth/logout
 
-**POST /answers:**
-
-- **Request:** `SubmitAnswerRequest {question_number: int, text: str}` (1-8000 chars)
-- **SSE events:** `feedback_token`, `feedback`, `done`, `error`
+- Response: `{"status": "ok"}`
+- Deletes `refresh_token` cookie
 
 ---
 
-## Admin Panel (`/admin`)
+### Installations -- /api/v1/installations
 
-SQLAdmin UI with password-based auth (`ADMIN_PASSWORD` env var; auto-login in development).
+| Method | Path | Auth | Rate Limit | Description |
+|--------|------|------|------------|-------------|
+| GET | `/api/v1/installations` | Bearer JWT | 30/min | List accessible installations |
+| GET | `/api/v1/installations/{installation_id}` | Bearer JWT | 30/min | Get installation detail |
+| POST | `/api/v1/installations/{installation_id}/byok` | Bearer JWT | 10/min | Configure credentials |
+| DELETE | `/api/v1/installations/{installation_id}/byok` | Bearer JWT | 10/min | Remove credentials |
+| PUT | `/api/v1/installations/{installation_id}/suppression-labels` | Bearer JWT | 10/min | Update suppression labels |
 
-- **Read-only views:** WebhookEvents, Sessions
-- **Editable views:** GitHubUsers, Installations, BYOKConfigs
+**Path params:** `installation_id` is the **GitHub installation ID** (integer), not the internal UUID.
+
+#### GET /api/v1/installations
+
+- Response: `InstallationListResponse { items: InstallationResponse[], total: int }`
+
+#### POST /api/v1/installations/{installation_id}/byok
+
+- Request: `BYOKConfigureRequest { api_key: str }` -- Claude credentials, min 20 chars
+- Response: `BYOKConfigResponse { key_hint, key_status, validated_at }`
+- Notes: Key is Fernet-encrypted at rest.
+
+#### DELETE /api/v1/installations/{installation_id}/byok
+
+- Response: 204 No Content
+
+#### PUT /api/v1/installations/{installation_id}/suppression-labels
+
+- Request: `SuppressionLabelsRequest { labels: list[str] }` -- max 20 items
+- Response: `SuppressionLabelsResponse { labels: list[str] }`
+
+---
+
+### Webhooks -- /api/v1/webhooks
+
+| Method | Path | Auth | Rate Limit | Description |
+|--------|------|------|------------|-------------|
+| POST | `/api/v1/webhooks/github` | HMAC SHA-256 | 100/min | Receive GitHub webhooks |
+
+#### POST /api/v1/webhooks/github
+
+- Auth: `X-Hub-Signature-256` header
+- Response: `{"status": "ok", "duplicate": false}`
+- Handled events: `installation.*`, `pull_request.opened`, `pull_request.synchronize`
+
+---
+
+### Container Sessions -- Coming in Phase 2
+
+Container session endpoints will be added when the container module is implemented. Expected endpoints:
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/sessions/{id}/run` | Bearer JWT | Trigger skill execution in container |
+| GET | `/api/v1/sessions/{id}/stream` | Bearer JWT | SSE stream of container output |
+| GET | `/api/v1/sessions/{id}` | Bearer JWT | Get session status + results |
+
+Exact schemas TBD.
+
+---
+
+### Admin -- /admin
+
+- SQLAdmin panel at `/admin`
+- Auth: session-based. Development mode accepts any login. Production requires `ADMIN_PASSWORD` env var.
+- Full CRUD for: GitHubUser, Installation, BYOKConfig
+- Read-only views for: WebhookEvent
+- Sensitive fields excluded: `github_access_token_enc`, `encrypted_api_key`

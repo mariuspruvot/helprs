@@ -1,111 +1,206 @@
-# Architecture — Infrastructure (infra)
+# Architecture -- Infrastructure (infra)
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
 ## Executive Summary
 
-Docker-based infrastructure for **helPRs** with multi-stage builds, local development via docker-compose, production deployment via Coolify, and CI/CD through GitHub Actions.
+Docker-based infrastructure with multi-stage builds, GitHub Actions CI/CD, and Coolify for production hosting. Four-service architecture: API (FastAPI), Web (Nginx), PostgreSQL, and ephemeral Claude Runner containers for AI skill execution.
 
-## Docker Architecture
+## Service Architecture
 
-### API Image (`infra/docker/Dockerfile.api`)
+```
++-------------------------------------------------------------+
+|                     Development                              |
+|                                                              |
+|  +--------------+  +--------------+  +--------------------+  |
+|  | api:8000     |  | web:5173     |  | db:5432            |  |
+|  | (uvicorn     |  | (vite dev    |  | (postgres:16       |  |
+|  |  --reload)   |  |  server)     |  |  -alpine)          |  |
+|  |              |  |              |  |                    |  |
+|  | Source vols  |  | Source vols  |  | pgdata volume      |  |
+|  +--------------+  +--------------+  +--------------------+  |
+|                                                              |
+|  Ephemeral: claude-runner containers (spawned on demand)     |
++-------------------------------------------------------------+
 
-| Stage | Base Image | Key Steps |
-|-------|-----------|-----------|
-| `dev` | python:3.12-slim | `uv sync` (all deps), copies src + alembic. No CMD (compose provides). Source volume-mounted at runtime. |
-| `production` | python:3.12-slim | `uv sync --no-dev`, CMD: `alembic upgrade head && uvicorn helprs.main:app` on port 8000 |
++-------------------------------------------------------------+
+|                     Production                               |
+|                                                              |
+|  +--------------+  +--------------+  +--------------------+  |
+|  | api:8000     |  | web:80       |  | db (internal)      |  |
+|  | (uvicorn,    |  | (nginx,      |  | (postgres:16       |  |
+|  |  no reload)  |  |  static)     |  |  -alpine)          |  |
+|  |              |  |              |  |                    |  |
+|  | No volumes   |  | No volumes   |  | pgdata volume      |  |
+|  +--------------+  +--------------+  +--------------------+  |
+|                                                              |
+|  Ephemeral: claude-runner containers (spawned on demand)     |
+|  All services: restart: unless-stopped                       |
+|  DB port NOT exposed to host                                 |
++-------------------------------------------------------------+
+```
 
-Both stages copy `uv` binary from `ghcr.io/astral-sh/uv:latest`.
+## Claude Runner Container (New)
 
-### Web Image (`infra/docker/Dockerfile.web`)
+The `claude-runner` is an ephemeral Docker container that executes AI skills against pull requests.
 
-| Stage | Base Image | Key Steps |
-|-------|-----------|-----------|
-| `dev` | node:22-slim | `npm ci`, CMD: `npx vite --host 0.0.0.0` |
-| `build` | node:22-slim | `npm ci` + `npm run build` -> `/app/dist` |
-| `production` | nginx:alpine | Copies dist from build stage, applies nginx.conf |
+| Aspect | Detail |
+|--------|--------|
+| Base image | TBD -- minimal image with Claude Code CLI + gh CLI pre-installed |
+| Lifetime | ~5-15 minutes per skill execution |
+| Provisioned by | API container's container module (Docker SDK) |
+| Injected env vars | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, repo/PR metadata |
+| Mounted volumes | Skill definitions from `skills/` directory |
+| Output | Streams stdout/results to API via SSE passthrough |
+| Cleanup | Destroyed after skill completes or TTL expires |
 
-### Nginx Configuration
+**PR fetch strategy (per-skill):**
 
-- Listens on port 80, catch-all server name
-- SPA fallback: `try_files $uri $uri/ /index.html`
-- Static asset caching: `/assets/` and `/fonts/` get `expires 1y` with `Cache-Control: public, immutable`
-- Gzip enabled for text, CSS, JSON, JS, XML, SVG (256-byte minimum)
+| Strategy | Speed | Use case |
+|----------|-------|----------|
+| `gh pr diff` only | ~2-3s | Skills that only need the diff (security scan) |
+| Shallow clone + `gh pr checkout` | ~5-10s | Skills needing full file context (default) |
 
-## Local Development
+## Dockerfiles
 
-**`docker-compose.yml`** — 3 services:
+### API (`infra/docker/Dockerfile.api`)
 
-| Service | Target | Ports | Volumes | Hot Reload |
-|---------|--------|-------|---------|------------|
-| `api` | dev | 8000 | `apps/api/src`, `apps/api/alembic` | uvicorn `--reload` |
-| `web` | dev | 5173 | `apps/web/src` | Vite HMR + `CHOKIDAR_USEPOLLING=true` |
-| `db` | postgres:16-alpine | 5432 | `pgdata` named volume | N/A |
+| Stage | Base Image | Dependencies | Entry |
+|-------|-----------|--------------|-------|
+| `dev` | `python:3.12-slim` + uv | Full (including dev) | Override via compose |
+| `production` | `python:3.12-slim` + uv | Production only (`--no-dev`) | `alembic upgrade head && uvicorn ...` |
 
-- API depends on `db` with health check (`pg_isready`, 5s interval)
-- API command: `alembic upgrade head && uvicorn ... --reload`
-- DB credentials: `helprs/helprs/helprs`
-- `docker-compose.override.yml`: Injects `GITHUB_APP_PRIVATE_KEY` as YAML block scalar (multi-line RSA key workaround)
+### Web (`infra/docker/Dockerfile.web`)
 
-## Production Deployment
+| Stage | Base Image | Output | Entry |
+|-------|-----------|--------|-------|
+| `dev` | `node:22-slim` | -- | `npx vite --host 0.0.0.0` |
+| `build` | `node:22-slim` | `/app/dist` | -- |
+| `production` | `nginx:alpine` | Copies from build | nginx default |
 
-**`infra/coolify/docker-compose.prod.yml`** — same 3 services with production targets:
+### Claude Runner (`infra/docker/Dockerfile.claude-runner`) -- Coming in Phase 2
 
-| Service | Target | Ports | Notes |
-|---------|--------|-------|-------|
-| `api` | production | 8000 | `env_file: ../../.env`, `restart: unless-stopped` |
-| `web` | production | 80 | nginx serving built SPA, `restart: unless-stopped` |
-| `db` | postgres:16-alpine | (not exposed) | `restart: unless-stopped`, same health check |
+Will contain:
 
-**Deployment flow**: Coolify webhook triggered by GitHub Actions deploy workflow.
+- Claude Code CLI (pinned version)
+- gh CLI for PR checkout
+- Git for shallow clone
+- Minimal OS utilities
+
+## Nginx Configuration
+
+```nginx
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+
+    # SPA routing
+    try_files $uri $uri/ /index.html;
+
+    # Asset caching (1 year, immutable)
+    location /assets/ { expires 1y; Cache-Control: public, immutable; }
+    location /fonts/  { expires 1y; Cache-Control: public, immutable; }
+
+    # Gzip (text, css, json, js, xml, svg, min 256b)
+    gzip on;
+}
+```
+
+**No API proxy** -- Coolify/external reverse proxy handles routing to the API container.
+
+## Docker Compose
+
+### Development (`docker-compose.yml`)
+
+| Service | Build Target | Port | Volumes | Key Env |
+|---------|-------------|------|---------|---------|
+| api | `dev` | 8000 | `src/`, `alembic/` mounted | `DATABASE_URL`, `.env` file |
+| web | `dev` | 5173 | `src/` mounted | `VITE_API_URL=http://localhost:8000` |
+| db | postgres:16-alpine | 5432 | `pgdata` named volume | `POSTGRES_DB=helprs` |
+
+The API container needs access to the Docker socket to provision claude-runner containers. *Configuration details TBD.*
+
+### Production (`infra/coolify/docker-compose.prod.yml`)
+
+| Difference | Dev | Prod |
+|-----------|-----|------|
+| Build target | `dev` | `production` |
+| Source volumes | Mounted for hot reload | None |
+| API command | `--reload` | Dockerfile CMD |
+| Web port | 5173 (Vite) | 80 (Nginx) |
+| DB port | Exposed (5432) | Internal only |
+| Restart | None | `unless-stopped` |
+
+### Override (`docker-compose.override.yml`)
+
+Contains `GITHUB_APP_PRIVATE_KEY` as YAML block scalar -- workaround for docker-compose's inability to handle multi-line values in `.env` files.
 
 ## CI/CD Pipeline
 
-### `ci.yml` — Continuous Integration
+### CI (`.github/workflows/ci.yml`)
 
-**Trigger**: All pushes + PRs to `main`
+**Trigger:** All branch pushes + PRs to main
 
-| Job | Runner | Steps |
-|-----|--------|-------|
-| `lint-backend` | ubuntu | `uv sync --frozen` -> `ruff check` + `ruff format --check` |
-| `test-backend` | ubuntu + postgres:16-alpine service | `uv run pytest` with test env vars |
-| `lint-frontend` | ubuntu + Node 22 | `npm ci` -> `npx eslint src/` |
-| `test-frontend` | ubuntu + Node 22 | `npm ci` -> `npx vitest run` |
-| `build` | ubuntu | **Gated on all 4 above**. `docker build` for both production targets (no push) |
+```
++------------------+  +------------------+
+|  lint-backend    |  |  lint-frontend   |
+|  (ruff check +  |  |  (eslint)        |
+|   format)        |  |                  |
++--------+---------+  +--------+---------+
+         |                     |
++--------+---------+  +--------+---------+
+|  test-backend    |  |  test-frontend   |
+|  (pytest +       |  |  (vitest)        |
+|   Postgres svc)  |  |                  |
++--------+---------+  +--------+---------+
+         |                     |
+         +---------+-----------+
+                   |
+          +--------v---------+
+          |     build        |
+          |  (Docker build   |
+          |   both images)   |
+          +------------------+
+```
 
-### `deploy.yml` — Deploy to Production
+- 4 parallel lint/test jobs -> 1 gated build job
+- Backend tests run against Postgres service container
+- `astral-sh/setup-uv@v4` for Python, `actions/setup-node@v4` for Node
 
-**Trigger**: Push to `main` only
+### CD (`.github/workflows/deploy.yml`)
 
-| Job | Steps |
-|-----|-------|
-| `build-and-push` | Login to `ghcr.io`, build + push `api:latest/:sha` and `web:latest/:sha` |
-| `deploy` | POST to `COOLIFY_WEBHOOK_URL` with bearer auth (conditional on secret existing) |
+**Trigger:** Push to main
 
-## Environment Configuration
+```
+build-and-push:
+  +-- Login to ghcr.io (GITHUB_TOKEN)
+  +-- Build + push api:latest + api:{sha}
+  +-- Build + push web:latest + web:{sha}
 
-| Variable | Purpose | Required |
-|----------|---------|----------|
-| `DATABASE_URL` | Postgres async connection (asyncpg) | Yes |
-| `SECRET_KEY` | JWT signing + SQLAdmin sessions | Yes |
-| `FERNET_KEY` | Fernet encryption for stored tokens/keys | Yes |
-| `GITHUB_APP_ID` | GitHub App numeric ID | Yes |
-| `GITHUB_APP_PRIVATE_KEY` | RSA private key (multi-line) | Yes |
-| `GITHUB_CLIENT_ID` | GitHub OAuth client ID | Yes |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret | Yes |
-| `GITHUB_WEBHOOK_SECRET` | Webhook HMAC verification | Yes |
-| `ANTHROPIC_API_KEY` | Demo mode only (BYOK-only model) | Optional |
-| `SENTRY_DSN` | Error tracking | Optional |
-| `VITE_API_URL` | Frontend API base URL | Yes |
-| `APP_BASE_URL` | Backend user-facing links (PR comments) | Yes |
+deploy: (conditional: COOLIFY_WEBHOOK_URL exists)
+  +-- POST to Coolify webhook (Bearer COOLIFY_TOKEN)
+```
 
-## Makefile Commands
+- Registry: `ghcr.io`
+- Dual-tag: `latest` + commit SHA
+- Coolify deploy is fire-and-forget (no verification)
+
+*The claude-runner image will be added to the CI/CD pipeline when implemented.*
+
+## Makefile
 
 | Target | Command | Description |
 |--------|---------|-------------|
-| `dev` | `docker compose up --build` | Start all services with rebuild |
-| `lint` | ruff check + format (API) + eslint (Web) | Run all linters |
-| `test` | pytest (API) + vitest (Web) | Run all test suites |
-| `build` | docker compose -f prod build | Build production images |
-| `migrate` | `alembic upgrade head` | Run DB migrations locally |
-| `types` | (placeholder) | OpenAPI -> TypeScript (not yet implemented) |
+| `dev` | `docker compose up --build` | Start dev environment |
+| `lint` | ruff + eslint | Run all linters |
+| `test` | pytest + vitest | Run all tests |
+| `build` | prod compose build | Build production images |
+| `migrate` | `alembic upgrade head` | Run DB migrations |
+
+## Infrastructure Observations
+
+1. **Docker socket access**: API container needs Docker socket to spawn claude-runner containers -- security implications to evaluate
+2. **Container resource limits**: claude-runner containers need CPU/memory limits and TTL enforcement to prevent runaway consumption
+3. **No Docker layer caching in CI** -- builds don't use BuildKit cache or GHA cache actions
+4. **Coolify deploy is fire-and-forget** -- no status check after webhook POST
+5. **Migrations on startup** -- API container always runs `alembic upgrade head` before uvicorn

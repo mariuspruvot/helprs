@@ -1,144 +1,207 @@
 # Integration Architecture
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
 ## Overview
 
-helPRs is a monorepo with 3 parts that communicate through well-defined integration points. The frontend (web) communicates with the backend (api) via REST + SSE. The backend integrates with GitHub and Anthropic APIs. Infrastructure orchestrates everything via Docker.
+helPRs is a monorepo with 3 parts that communicate through 4 integration points. Post-pivot, AI execution happens inside ephemeral Docker containers -- the backend acts as an orchestrator, not an AI host.
+
+```
++-------------------------------------------------------------+
+|                        GitHub.com                            |
+|  +--------------+  +--------------+  +--------------------+  |
+|  |  OAuth API   |  |  REST API    |  |  Webhooks          |  |
+|  |  (user auth) |  |  (comments)  |  |  (install, PR      |  |
+|  |              |  |              |  |   events)           |  |
+|  +------+-------+  +------+-------+  +--------+-----------+  |
++---------+------------------+-------------------+-------------+
+          |                  |                   |
+          v                  v                   v
++-------------------------------------------------------------+
+|                    API (FastAPI :8000)                        |
+|  +----------+  +---------------+  +------------------------+ |
+|  | Identity  |  | Container     |  | Webhook                | |
+|  | Module    |  | Module        |  | Module                 | |
+|  |           |  |               |  |                        | |
+|  | OAuth     |  | Orchestrate   |  | HMAC verify            | |
+|  | JWT       |  | SSE relay     |  | Event dispatch         | |
+|  | Refresh   |  | Lifecycle     |  | Session creation       | |
+|  +----------+  +-------+-------+  +------------------------+ |
+|                         |                                    |
+|         +---------------+--+                                 |
+|         | Docker Socket    |                                 |
+|         +-------+----------+                                 |
+|                 |                                            |
+|         +-------v----------+                                 |
+|         | Ephemeral         |                                |
+|         | Claude Runner     |                                |
+|         | Container         |                                |
+|         |                   |                                |
+|         | - Claude Code CLI |                                |
+|         | - gh pr checkout  |                                |
+|         | - Skill execution |                                |
+|         | - Output stream   |                                |
+|         +-------------------+                                |
+|                                                              |
+|  +--------------------------------------------------------+  |
+|  |              PostgreSQL :5432                           |  |
+|  |  github_users | installations | webhook_events         |  |
+|  |  byok_configs | container_sessions (Phase 2)           |  |
+|  +--------------------------------------------------------+  |
++------------------------------+-------------------------------+
+                               |
+                               | REST + SSE
+                               v
++-------------------------------------------------------------+
+|                    Web (React :5173)                          |
+|  +----------+  +---------------+  +------------------------+ |
+|  | Auth      |  | Session       |  | Dashboard /            | |
+|  | Feature   |  | Feature       |  | Installation           | |
+|  |           |  |               |  | Features               | |
+|  | OAuth     |  | SSE stream    |  |                        | |
+|  | callback  |  | (container    |  | Credential config      | |
+|  | JWT       |  |  output)      |  | Label management       | |
+|  +----------+  +---------------+  +------------------------+ |
++-------------------------------------------------------------+
+```
 
 ## Integration Points
 
-```
-┌──────────────┐     REST + SSE      ┌──────────────┐     Webhooks     ┌──────────────┐
-│              │ ──────────────────→  │              │ ←────────────── │              │
-│   Frontend   │     (12 endpoints)  │   Backend    │     (6 events)  │   GitHub     │
-│   (web)      │ ←──────────────────  │   (api)      │ ──────────────→ │   API        │
-│              │     JSON + SSE      │              │   REST (httpx)  │              │
-└──────────────┘                     └──────┬───────┘                 └──────────────┘
-                                           │
-                                    ┌──────┴───────┐
-                                    │              │
-                                    │  PostgreSQL  │
-                                    │  (db)        │
-                                    │              │
-                                    └──────┬───────┘
-                                           │
-                                    ┌──────┴───────┐
-                                    │  Anthropic   │
-                                    │  Claude API  │
-                                    │  (via BYOK)  │
-                                    └──────────────┘
-```
+### 1. Web -> API (REST + SSE)
 
-## Web -> API Communication
+| Type | Protocol | Details |
+|------|----------|---------|
+| REST | HTTP/JSON | Endpoints under `/api/v1` |
+| SSE | `text/event-stream` | Container output relay stream |
+| Auth | JWT Bearer | 15-min access tokens, 7-day refresh cookies |
 
-### Transport
-
-| Protocol | Use Case | Auth Mechanism |
-|----------|----------|---------------|
-| REST (JSON) | CRUD operations, auth, reports, feedback | `Authorization: Bearer {JWT}` header |
-| SSE (EventSource) | Question streaming (`GET /stream`) | `?access_token={JWT}` query param (EventSource limitation) |
-| SSE (fetch ReadableStream) | Feedback streaming (`POST /answers`) | `Authorization: Bearer {JWT}` header |
-
-### Endpoints Used by Frontend
-
-| Method | Endpoint | Feature Module | Purpose |
-|--------|----------|---------------|---------|
-| GET | `/api/v1/auth/github` | auth | Initiate OAuth (redirect) |
-| GET | `/api/v1/auth/me` | auth | Fetch user profile |
-| POST | `/api/v1/auth/refresh` | shared (apiFetch) | Silent JWT refresh |
-| GET | `/api/v1/installations/:id` | installation | Fetch installation details |
-| POST | `/api/v1/installations/:id/byok` | installation | Submit/update BYOK key |
-| DELETE | `/api/v1/installations/:id/byok` | installation | Remove BYOK key |
-| PUT | `/api/v1/installations/:id/suppression-labels` | installation | Save labels |
-| GET | `/api/v1/sessions/:id` | session | Fetch session data (React Query) |
-| GET | `/api/v1/sessions/:id/stream` | session | SSE question streaming |
-| POST | `/api/v1/sessions/:id/answers` | session | Submit answer, SSE feedback |
-| POST | `/api/v1/sessions/:id/questions/:num/report` | session | Report a question |
-| POST | `/api/v1/sessions/:id/feedback` | session | Submit session feedback |
-
-### Auth Flow
+**Data flow:**
 
 ```
-Frontend                          Backend                        GitHub
-   │                                │                              │
-   ├─── redirect ──────────────────→│                              │
-   │    GET /auth/github             │── redirect ────────────────→│
-   │                                │   (CSRF state cookie)        │
-   │                                │←── callback with code ──────│
-   │←── redirect with access_token ─│                              │
-   │    + refresh_token cookie       │                              │
-   │                                │                              │
-   ├─── GET /auth/me ──────────────→│                              │
-   │←── UserResponse ──────────────│                              │
+Web                              API
+ |                                |
+ +-- GET /auth/github ----------> | (302 -> GitHub OAuth)
+ |<-- GET /auth/callback --------| (302 + JWT + refresh cookie)
+ |                                |
+ +-- GET /installations --------> |
+ +-- POST /.../byok ------------> | (validates + stores credentials)
+ +-- PUT /.../suppression-labels->|
+ |                                |
+ +-- POST /sessions/:id/run ----> | (triggers container, Coming in Phase 2)
+ +-- SSE /sessions/:id/stream --> | (container output relay, Coming in Phase 2)
 ```
 
-### Token Refresh Flow
+**Client implementation:** `apiFetch` wrapper in `shared/api/client.ts`:
+
+- Automatic `Authorization: Bearer` header from Zustand auth store
+- 401 retry with `POST /auth/refresh` (httpOnly cookie)
+- Force re-auth redirect on refresh failure
+- `credentials: 'include'` on all requests
+
+### 2. API -> GitHub (REST + Webhooks)
+
+| Type | Direction | Details |
+|------|-----------|---------|
+| REST (outbound) | API -> GitHub | OAuth token exchange, PR comments |
+| Webhooks (inbound) | GitHub -> API | Installation + PR events via HMAC-signed POST |
+
+**Outbound calls:**
+
+| Call | When | Auth |
+|------|------|------|
+| `POST /login/oauth/access_token` | OAuth callback | Client ID + secret |
+| `GET /user` | After OAuth | User access token |
+| `POST /repos/{owner}/{repo}/issues/{pr}/comments` | PR opened | Installation token |
+
+**Inbound webhooks:**
+
+| Event | Action | Handler |
+|-------|--------|---------|
+| `installation.created` | Create installation record | `handle_installation_created` |
+| `installation.deleted` | Soft-delete installation | `handle_installation_deleted` |
+| `installation.suspended` | Mark suspended | `handle_installation_suspended` |
+| `installation.unsuspended` | Clear suspension | `handle_installation_unsuspended` |
+| `pull_request.opened` | Post PR comment with session link | `handle_pull_request_opened` |
+| `pull_request.synchronize` | Update session or create if missing | `handle_pull_request_synchronize` |
+
+**Webhook processing pipeline:**
+
+1. HMAC SHA-256 signature verification (`X-Hub-Signature-256`)
+2. Duplicate detection via `delivery_id`
+3. Raw event persisted to `webhook_events` table
+4. Background task dispatches to event-specific handler
+5. Status machine: `pending` -> `processing` -> `processed` | `failed` -> `abandoned` (after 5 retries)
+
+### 3. API -> Ephemeral Container (Docker SDK)
+
+| Type | Protocol | Details |
+|------|----------|---------|
+| Container lifecycle | Docker SDK | Provision, start, stream, destroy |
+| Credential injection | Env vars | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, repo/PR metadata |
+| Skill mounting | Docker volume | Skill definitions from `skills/` directory |
+| Output capture | stdout/SSE | Container output relayed to frontend |
+
+**Container lifecycle:**
+
+1. API receives trigger (webhook auto-trigger or user-initiated)
+2. Retrieves installation's Claude credentials from DB (Fernet-decrypted)
+3. Provisions ephemeral `claude-runner` container with:
+   - Credentials as env vars (never persisted in container)
+   - Skill folder mounted as volume
+   - Repo/PR metadata as env vars
+4. Container executes: `gh repo clone --depth=1` + `gh pr checkout` + skill
+5. Output streamed back to API
+6. Container destroyed after completion or TTL timeout
+
+### 4. API -> PostgreSQL (asyncpg)
+
+| Type | Protocol | Details |
+|------|----------|---------|
+| Database | PostgreSQL 16 via asyncpg | Async connection pool via SQLAlchemy |
+| ORM | SQLAlchemy 2.0 async | `async_sessionmaker` with `AsyncSession` |
+| Migrations | Alembic | Auto-run on container start |
+
+**Connection management:**
+
+- Engine created in app lifespan (`create_app()`)
+- `async_sessionmaker` injected via `get_db` dependency
+- Connection string: `postgresql+asyncpg://...`
+
+## Cross-Part Data Flow: Container Skill Execution
 
 ```
-Frontend (apiFetch)               Backend
-   │                                │
-   ├─── any request ───────────────→│
-   │←── 401 Unauthorized ──────────│
-   │                                │
-   ├─── POST /auth/refresh ────────→│  (reads refresh_token cookie)
-   │←── new access_token ──────────│
-   │                                │
-   ├─── retry original request ────→│
-   │←── success ───────────────────│
+1. GitHub webhook: pull_request.opened
+   +-> API: webhook module verifies HMAC, persists event
+       +-> API: handler posts PR comment with session link
+
+2. User clicks session link (or auto-trigger fires)
+   +-> Web: ProtectedRoute checks auth
+       +-> Web: redirects to GitHub OAuth (if needed)
+           +-> API: exchanges code for tokens, returns JWT
+               +-> Web: stores JWT, navigates to session page
+
+3. Skill execution triggered
+   +-> API: container module retrieves Claude credentials
+       +-> API: provisions ephemeral claude-runner container
+           +-> Container: gh repo clone --depth=1 + gh pr checkout
+               +-> Container: loads assigned skill
+                   +-> Container: Claude Code executes skill against PR
+                       +-> Container: streams output -> API (SSE relay)
+                           +-> Web: renders results in real-time
+
+4. Container completes
+   +-> API: captures exit status, destroys container
+       +-> API: records session result
 ```
 
-## API -> External Services
+## Security Boundaries
 
-### GitHub API Integration
-
-| Service | Protocol | Purpose |
-|---------|----------|---------|
-| GitHub OAuth | REST (httpx) | Token exchange, user profile fetch |
-| GitHub REST API | REST (httpx) | Org membership checks, PR diff fetch |
-| GitHub Webhooks | Inbound POST | Installation events, PR events |
-
-**Diff fetching**: Streaming with 1MB cap. Large PRs (>=2000 lines) ranked by file change size, trimmed to 40K-line budget.
-
-### Anthropic Claude API
-
-| Service | Protocol | Purpose |
-|---------|----------|---------|
-| Anthropic API | REST via Pydantic AI | Question generation, feedback generation, scoring |
-
-**BYOK model**: Each user's own API key (Fernet-encrypted at rest). Fresh `Agent` per invocation -- zero caching.
-
-## API -> Database
-
-| Integration | Driver | Pool Config |
-|-------------|--------|------------|
-| PostgreSQL | asyncpg (via SQLAlchemy async) | pool_size=20, max_overflow=10 |
-
-**Pattern**: DB phase / HTTP phase split -- handlers load from DB and snapshot results, then close DB scope before making outbound HTTP calls.
-
-## Infrastructure Orchestration
-
-### Local Development
-
-```
-docker-compose.yml
-├── api (dev target) ── volume mounts src/ ── hot-reload (uvicorn --reload)
-├── web (dev target) ── volume mounts src/ ── hot-reload (Vite HMR)
-└── db (postgres:16-alpine) ── pgdata volume ── health check
-```
-
-### Production
-
-```
-docker-compose.prod.yml (Coolify)
-├── api (production target) ── env_file: .env ── restart: unless-stopped
-├── web (production target) ── nginx:alpine ── SPA + asset caching
-└── db (postgres:16-alpine) ── pgdata volume ── restart: unless-stopped
-```
-
-### CI/CD Flow
-
-```
-Push to any branch → ci.yml → lint + test (4 parallel jobs) → build (gated)
-Push to main → deploy.yml → build + push to GHCR → POST Coolify webhook
-```
+| Boundary | Mechanism |
+|----------|-----------|
+| Web -> API | JWT Bearer tokens (15-min expiry) |
+| API -> GitHub | Installation JWT tokens (10-min expiry, signed with RSA private key) |
+| GitHub -> API | HMAC SHA-256 webhook signatures |
+| API -> Container | Ephemeral env vars (credentials never persisted in container filesystem) |
+| API -> PostgreSQL | Connection string credentials |
+| Credential storage | Fernet encryption at rest in `byok_configs` table |
+| Container isolation | Ephemeral lifecycle, destroyed after use, resource limits (CPU/memory/TTL) |

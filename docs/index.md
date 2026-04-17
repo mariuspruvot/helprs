@@ -1,23 +1,23 @@
-# helPRs — Project Documentation Index
+# helPRs -- Project Documentation Index
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
 ## Project Overview
 
-- **Type:** Monorepo with 3 parts
+- **Type:** Monorepo with 3 parts + skill definitions
 - **Primary Language:** Python (backend), TypeScript (frontend)
-- **Architecture:** Hybrid — simple modules + Clean Architecture (backend), feature-based (frontend)
-- **Purpose:** Socratic comprehension tool for pull requests
+- **Architecture:** Container orchestrator (backend), feature-based (frontend), ephemeral Claude Code containers (AI)
+- **Purpose:** Pluggable AI skill runner for pull requests
 
 ## Quick Reference
 
 ### api (FastAPI Backend)
 
-- **Type:** backend
-- **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy async, Pydantic AI, asyncpg
+- **Type:** backend -- container orchestrator, webhook receiver, admin
+- **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy async, Docker SDK, asyncpg
 - **Root:** `apps/api/`
-- **Entry Point:** `src/helprs/main.py` — `create_app()` factory
-- **Architecture:** Hybrid (simple modules + Clean Architecture for comprehension)
+- **Entry Point:** `src/helprs/main.py` -- `create_app()` factory
+- **Architecture:** Flat modules (identity, installation, webhook, container)
 
 ### web (React Frontend)
 
@@ -30,64 +30,58 @@
 ### infra (Docker/Coolify Infrastructure)
 
 - **Type:** infra
-- **Tech Stack:** Docker multi-stage, nginx, PostgreSQL 16, GitHub Actions
+- **Tech Stack:** Docker, Coolify, GitHub Actions, Nginx
 - **Root:** `infra/`
 - **Entry Point:** `docker-compose.yml`
+- **Architecture:** Multi-stage Docker builds + CI/CD pipeline + ephemeral claude-runner containers
+
+### skills (Claude Code Skills)
+
+- **Type:** AI agent definitions
+- **Root:** `skills/`
+- **Architecture:** Self-contained folders, mounted into containers as volumes
+
+## Architecture Decision Records
+
+- [ADR-001: Pivot to Ephemeral Claude Code Containers](./adr-001-claude-code-container-pivot.md)
 
 ## Generated Documentation
 
-### Overview & Architecture
+### Architecture
 
-- [Project Overview](./project-overview.md)
-- [Architecture — Backend (api)](./architecture-api.md)
-- [Architecture — Frontend (web)](./architecture-web.md)
-- [Architecture — Infrastructure](./architecture-infra.md)
-- [Source Tree Analysis](./source-tree-analysis.md)
-- [Integration Architecture](./integration-architecture.md)
+- [Project Overview](./project-overview.md) -- Purpose, structure, key decisions
+- [Architecture -- API](./architecture-api.md) -- Backend as container orchestrator
+- [Architecture -- Web](./architecture-web.md) -- Frontend patterns, state management
+- [Architecture -- Infra](./architecture-infra.md) -- Docker, CI/CD, container runner
+- [Integration Architecture](./integration-architecture.md) -- Data flow: webhook -> container -> frontend
 
-### API & Data
+### Technical Reference
 
-- [API Contracts — Backend](./api-contracts-api.md)
-- [Data Models — Backend](./data-models-api.md)
-
-### Components & UI
-
-- [Component Inventory — Frontend](./component-inventory-web.md)
+- [API Contracts](./api-contracts-api.md) -- Endpoint reference
+- [Data Models](./data-models-api.md) -- Database tables + schemas
+- [Component Inventory](./component-inventory-web.md) -- Frontend components + hooks + stores
+- [Source Tree Analysis](./source-tree-analysis.md) -- Annotated directory tree
 
 ### Guides
 
-- [Development Guide](./development-guide.md)
-- [Deployment Guide](./deployment-guide.md)
-
-### Metadata
-
-- [Project Parts (JSON)](./project-parts.json)
-
-## Existing Documentation
-
-- [README.md](../README.md) — Project root README
-- [API README](../apps/api/README.md) — Backend-specific README
-- [Design README](../design/README.md) — Design assets
-- [CLAUDE.md](../CLAUDE.md) — AI development context and quick start
+- [Development Guide](./development-guide.md) -- Prerequisites, setup, testing, code style
+- [Deployment Guide](./deployment-guide.md) -- Docker images, CI/CD, production config
 
 ## Getting Started
 
 ```bash
-# 1. Configure environment
-cp .env.example .env
-# Edit .env with GitHub App credentials, SECRET_KEY, FERNET_KEY
+# Start all services
+docker compose up --build
+# API at http://localhost:8000, Web at http://localhost:5173
 
-# 2. Start all services
-make dev
-# API:  http://localhost:8000
-# Web:  http://localhost:5173
-# Admin: http://localhost:8000/admin
+# Run linters
+make lint
 
-# 3. Useful commands
-make lint     # Ruff + ESLint
-make test     # pytest + vitest
-make migrate  # Alembic upgrade head
+# Run tests
+make test
+
+# Run database migrations
+make migrate
 ```
 
-For detailed setup: see [Development Guide](./development-guide.md).
-For deployment: see [Deployment Guide](./deployment-guide.md).
+For detailed setup instructions, see the [Development Guide](./development-guide.md).

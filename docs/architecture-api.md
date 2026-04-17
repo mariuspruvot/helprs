@@ -1,143 +1,124 @@
-# Architecture — Backend (api)
+# Architecture -- Backend (api)
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
 ## Executive Summary
 
-FastAPI backend for **helPRs** -- a Socratic comprehension tool for pull requests. The API handles GitHub OAuth authentication, GitHub App webhook processing, BYOK (Bring Your Own Key) Anthropic API key management, and real-time AI-driven comprehension sessions streamed via SSE.
+FastAPI backend serving as a container orchestrator, webhook receiver, and admin panel for helPRs. The backend does **not** run AI logic -- all AI execution happens inside ephemeral Docker containers running Claude Code CLI. The backend's role is to receive GitHub webhooks, manage installations/credentials, provision containers, and relay container output (SSE passthrough) to the frontend.
 
 ## Technology Stack
 
 | Category | Technology | Version | Purpose |
 |----------|-----------|---------|---------|
-| Framework | FastAPI | >= 0.115.0 | Async web framework |
 | Language | Python | 3.12 | Runtime |
-| ORM | SQLAlchemy (async) | >= 2.0.36 | Database access with asyncpg driver |
-| Database | PostgreSQL | 16 | Primary data store |
-| Migrations | Alembic | >= 1.14.0 | Schema versioning |
-| LLM | Pydantic AI | >= 0.1.0 | Anthropic Claude integration |
-| Auth | python-jose + Fernet | >= 3.3.0 | JWT tokens + symmetric encryption |
-| HTTP Client | httpx | >= 0.28.0 | GitHub API, Anthropic validation |
-| Logging | structlog | >= 24.4.0 | JSON structured logging |
-| Monitoring | Sentry SDK | >= 2.19.0 | Error tracking (optional) |
-| Rate Limiting | slowapi | >= 0.1.9 | Per-endpoint rate limiting |
-| Admin | SQLAdmin | >= 0.20.0 | Admin panel UI |
-| Package Manager | uv | latest | Fast Python package management |
+| Framework | FastAPI | >= 0.115 | HTTP framework |
+| ORM | SQLAlchemy | >= 2.0.36 | Async ORM (asyncpg driver) |
+| Migrations | Alembic | >= 1.14 | Schema migrations |
+| Settings | Pydantic Settings | >= 2.7 | Typed env var config |
+| Container | Docker SDK | TBD | Ephemeral container lifecycle |
+| Logging | structlog | >= 24.4 | Structured logging |
+| Monitoring | Sentry SDK | >= 2.19 | Error tracking |
+| Rate Limiting | SlowAPI | >= 0.1.9 | Per-IP rate limiting |
+| Auth | python-jose | >= 3.3 | JWT encoding/decoding |
+| Encryption | cryptography | >= 44.0 | Fernet symmetric encryption |
+| HTTP Client | httpx | >= 0.28 | GitHub API calls |
+| Admin | SQLAdmin | >= 0.20 | Admin panel + credential management |
+| Testing | pytest + pytest-asyncio | >= 8.3 | Test framework |
+| Linting | ruff | >= 0.8 | Linter + formatter |
+
+**Removed:** pydantic-ai (no longer needed -- AI runs in containers)
 
 ## Architecture Pattern
 
-**Hybrid architecture** with two module patterns:
+```
++---------------------------------------------+
+|                 main.py                      |
+|            create_app() factory              |
+|                                              |
+|  Lifespan: DB engine init + cleanup          |
+|  Middleware: CORS, Timing, Sentry            |
+|  Routers: health, auth, installations,       |
+|           webhooks, containers               |
+|  Admin: SQLAdmin panel at /admin             |
++---------------------------------------------+
+         |
+         +-- core/           (Framework foundation)
+         |   +-- config.py        Settings from env vars
+         |   +-- database.py      AsyncEngine + sessionmaker
+         |   +-- dependencies.py  get_db, get_current_user
+         |   +-- exceptions.py    HTTP exception handlers
+         |   +-- middleware.py     CORS, timing
+         |   +-- security.py      JWT, Fernet, HMAC
+         |
+         +-- modules/
+             +-- identity/       (Flat: router -> service -> model)
+             +-- installation/   (Flat: router -> service -> model)
+             +-- webhook/        (Flat: router -> dispatcher -> handlers -> model)
+             +-- container/      (NEW: container orchestration + result relay)
+```
 
-1. **Simple modules** (identity, installation, webhook, billing): Flat `router.py` / `service.py` / `models.py` / `schemas.py` structure.
-2. **Clean Architecture** (comprehension): Full hexagonal / ports-and-adapters with domain, application, infrastructure, and presentation layers.
-
-## Module Structure
-
-### Simple Modules
+### Flat Modules (identity, installation, webhook)
 
 ```
 module/
-  models.py      -- SQLAlchemy ORM models
-  schemas.py     -- Pydantic request/response DTOs
-  router.py      -- FastAPI route definitions
-  service.py     -- Business logic
++-- router.py    # FastAPI router (HTTP endpoints)
++-- service.py   # Business logic (called by router)
++-- models.py    # SQLAlchemy models
++-- schemas.py   # Pydantic request/response schemas
 ```
 
-### Comprehension Module (Clean Architecture)
+### Container Module (new)
 
 ```
-comprehension/
-  domain/
-    entities.py       -- Dataclass domain entities
-    value_objects.py   -- StrEnum value objects
-    interfaces.py      -- Protocol ports (SessionRepository, LLMProvider)
-    services.py        -- Pure domain services
-  application/
-    commands.py        -- Command DTOs
-    queries.py         -- Query/Result DTOs
-    handlers.py        -- Use-case handlers (CQRS-lite)
-  infrastructure/
-    models.py          -- SQLAlchemy ORM models
-    repositories.py    -- Repository implementation
-    agents.py          -- LLM provider (Pydantic AI)
-    github_diff.py     -- GitHub diff fetching (1MB cap)
-    diff_refs.py       -- Diff parsing, file-ref extraction
-  presentation/
-    routers.py         -- REST endpoints
-    sse.py             -- SSE streaming endpoints
-    schemas.py         -- Response schemas
-    dependencies.py    -- DI factories
-    answer_pubsub.py   -- In-process text registry
+container/               # Coming in Phase 2
++-- router.py            # Container session endpoints + SSE relay
++-- service.py           # Container lifecycle (provision, inject creds, destroy)
++-- orchestrator.py      # Docker SDK integration (create, start, stream, remove)
++-- models.py            # ContainerSession SQLAlchemy model
++-- schemas.py           # Request/response schemas
 ```
 
-## Entry Point & App Factory
+**Removed:** `comprehension/` DDD module (domain/, application/, infrastructure/, presentation/) and `billing/` stub.
 
-`helprs.main:create_app()` is the app factory. The lifespan manager:
+## Backend Role (Post-Pivot)
 
-1. Creates async SQLAlchemy engine (asyncpg, pool_size=20, max_overflow=10)
-2. Creates session factory on `app.state`
-3. Registers global `get_db_context` for out-of-request-scope DB access
-4. Sets up SQLAdmin at `/admin`
-5. Runs webhook crash-replay (re-dispatches stuck events)
-6. Starts periodic webhook reaper task (every 5 minutes)
-7. On shutdown: cancels reaper, awaits in-flight tasks, disposes engine
+The backend is a **thin orchestrator**, not an AI host:
 
-## Authentication & Security
+| Responsibility | Description |
+|----------------|-------------|
+| Webhook receiver | Receives GitHub PR events, creates session records, posts PR comments |
+| Credential manager | Stores Claude credentials (Fernet-encrypted), injects into containers |
+| Container orchestrator | Provisions ephemeral Docker containers, mounts skills, enforces TTL |
+| SSE relay | Passes container stdout/output through to the frontend as SSE events |
+| Admin panel | SQLAdmin for managing installations, credentials, viewing sessions |
+| Auth | GitHub OAuth, JWT tokens, refresh flow |
 
-### OAuth Flow
+## Data Architecture
 
-1. `GET /auth/github` -> redirect to GitHub (`read:user,user:email,read:org` scopes)
-2. GitHub callback -> exchange code -> upsert user -> issue JWT pair
-3. **Access token**: HS256, 15-min TTL, passed via redirect URL query param
-4. **Refresh token**: HS256, 7-day TTL, httpOnly cookie
+- PostgreSQL 16 (see [Data Models](./data-models-api.md))
+- All tables share `id` (UUID PK), `created_at`, `updated_at` from `Base`
+- BYOK credentials encrypted at rest with Fernet
+- GitHub OAuth tokens encrypted at rest with Fernet
 
-### Authorization Model
+## API Design
 
-- **User access**: JWT Bearer header (or `?access_token=` query param for SSE)
-- **Installation access**: Verified via GitHub user orgs membership
-- **Admin permission**: Owner (User) or admin member (Org) check via GitHub API
+- Endpoints under `/api/v1` (see [API Contracts](./api-contracts-api.md))
+- JWT Bearer auth (15-min access, 7-day refresh cookie)
+- SSE streaming for container output relay
+- Rate limiting per-IP via SlowAPI
+- Webhook ingestion with HMAC signature verification
 
-### Encryption
+## Testing Strategy
 
-- **Fernet symmetric encryption** for GitHub access tokens and BYOK Anthropic API keys
-- **BYOK zero-retention**: Decrypted keys are ephemeral, dropped at function exit
-- **Hash-only persistence**: Question and answer text stored as SHA-256 hashes only
+- `AsyncClient` + `ASGITransport` -- no real server needed
+- Real Postgres in CI (service container)
+- `conftest.py` sets env vars before imports (critical ordering)
+- `asyncio_mode = "auto"` -- no explicit async markers needed
 
-### Middleware Chain
+## Key Design Decisions
 
-1. CORS (configurable origins, credentials allowed)
-2. Request logging (structlog, request_id binding, timing, X-Request-ID header)
-3. Rate limiting (slowapi, per-endpoint limits)
-
-## Key Architecture Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Hash-only persistence | Privacy: no verbatim user content in DB (FR35/NFR14) |
-| Fresh Agent per LLM call | Zero key caching, zero retention for BYOK security |
-| DB phase / HTTP phase split | Avoid holding DB connections during long outbound I/O |
-| Unit of Work pattern | Repositories flush but never commit; caller owns transaction |
-| Webhook durability | Persist-first, process-async with crash-replay and periodic reaper |
-| Manual SSE framing | No `sse-starlette` dependency; full control over streaming protocol |
-| Large PR handling | Diffs >= 2000 lines ranked and trimmed to 40K-line budget |
-
-## Dependency Injection
-
-| Dependency | Scope | Purpose |
-|------------|-------|---------|
-| `GetSettings` | Singleton (cached) | Application configuration |
-| `DbSession` | Request-scoped | SQLAlchemy async session |
-| `get_current_user` | Request-scoped | JWT validation + user lookup |
-| `get_llm_provider` | Request-scoped | Fresh PydanticAI LLM provider |
-| `verify_webhook_signature` | Request-scoped | HMAC verification |
-
-## Observability
-
-- **Structured logging**: structlog with JSON renderer, ISO timestamps
-- **Sentry**: Optional (`SENTRY_DSN`), 20% trace sample rate, FastAPI + Starlette + Asyncio integrations
-- **Request IDs**: Bound to every log entry, returned in `X-Request-ID` header
-
-## Known Technical Debt
-
-- Access check is installation-level, not repository-level (security concern for `repository_selection="selected"`)
-- `types` Makefile target (OpenAPI -> TypeScript) is a placeholder
+1. **No AI in the backend**: all AI logic runs inside ephemeral containers
+2. **BYOK model**: each installation provides their own Claude credentials
+3. **SSE passthrough**: backend relays container output, does not generate AI responses
+4. **Flat modules only**: removed DDD layer -- all modules use the simple flat pattern
+5. **Background webhook processing**: raw events persisted first, dispatched async with retry
