@@ -58,6 +58,27 @@ class ContainerSessionResponse(BaseModel):
     updated_at: datetime
 
 
+class SendMessageRequest(BaseModel):
+    """Request body for sending a message to a running container session."""
+
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("content must not be empty")
+        return v
+
+
+class SendMessageResponse(BaseModel):
+    """Response after sending a message to a container session."""
+
+    session_id: uuid.UUID
+    status: str
+    message: str
+
+
 class StopSessionResponse(BaseModel):
     """Response when stopping a container session."""
 

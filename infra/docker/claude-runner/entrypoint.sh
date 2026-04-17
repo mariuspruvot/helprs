@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # gh CLI auto-detects GITHUB_TOKEN env var -- no explicit login needed.
-# Verify it works:
 gh auth status > /dev/null 2>&1 || {
   echo "ERROR: GitHub authentication failed" >&2
   exit 1
@@ -29,19 +28,20 @@ PROMPT="${PROMPT//\{\{PR_DESCRIPTION\}\}/$PR_DESCRIPTION}"
 PROMPT="${PROMPT//\{\{FILE_LIST\}\}/$FILE_LIST}"
 PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
 
-# CLAUDE_CODE_OAUTH_TOKEN is read automatically by Claude Code CLI
-# (set by the container orchestrator from the user's stored token)
+# Write the initial prompt as the first stream-json message to a FIFO.
+# The API will write subsequent user messages to the container's stdin.
+FIFO=/tmp/claude-input
+mkfifo "$FIFO"
 
-# Run Claude Code in non-interactive print mode
-# --print: non-interactive, streams output to stdout
-# --dangerously-skip-permissions: no human to approve tool use in a container
-# --output-format stream-json: for SSE passthrough to the frontend
-# --max-turns 15: prevent runaway sessions
-# --max-budget-usd 1.00: cost safety net (only applies if API key is used instead)
-exec claude \
-    --print \
-    --dangerously-skip-permissions \
-    --verbose \
+# Feed the initial prompt, then keep the FIFO open for subsequent messages
+# from the container orchestrator (written via docker attach/exec).
+{
+  echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":$(echo "$PROMPT" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}}"
+  # Keep stdin open -- the orchestrator sends follow-up messages here
+  cat "$FIFO"
+} | exec claude \
+    --input-format stream-json \
     --output-format stream-json \
-    --max-turns 15 \
-    "$PROMPT"
+    --verbose \
+    --dangerously-skip-permissions \
+    --max-turns 30

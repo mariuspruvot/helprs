@@ -2,12 +2,17 @@
 
 Manages the lifecycle of ephemeral Docker containers that run Claude Code CLI
 skills against pull requests. Uses aiodocker for async Docker API interaction.
+
+Containers run in bidirectional stream-json mode: the initial skill prompt is
+sent as the first message, and subsequent user messages are written to the
+container's stdin via a FIFO. Output is streamed from stdout.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -49,7 +54,7 @@ class DockerClient(Protocol):
         volumes: list[str],
         labels: dict[str, str],
     ) -> str:
-        """Create a container and return its ID."""
+        """Create a container with stdin enabled and return its ID."""
         ...
 
     async def start_container(self, container_id: str) -> None:
@@ -66,6 +71,10 @@ class DockerClient(Protocol):
 
     async def container_logs(self, container_id: str, follow: bool = False) -> AsyncIterator[str]:
         """Stream container logs."""
+        ...
+
+    async def write_to_container(self, container_id: str, data: str) -> None:
+        """Write data to the container's stdin via exec."""
         ...
 
     async def wait_container(self, container_id: str) -> int:
@@ -94,6 +103,7 @@ class AioDockerClient:
             "Image": image,
             "Env": env_list,
             "Labels": labels,
+            "OpenStdin": True,
             "HostConfig": {
                 "Binds": binds,
                 "Memory": 512 * 1024 * 1024,  # 512MB
@@ -120,6 +130,19 @@ class AioDockerClient:
         container = await self._docker.containers.get(container_id)
         async for line in container.log(stdout=True, stderr=True, follow=follow):
             yield line
+
+    async def write_to_container(self, container_id: str, data: str) -> None:
+        """Write a message to the container's FIFO via docker exec.
+
+        The entrypoint reads from /tmp/claude-input FIFO, so we write there.
+        """
+        container = await self._docker.containers.get(container_id)
+        exec_obj = await container.exec(
+            cmd=["bash", "-c", f"echo {json.dumps(data)} > /tmp/claude-input"],
+            stdout=False,
+            stderr=False,
+        )
+        await exec_obj.start()
 
     async def wait_container(self, container_id: str) -> int:
         container = await self._docker.containers.get(container_id)
@@ -263,6 +286,43 @@ async def stream_output(
     """Async generator yielding container log lines as SSE events."""
     async for line in docker.container_logs(container_id, follow=True):
         yield f"data: {line}\n\n"
+
+
+async def send_message(
+    db: AsyncSession,
+    session_id: UUID,
+    docker: DockerClient,
+    content: str,
+) -> None:
+    """Send a user message to a running container session.
+
+    Writes a stream-json formatted message to the container's FIFO,
+    which Claude Code CLI reads as the next user turn.
+    """
+    cs = await get_session_or_404(db, session_id)
+
+    if cs.status != ContainerStatus.RUNNING or not cs.container_id:
+        raise ExternalServiceError("Container is not running")
+
+    message = json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": content},
+    })
+
+    try:
+        await docker.write_to_container(cs.container_id, message)
+    except Exception as exc:
+        await logger.aerror(
+            "container_message_failed",
+            session_id=str(session_id),
+            error=str(exc),
+        )
+        raise ExternalServiceError(f"Failed to send message to container: {exc}") from exc
+
+    await logger.ainfo(
+        "container_message_sent",
+        session_id=str(session_id),
+    )
 
 
 async def stop_container(

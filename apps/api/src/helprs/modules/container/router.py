@@ -12,6 +12,8 @@ from helprs.core.security import fernet_decrypt
 from helprs.modules.container.schemas import (
     ContainerSessionResponse,
     CreateSessionRequest,
+    SendMessageRequest,
+    SendMessageResponse,
     StopSessionResponse,
 )
 from helprs.modules.container.service import (
@@ -19,6 +21,7 @@ from helprs.modules.container.service import (
     ContainerStatus,
     create_session,
     get_session_or_404,
+    send_message,
     start_container,
     stop_container,
     stream_output,
@@ -140,6 +143,32 @@ async def stream_container_output(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@router.post("/sessions/{session_id}/message", response_model=SendMessageResponse)
+@limiter.limit("30/minute")
+async def send_session_message(
+    session_id: UUID,
+    body: SendMessageRequest,
+    request: Request,
+    db: DbSession,
+):
+    """Send a user message to a running container session.
+
+    The message is forwarded to the container's Claude Code CLI stdin,
+    continuing the interactive conversation.
+    """
+    docker = _get_docker_client()
+    try:
+        await send_message(db=db, session_id=session_id, docker=docker, content=body.content)
+    finally:
+        await docker.close()
+
+    return SendMessageResponse(
+        session_id=session_id,
+        status="sent",
+        message="Message delivered to container",
     )
 
 
