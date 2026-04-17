@@ -170,10 +170,12 @@ def create_app() -> FastAPI:
     # API router
     api_router = APIRouter(prefix="/api/v1")
 
+    from helprs.modules.container.router import router as container_router
     from helprs.modules.identity.router import router as identity_router
     from helprs.modules.installation.router import router as installation_router
     from helprs.modules.webhook.router import router as webhook_router
 
+    api_router.include_router(container_router)
     api_router.include_router(identity_router)
     api_router.include_router(installation_router)
     api_router.include_router(webhook_router)
