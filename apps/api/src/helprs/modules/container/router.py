@@ -114,7 +114,7 @@ async def get_container_session(
 
 
 @router.get("/sessions/{session_id}/stream")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def stream_container_output(
     session_id: UUID,
     request: Request,

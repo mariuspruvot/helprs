@@ -309,20 +309,37 @@ async def stream_output(
     Each event includes an incrementing ``id:`` field so that clients
     can resume from the last received event via the ``offset`` query
     parameter (number of events to skip).
+
+    When the container is quiet (Claude is thinking), the Docker log
+    stream produces no data.  We send SSE comments (``:``) every
+    ``KEEPALIVE_INTERVAL`` seconds to prevent idle-timeout disconnects.
     """
+    keepalive_interval = 15.0
     event_id = 0
     buffer = ""
-    async for chunk in docker.container_logs(container_id, follow=True):
-        buffer += chunk
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.strip()
-            if not line:
-                continue
-            event_id += 1
-            if event_id <= offset:
-                continue
-            yield f"id: {event_id}\ndata: {line}\n\n"
+
+    log_iter = docker.container_logs(container_id, follow=True).__aiter__()
+    while True:
+        try:
+            chunk = await asyncio.wait_for(log_iter.__anext__(), timeout=keepalive_interval)
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                event_id += 1
+                if event_id <= offset:
+                    continue
+                yield f"id: {event_id}\ndata: {line}\n\n"
+        except TimeoutError:
+            # No data from container — send SSE keepalive comment to
+            # prevent the HTTP connection from being closed by proxies
+            # or the browser.  SSE comments are silently ignored by
+            # EventSource clients.
+            yield ": keepalive\n\n"
+        except StopAsyncIteration:
+            break
 
 
 async def send_message(
