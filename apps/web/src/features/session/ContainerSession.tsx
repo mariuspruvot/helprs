@@ -50,6 +50,7 @@ export default function ContainerSession({
   const [sending, setSending] = useState(false)
 
   const lineIdRef = useRef(0)
+  const sseOffsetRef = useRef(0)
   const eventSourceRef = useRef<EventSource | null>(null)
   const mountedRef = useRef(true)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -71,6 +72,7 @@ export default function ContainerSession({
     mountedRef.current = true
     const abortController = new AbortController()
     lineIdRef.current = 0
+    sseOffsetRef.current = 0
     setLines([])
 
     async function init() {
@@ -137,7 +139,7 @@ export default function ContainerSession({
         return
       }
 
-      const url = buildStreamUrl(sessionId, accessToken)
+      const url = buildStreamUrl(sessionId, accessToken, sseOffsetRef.current)
       const source = new EventSource(url, { withCredentials: true })
       eventSourceRef.current = source
 
@@ -149,6 +151,10 @@ export default function ContainerSession({
       // Default message event — parse Claude Code stream-json
       source.onmessage = (event: MessageEvent) => {
         if (!mountedRef.current) return
+        // Track the last event id so reconnects can skip already-received events
+        if (event.lastEventId) {
+          sseOffsetRef.current = parseInt(event.lastEventId, 10) || sseOffsetRef.current
+        }
         const parsed = parseStreamEvent(event.data as string)
         if (parsed) {
           appendLine(parsed.text, parsed.kind)

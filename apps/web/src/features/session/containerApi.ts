@@ -83,7 +83,12 @@ export async function sendMessage(sessionId: string, content: string): Promise<v
 /**
  * Build the SSE stream URL for a container session.
  * Auth token is appended as a query parameter since EventSource cannot send headers.
+ * Optional `offset` skips already-received events on reconnect.
  */
-export function buildStreamUrl(sessionId: string, accessToken: string): string {
-  return `${API_BASE}/api/v1/containers/sessions/${sessionId}/stream?access_token=${encodeURIComponent(accessToken)}`
+export function buildStreamUrl(sessionId: string, accessToken: string, offset?: number): string {
+  let url = `${API_BASE}/api/v1/containers/sessions/${sessionId}/stream?access_token=${encodeURIComponent(accessToken)}`
+  if (offset && offset > 0) {
+    url += `&offset=${offset}`
+  }
+  return url
 }

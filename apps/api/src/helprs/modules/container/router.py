@@ -119,8 +119,14 @@ async def stream_container_output(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    offset: int = 0,
 ):
-    """SSE endpoint streaming container stdout/stderr."""
+    """SSE endpoint streaming container stdout/stderr.
+
+    Accepts an ``offset`` query parameter: the number of events to skip.
+    Clients should pass the last received event ``id`` so that reconnects
+    resume from where they left off instead of replaying the full log.
+    """
     cs = await get_session_or_404(db, session_id)
 
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
@@ -130,7 +136,7 @@ async def stream_container_output(
 
     async def _event_stream():
         try:
-            async for event in stream_output(docker, cs.container_id):
+            async for event in stream_output(docker, cs.container_id, offset=offset):
                 yield event
         finally:
             await docker.close()
