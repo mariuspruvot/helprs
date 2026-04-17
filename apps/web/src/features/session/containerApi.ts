@@ -21,11 +21,13 @@ export class ContainerSessionError extends Error {
 
 export async function createContainerSession(
   body: ContainerSessionRequest,
+  signal?: AbortSignal,
 ): Promise<ContainerSessionResponse> {
   const resp = await apiFetch('/api/v1/containers/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   if (!resp.ok) {
     throw new ContainerSessionError(resp.status, `Failed to create session: ${resp.status}`)

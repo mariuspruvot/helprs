@@ -22,6 +22,7 @@ logger = structlog.get_logger()
 _REPLAY_DISCOVERY_TIMEOUT_SECONDS = 10.0
 _REPLAY_CONCURRENCY = 10
 _REAPER_INTERVAL_SECONDS = 300
+_CONTAINER_CLEANUP_INTERVAL_SECONDS = 300
 
 
 async def _replay_pending_webhook_events(app: FastAPI) -> None:
@@ -100,6 +101,35 @@ async def _run_webhook_reaper(app: FastAPI, *, interval_seconds: int = _REAPER_I
         raise
 
 
+async def _run_container_cleanup(
+    app: FastAPI,
+    *,
+    interval_seconds: int = _CONTAINER_CLEANUP_INTERVAL_SECONDS,
+) -> None:
+    """Periodic cleanup of expired container sessions.
+
+    Finds sessions past their TTL and destroys their Docker containers.
+    Cancelled cleanly by the lifespan teardown via ``task.cancel()``.
+    """
+    from helprs.modules.container.service import AioDockerClient, cleanup_expired
+
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                docker = AioDockerClient()
+                async with app.state.session_factory() as db:
+                    cleaned = await cleanup_expired(db, docker)
+                    await db.commit()
+                    if cleaned:
+                        logger.info("container_cleanup_cycle", cleaned=cleaned)
+            except Exception:
+                logger.exception("container_cleanup_cycle_failed")
+    except asyncio.CancelledError:
+        logger.info("container_cleanup_stopped")
+        raise
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -112,6 +142,7 @@ def create_app() -> FastAPI:
         """Manage database engine lifecycle, admin setup, and webhook reaper."""
         engine = create_engine()
         reaper_task: asyncio.Task | None = None
+        cleanup_task: asyncio.Task | None = None
         try:
             session_factory = create_session_factory(engine)
             app.state.engine = engine
@@ -137,9 +168,15 @@ def create_app() -> FastAPI:
             # mark_processed commit failure) without waiting for the next
             # restart.
             reaper_task = asyncio.create_task(_run_webhook_reaper(app))
+            cleanup_task = asyncio.create_task(_run_container_cleanup(app))
 
             yield
         finally:
+            if cleanup_task is not None:
+                cleanup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await cleanup_task
+
             if reaper_task is not None:
                 reaper_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

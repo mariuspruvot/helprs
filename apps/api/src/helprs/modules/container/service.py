@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -46,8 +47,6 @@ SKILLS_BASE_PATH = _DOCKER_SKILLS_PATH if _DOCKER_SKILLS_PATH.exists() else _LOC
 # Host path for skills — needed for Docker-in-Docker volume mounts.
 # The API container can't use its own /app/skills path as a bind mount source
 # for child containers; Docker needs the HOST filesystem path.
-import os
-
 SKILLS_HOST_PATH = os.environ.get("SKILLS_HOST_PATH", str(SKILLS_BASE_PATH))
 
 
@@ -316,10 +315,12 @@ async def send_message(
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
         raise ExternalServiceError("Container is not running")
 
-    message = json.dumps({
-        "type": "user",
-        "message": {"role": "user", "content": content},
-    })
+    message = json.dumps(
+        {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+        }
+    )
 
     try:
         await docker.write_to_container(cs.container_id, message)
