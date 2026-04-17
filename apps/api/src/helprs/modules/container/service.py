@@ -187,7 +187,7 @@ async def start_container(
     db: AsyncSession,
     session_id: UUID,
     docker: DockerClient,
-    anthropic_api_key: str,
+    claude_oauth_token: str,
     github_token: str,
     skills_base_path: Path | None = None,
 ) -> ContainerSession:
@@ -208,7 +208,7 @@ async def start_container(
         raise NotFoundError(f"Skill '{cs.skill_name}' not found")
 
     environment = {
-        "ANTHROPIC_API_KEY": anthropic_api_key,
+        "CLAUDE_CODE_OAUTH_TOKEN": claude_oauth_token,
         "GITHUB_TOKEN": github_token,
         "SKILL_NAME": cs.skill_name,
         "PR_NUMBER": str(cs.pr_number),

@@ -61,12 +61,12 @@ async def create_container_session(
     if not installation:
         raise NotFoundError("Installation not found")
 
-    # Get BYOK credentials
+    # Get stored Claude OAuth token (from claude setup-token)
     byok_config = await get_byok_config(db, installation.id)
     if not byok_config:
-        raise NotFoundError("No BYOK credentials configured for this installation")
+        raise NotFoundError("No Claude token configured for this installation")
 
-    anthropic_api_key = fernet_decrypt(byok_config.encrypted_api_key, settings.FERNET_KEY)
+    claude_oauth_token = fernet_decrypt(byok_config.encrypted_api_key, settings.FERNET_KEY)
 
     # Mint GitHub installation token
     github_token = await mint_installation_token(installation.github_installation_id, settings)
@@ -87,7 +87,7 @@ async def create_container_session(
             db=db,
             session_id=cs.id,
             docker=docker,
-            anthropic_api_key=anthropic_api_key,
+            claude_oauth_token=claude_oauth_token,
             github_token=github_token,
         )
     finally:

@@ -223,7 +223,7 @@ class TestStartContainer:
             db=db,
             session_id=cs.id,
             docker=docker,
-            anthropic_api_key="sk-ant-test",
+            claude_oauth_token="test-oauth-token",
             github_token="gho_test",
             skills_base_path=skills_path,
         )
@@ -251,12 +251,12 @@ class TestStartContainer:
             db=db,
             session_id=cs.id,
             docker=docker,
-            anthropic_api_key="sk-ant-key123",
+            claude_oauth_token="test-oauth-key123",
             github_token="gho_tok456",
             skills_base_path=skills_path,
         )
         env = docker.created[0]["environment"]
-        assert env["ANTHROPIC_API_KEY"] == "sk-ant-key123"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-oauth-key123"
         assert env["GITHUB_TOKEN"] == "gho_tok456"
         assert env["PR_NUMBER"] == "7"
         assert env["REPO_FULL_NAME"] == "myorg/myrepo"
@@ -283,7 +283,7 @@ class TestStartContainer:
                 db=db,
                 session_id=cs.id,
                 docker=failing_docker,
-                anthropic_api_key="sk-ant-test",
+                claude_oauth_token="test-oauth-token",
                 github_token="gho_test",
                 skills_base_path=skills_path,
             )
@@ -312,7 +312,7 @@ class TestStartContainer:
                 db=db,
                 session_id=cs.id,
                 docker=FakeDockerClient(),
-                anthropic_api_key="sk-ant-test",
+                claude_oauth_token="test-oauth-token",
                 github_token="gho_test",
                 skills_base_path=skills_path,
             )
@@ -341,7 +341,7 @@ class TestStartContainer:
                 db=db,
                 session_id=cs.id,
                 docker=docker,
-                anthropic_api_key="sk-ant-test",
+                claude_oauth_token="test-oauth-token",
                 github_token="gho_test",
                 skills_base_path=skills_path,
             )
@@ -385,7 +385,7 @@ class TestStopContainer:
             db=db,
             session_id=cs.id,
             docker=docker,
-            anthropic_api_key="sk-ant-test",
+            claude_oauth_token="test-oauth-token",
             github_token="gho_test",
             skills_base_path=skills_path,
         )
@@ -458,7 +458,7 @@ class TestMarkCompleted:
             db=db,
             session_id=cs.id,
             docker=docker,
-            anthropic_api_key="sk-ant-test",
+            claude_oauth_token="test-oauth-token",
             github_token="gho_test",
             skills_base_path=skills_path,
         )
@@ -484,7 +484,7 @@ class TestMarkCompleted:
             db=db,
             session_id=cs.id,
             docker=docker,
-            anthropic_api_key="sk-ant-test",
+            claude_oauth_token="test-oauth-token",
             github_token="gho_test",
             skills_base_path=skills_path,
         )
