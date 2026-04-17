@@ -299,16 +299,28 @@ async def stream_output(
 ) -> AsyncIterator[str]:
     """Async generator yielding container log lines as SSE events.
 
-    Each event includes an incrementing ``id:`` field so that clients can
-    resume from the last received event via the ``offset`` query parameter
-    (number of events to skip).
+    Docker may split long stdout lines (e.g. stream-json tool_result
+    events with full file contents) across multiple log frames.  We
+    buffer chunks and only emit complete newline-delimited lines so
+    the frontend always receives valid, parseable JSON per SSE event.
+
+    Each event includes an incrementing ``id:`` field so that clients
+    can resume from the last received event via the ``offset`` query
+    parameter (number of events to skip).
     """
     event_id = 0
-    async for line in docker.container_logs(container_id, follow=True):
-        event_id += 1
-        if event_id <= offset:
-            continue
-        yield f"id: {event_id}\ndata: {line}\n\n"
+    buffer = ""
+    async for chunk in docker.container_logs(container_id, follow=True):
+        buffer += chunk
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            event_id += 1
+            if event_id <= offset:
+                continue
+            yield f"id: {event_id}\ndata: {line}\n\n"
 
 
 async def send_message(

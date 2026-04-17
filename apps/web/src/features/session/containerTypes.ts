@@ -57,7 +57,13 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
   try {
     event = JSON.parse(raw)
   } catch {
-    // Not JSON -- show as raw text
+    // Not JSON — if it looks like a truncated JSON fragment (from Docker
+    // log frame splitting), suppress it.  Only show genuinely non-JSON
+    // lines (git clone output, entrypoint messages, etc.).
+    const trimmed = raw.trimStart()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('"')) {
+      return null
+    }
     return { text: raw, kind: 'text' }
   }
 
