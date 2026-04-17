@@ -20,6 +20,15 @@ vi.mock('../auth/store', () => ({
   },
 }))
 
+// Mock shiki — avoid loading real grammars in tests
+vi.mock('./shiki', () => ({
+  highlighter: {
+    codeToHtml: (_code: string) => '<pre><code>mock</code></pre>',
+  },
+  SHIKI_THEME: 'github-dark',
+  SUPPORTED_LANGS: new Set(['typescript', 'javascript']),
+}))
+
 import {
   createContainerSession,
   stopContainerSession,
@@ -158,7 +167,7 @@ describe('ContainerSession', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('error-banner')).toBeTruthy()
-      expect(screen.getByText('Network error')).toBeTruthy()
+      expect(screen.getAllByText('Network error').length).toBeGreaterThan(0)
     })
   })
 
@@ -216,13 +225,13 @@ describe('ContainerSession', () => {
     })
   })
 
-  test('renders terminal output component', async () => {
+  test('renders conversation output component', async () => {
     mockedCreate.mockResolvedValue(makeSessionResponse())
 
     render(<ContainerSession {...defaultProps} />)
 
     await waitFor(() => {
-      expect(screen.getByTestId('terminal-output')).toBeTruthy()
+      expect(screen.getByTestId('conversation-output')).toBeTruthy()
     })
   })
 

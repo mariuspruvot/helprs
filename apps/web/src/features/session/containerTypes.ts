@@ -53,11 +53,32 @@ export interface Skill {
   duration: string
 }
 
-export interface TerminalLine {
+// ---------------------------------------------------------------------------
+// Stream message model — structured representation of Claude Code events
+// ---------------------------------------------------------------------------
+
+export interface ContentBlockData {
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result'
+  text?: string
+  name?: string           // tool_use: tool name (e.g. "Read", "Bash", "Grep")
+  input?: Record<string, unknown>  // tool_use: arguments
+  content?: string        // tool_result: output text
+  is_error?: boolean      // tool_result: whether the tool errored
+  tool_use_id?: string    // tool_result: links back to the tool_use
+}
+
+export interface StreamMessage {
   id: number
-  text: string
   timestamp: number
-  kind?: 'text' | 'error' | 'status'
+  role: 'assistant' | 'user' | 'system' | 'result'
+  blocks: ContentBlockData[]
+  // System-specific
+  subtype?: string
+  // Result-specific
+  isError?: boolean
+  totalCostUsd?: number
+  numTurns?: number
+  durationMs?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -82,11 +103,21 @@ export interface TerminalLine {
 interface ContentBlock {
   type: string
   text?: string
+  name?: string
+  input?: Record<string, unknown>
+  tool_use_id?: string
+  content?: string | Array<{ type: string; text?: string }>
+  is_error?: boolean
 }
 
 interface AssistantEvent {
   type: 'assistant'
   message: { content: ContentBlock[] }
+}
+
+interface UserEvent {
+  type: 'user'
+  message?: { content: ContentBlock[] }
 }
 
 interface SystemEvent {
@@ -111,19 +142,32 @@ type StreamJsonEvent =
   | AssistantEvent
   | SystemEvent
   | ResultEvent
-  | { type: 'user' }
+  | UserEvent
   | { type: 'rate_limit_event' }
   | { type: 'stream_event' }
   | { type: string }
 
+function normalizeToolResultContent(content: ContentBlock['content']): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text)
+      .join('\n')
+  }
+  return ''
+}
+
 /**
- * Parse a Claude Code stream-json line into displayable content.
+ * Parse a Claude Code stream-json line into a structured StreamMessage.
  *
- * Returns null for events that should be hidden from the terminal.
- * The result event is used for session-end signaling only — its `result`
- * field duplicates the last assistant text and must NOT be displayed.
+ * Returns null for events that should be hidden (init, compact_boundary,
+ * rate_limit_event, stream_event, unknown types).
+ *
+ * The result event's `result` field duplicates the last assistant text —
+ * only surface errors or session-end metadata, never the text.
  */
-export function parseStreamEvent(raw: string): { text: string; kind: TerminalLine['kind'] } | null {
+export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'timestamp'> | null {
   let event: StreamJsonEvent
   try {
     event = JSON.parse(raw) as StreamJsonEvent
@@ -133,53 +177,108 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
   }
 
   switch (event.type) {
-    // Assistant content blocks — only display text blocks.
-    // thinking and tool_use blocks are internal activity.
     case 'assistant': {
       const content = (event as AssistantEvent).message?.content ?? []
-      const parts: string[] = []
+      const blocks: ContentBlockData[] = []
+
       for (const block of content) {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          parts.push(block.text)
+        switch (block.type) {
+          case 'text':
+            if (typeof block.text === 'string') {
+              blocks.push({ type: 'text', text: block.text })
+            }
+            break
+          case 'thinking':
+            if (typeof block.text === 'string') {
+              blocks.push({ type: 'thinking', text: block.text })
+            }
+            break
+          case 'tool_use':
+            blocks.push({
+              type: 'tool_use',
+              name: block.name ?? 'unknown',
+              input: block.input ?? {},
+              tool_use_id: block.tool_use_id,
+            })
+            break
+          // Other block types (tool_result on assistant is unusual) — skip
         }
       }
-      if (parts.length === 0) return null
-      return { text: parts.join('\n'), kind: 'text' }
+
+      if (blocks.length === 0) return null
+      return { role: 'assistant', blocks }
     }
 
-    // System events — surface API retries so the user knows why it's slow.
+    case 'user': {
+      const userEvent = event as UserEvent
+      const content = userEvent.message?.content ?? []
+      const blocks: ContentBlockData[] = []
+
+      for (const block of content) {
+        if (block.type === 'tool_result') {
+          blocks.push({
+            type: 'tool_result',
+            content: normalizeToolResultContent(block.content),
+            is_error: block.is_error ?? false,
+            tool_use_id: block.tool_use_id,
+          })
+        }
+      }
+
+      if (blocks.length === 0) return null
+      return { role: 'user', blocks }
+    }
+
     case 'system': {
       const sys = event as SystemEvent
       if (sys.subtype === 'api_retry') {
         const msg = `API retry (attempt ${sys.attempt ?? '?'}/${sys.max_retries ?? '?'})`
-        return { text: msg, kind: 'status' }
+        return {
+          role: 'system',
+          blocks: [{ type: 'text', text: msg }],
+          subtype: 'api_retry',
+        }
       }
       // init, compact_boundary, plugin_install — hide
       return null
     }
 
-    // Result event — session-end signal only.
-    // The result.result field duplicates the last assistant text, so we
-    // intentionally do NOT display it.  Only surface errors.
     case 'result': {
       const res = event as ResultEvent
       if (res.is_error) {
-        return { text: 'Session ended with error', kind: 'error' }
+        return {
+          role: 'result',
+          blocks: [{ type: 'text', text: 'Session ended with error' }],
+          isError: true,
+          totalCostUsd: res.total_cost_usd,
+          numTurns: res.num_turns,
+          durationMs: res.duration_ms,
+        }
       }
-      // Success — no display (avoids duplicating the last assistant text)
+      // Success — only emit if we have metadata to show
+      if (res.num_turns !== undefined || res.duration_ms !== undefined) {
+        return {
+          role: 'result',
+          blocks: [],
+          isError: false,
+          totalCostUsd: res.total_cost_usd,
+          numTurns: res.num_turns,
+          durationMs: res.duration_ms,
+        }
+      }
       return null
     }
 
-    // user, rate_limit_event, stream_event, unknown — hide
+    // rate_limit_event, stream_event, unknown — hide
     default:
       return null
   }
 }
 
 /**
- * Parse a persisted event (already-parsed JSONB) into displayable content.
- * Re-serializes to JSON and delegates to {@link parseStreamEvent}.
+ * Parse a persisted event (already-parsed JSONB) into a StreamMessage.
+ * Re-serializes to JSON and delegates to {@link parseStreamMessage}.
  */
-export function parseStoredEvent(data: Record<string, unknown>): { text: string; kind: TerminalLine['kind'] } | null {
-  return parseStreamEvent(JSON.stringify(data))
+export function parseStoredMessage(data: Record<string, unknown>): Omit<StreamMessage, 'id' | 'timestamp'> | null {
+  return parseStreamMessage(JSON.stringify(data))
 }
