@@ -1,11 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Authenticate with GitHub using the injected token
-echo "$GITHUB_TOKEN" | gh auth login --with-token
+# gh CLI auto-detects GITHUB_TOKEN env var -- no explicit login needed.
+# Verify it works:
+gh auth status > /dev/null 2>&1 || {
+  echo "ERROR: GitHub authentication failed" >&2
+  exit 1
+}
 
-# Clone the repo (shallow) and check out the PR branch
-gh repo clone "$REPO_FULL_NAME" /workspace -- --depth=1
+# Clone the repo and check out the PR branch
+gh repo clone "$REPO_FULL_NAME" /workspace
 cd /workspace
 gh pr checkout "$PR_NUMBER"
 
@@ -37,6 +41,7 @@ PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
 exec claude \
     --print \
     --dangerously-skip-permissions \
+    --verbose \
     --output-format stream-json \
     --max-turns 15 \
     "$PROMPT"
