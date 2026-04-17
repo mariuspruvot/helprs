@@ -8,7 +8,7 @@ final webhook_events row state — no sleeps, no polling.
 
 import json
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from helprs.core.config import get_settings
 from helprs.core.database import Base
 from helprs.main import create_app
-from helprs.modules.comprehension.infrastructure.models import SessionModel
 from helprs.modules.installation.models import Installation
 from helprs.modules.webhook.models import WebhookEvent
 from tests.modules.webhook.conftest import make_pull_request_payload, sign_payload
@@ -70,28 +69,6 @@ async def app_with_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
-
-
-@pytest.fixture(autouse=True)
-def _patch_github_calls(monkeypatch):
-    """Patch mint_installation_token + post_pr_comment_with_retry so
-    pull_request webhook tests never hit GitHub. Story 2.2.
-
-    Scoped autouse — any test that doesn't exercise these calls is
-    unaffected because the patched functions are only invoked via the
-    pull_request handler path.
-    """
-    mint = AsyncMock(return_value="ghs_test_token")
-    post = AsyncMock()
-    monkeypatch.setattr(
-        "helprs.modules.webhook.handlers.mint_installation_token",
-        mint,
-    )
-    monkeypatch.setattr(
-        "helprs.modules.webhook.handlers.post_pr_comment_with_retry",
-        post,
-    )
-    return mint, post
 
 
 @pytest.fixture
@@ -219,7 +196,9 @@ class TestWebhookPersistenceAndBackgroundDispatch:
             },
         )
 
-    async def test_pull_request_opened_is_persisted_and_processed(self, app_client, webhook_secret, session_factory):
+    async def test_pull_request_opened_is_persisted_and_ignored(self, app_client, webhook_secret, session_factory):
+        """pull_request.opened has no handler after the comprehension removal;
+        the event is persisted but marked ignored by the dispatcher."""
         delivery_id = _delivery_id()
         response = await self._post_pr(app_client, webhook_secret, action="opened", delivery_id=delivery_id)
         assert response.status_code == 200
@@ -231,7 +210,7 @@ class TestWebhookPersistenceAndBackgroundDispatch:
 
         assert row.event_type == "pull_request"
         assert row.action == "opened"
-        assert row.status == "processed"
+        assert row.status == "ignored"
         assert row.github_installation_id == 12345678
         assert row.processed_at is not None
 
@@ -465,142 +444,3 @@ class TestWebhookAcCoverage:
 
         results = await asyncio.gather(_claim(), _claim(), _claim())
         assert sum(1 for r in results if r) == 1, f"expected exactly one winner, got {results}"
-
-
-class TestSessionCreationAndComment:
-    """End-to-end coverage for Story 2.2 — the full opened → session pair →
-    PR comment post flow exercised via the HTTP layer.
-
-    These tests use the autouse ``_patch_github_calls`` fixture to stub
-    both external calls; NFR1 real-network timing is covered manually.
-    """
-
-    async def _post_pr(
-        self,
-        app_client,
-        webhook_secret,
-        *,
-        action: str = "opened",
-        delivery_id: str,
-        labels: list[str] | None = None,
-        head_sha: str = "abc123",
-    ):
-        payload = make_pull_request_payload(action, labels=labels, head_sha=head_sha)
-        body = json.dumps(payload).encode()
-        sig = sign_payload(body, webhook_secret)
-        return await app_client.post(
-            "/api/v1/webhooks/github",
-            content=body,
-            headers={
-                "X-Hub-Signature-256": sig,
-                "X-GitHub-Event": "pull_request",
-                "X-GitHub-Delivery": delivery_id,
-                "Content-Type": "application/json",
-            },
-        )
-
-    async def test_full_flow_creates_sessions_and_posts_comment(
-        self, app_client, webhook_secret, session_factory, _patch_github_calls
-    ):
-        """Fast sanity check — with everything mocked, the full flow must
-        complete well under 2 s. A blown budget here means a synchronous
-        sleep has been introduced somewhere. Real-network p95 (10 s NFR1)
-        is verified in manual QA.
-        """
-        import time
-
-        mint, post = _patch_github_calls
-        delivery_id = _delivery_id()
-
-        start = time.perf_counter()
-        response = await self._post_pr(app_client, webhook_secret, delivery_id=delivery_id)
-        elapsed = time.perf_counter() - start
-
-        assert response.status_code == 200
-        assert elapsed < 2.0
-
-        async with session_factory() as s:
-            sessions = (await s.execute(select(SessionModel))).scalars().all()
-            event = (await s.execute(select(WebhookEvent).where(WebhookEvent.delivery_id == delivery_id))).scalar_one()
-
-        assert len(sessions) == 2
-        assert {r.role for r in sessions} == {"author", "reviewer"}
-        assert event.status == "processed"
-
-        mint.assert_awaited_once()
-        post.assert_awaited_once()
-
-    async def test_suppression_label_skips_sessions_and_comment(
-        self, app_client, webhook_secret, session_factory, _patch_github_calls
-    ):
-        _, post = _patch_github_calls
-        delivery_id = _delivery_id()
-        response = await self._post_pr(app_client, webhook_secret, delivery_id=delivery_id, labels=["hotfix"])
-        assert response.status_code == 200
-
-        async with session_factory() as s:
-            sessions = (await s.execute(select(SessionModel))).scalars().all()
-            event = (await s.execute(select(WebhookEvent).where(WebhookEvent.delivery_id == delivery_id))).scalar_one()
-
-        assert sessions == []
-        assert event.status == "processed"
-        post.assert_not_awaited()
-
-    async def test_synchronize_after_opened_updates_without_second_comment(
-        self, app_client, webhook_secret, session_factory, _patch_github_calls
-    ):
-        _, post = _patch_github_calls
-
-        d1 = _delivery_id()
-        d2 = _delivery_id()
-        await self._post_pr(app_client, webhook_secret, delivery_id=d1, head_sha="old")
-        assert post.await_count == 1
-
-        await self._post_pr(
-            app_client,
-            webhook_secret,
-            action="synchronize",
-            delivery_id=d2,
-            head_sha="new",
-        )
-        assert post.await_count == 1  # no second comment on synchronize
-
-        async with session_factory() as s:
-            sessions = (await s.execute(select(SessionModel))).scalars().all()
-            events = (
-                (await s.execute(select(WebhookEvent).where(WebhookEvent.delivery_id.in_([d1, d2])))).scalars().all()
-            )
-
-        assert len(sessions) == 2
-        assert all(r.pr_head_sha == "new" for r in sessions)
-        assert len(events) == 2
-        assert all(e.status == "processed" for e in events)
-
-    async def test_comment_post_failure_marks_event_failed(
-        self, app_client, webhook_secret, session_factory, monkeypatch
-    ):
-        from helprs.core.exceptions import ExternalServiceError
-
-        monkeypatch.setattr(
-            "helprs.modules.webhook.handlers.mint_installation_token",
-            AsyncMock(return_value="ghs_xxx"),
-        )
-        monkeypatch.setattr(
-            "helprs.modules.webhook.handlers.post_pr_comment_with_retry",
-            AsyncMock(side_effect=ExternalServiceError("boom")),
-        )
-
-        delivery_id = _delivery_id()
-        response = await self._post_pr(app_client, webhook_secret, delivery_id=delivery_id)
-        assert response.status_code == 200
-
-        async with session_factory() as s:
-            event = (await s.execute(select(WebhookEvent).where(WebhookEvent.delivery_id == delivery_id))).scalar_one()
-            # Sessions were rolled back by the outer transaction boundary
-            # when the handler raised (AC #6 interplay with Story 2.1's
-            # mark_failed path).
-            sessions = (await s.execute(select(SessionModel))).scalars().all()
-
-        assert event.status == "failed"
-        assert event.error_message is not None
-        assert sessions == []

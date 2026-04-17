@@ -116,9 +116,9 @@ def create_app() -> FastAPI:
             session_factory = create_session_factory(engine)
             app.state.engine = engine
             app.state.session_factory = session_factory
-            # Register the factory for ``get_db_context`` (used by the
-            # SSE stream generator for per-question writes outside the
-            # request-scoped dep graph — Story 3.3).
+            # Register the factory for ``get_db_context`` (used by
+            # background tasks that need DB access outside the request
+            # dependency graph).
             set_session_factory(session_factory)
             app.state.replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
             app.state.replay_tasks = set()
@@ -156,7 +156,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="helPRs API",
-        description="Socratic comprehension sessions for pull requests",
+        description="AI-powered pull request review assistant",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -170,8 +170,6 @@ def create_app() -> FastAPI:
     # API router
     api_router = APIRouter(prefix="/api/v1")
 
-    from helprs.modules.comprehension.presentation.routers import router as comprehension_router
-    from helprs.modules.comprehension.presentation.sse import sse_router as comprehension_sse_router
     from helprs.modules.identity.router import router as identity_router
     from helprs.modules.installation.router import router as installation_router
     from helprs.modules.webhook.router import router as webhook_router
@@ -179,12 +177,6 @@ def create_app() -> FastAPI:
     api_router.include_router(identity_router)
     api_router.include_router(installation_router)
     api_router.include_router(webhook_router)
-    api_router.include_router(comprehension_router)
-    # Story 3.3: SSE streaming for Socratic question generation. Mounted
-    # AFTER the detail router so FastAPI's route matcher considers the
-    # more specific ``/{session_id}/stream`` path alongside the existing
-    # ``/{session_id}`` detail route.
-    api_router.include_router(comprehension_sse_router)
 
     app.include_router(api_router)
 

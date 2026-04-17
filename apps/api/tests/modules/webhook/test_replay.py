@@ -42,15 +42,23 @@ class TestReplay:
         async with replay_session_factory() as s:
             event = await repository.create_event(
                 s,
-                delivery_id="replay-opened",
-                event_type="pull_request",
-                action="opened",
+                delivery_id="replay-install-created",
+                event_type="installation",
+                action="created",
                 github_installation_id=12345678,
                 payload={
-                    "action": "opened",
-                    "installation": {"id": 12345678},
-                    "pull_request": {"number": 1},
-                    "repository": {"full_name": "a/b"},
+                    "action": "created",
+                    "installation": {
+                        "id": 12345678,
+                        "account": {"login": "testorg", "id": 99999, "type": "Organization"},
+                        "repository_selection": "all",
+                        "app_slug": "helprs",
+                        "target_type": "Organization",
+                        "permissions": {"pull_requests": "read"},
+                        "events": ["pull_request"],
+                        "suspended_at": None,
+                    },
+                    "sender": {"login": "admin", "id": 1},
                 },
             )
             event_id = event.id
