@@ -147,17 +147,6 @@ type StreamJsonEvent =
   | { type: 'stream_event' }
   | { type: string }
 
-function normalizeToolResultContent(content: ContentBlock['content']): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .filter((c) => c.type === 'text' && typeof c.text === 'string')
-      .map((c) => c.text)
-      .join('\n')
-  }
-  return ''
-}
-
 /**
  * Parse a Claude Code stream-json line into a structured StreamMessage.
  *
@@ -182,26 +171,10 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
       const blocks: ContentBlockData[] = []
 
       for (const block of content) {
-        switch (block.type) {
-          case 'text':
-            if (typeof block.text === 'string') {
-              blocks.push({ type: 'text', text: block.text })
-            }
-            break
-          case 'thinking':
-            if (typeof block.text === 'string') {
-              blocks.push({ type: 'thinking', text: block.text })
-            }
-            break
-          case 'tool_use':
-            blocks.push({
-              type: 'tool_use',
-              name: block.name ?? 'unknown',
-              input: block.input ?? {},
-              tool_use_id: block.tool_use_id,
-            })
-            break
-          // Other block types (tool_result on assistant is unusual) — skip
+        // Only extract text blocks — tool_use and thinking are internal
+        // activity that we don't display to users.
+        if (block.type === 'text' && typeof block.text === 'string') {
+          blocks.push({ type: 'text', text: block.text })
         }
       }
 
@@ -209,25 +182,9 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
       return { role: 'assistant', blocks }
     }
 
-    case 'user': {
-      const userEvent = event as UserEvent
-      const content = userEvent.message?.content ?? []
-      const blocks: ContentBlockData[] = []
-
-      for (const block of content) {
-        if (block.type === 'tool_result') {
-          blocks.push({
-            type: 'tool_result',
-            content: normalizeToolResultContent(block.content),
-            is_error: block.is_error ?? false,
-            tool_use_id: block.tool_use_id,
-          })
-        }
-      }
-
-      if (blocks.length === 0) return null
-      return { role: 'user', blocks }
-    }
+    // user events are tool_result blocks (internal activity) — hide them
+    case 'user':
+      return null
 
     case 'system': {
       const sys = event as SystemEvent

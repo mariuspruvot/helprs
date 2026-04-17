@@ -56,7 +56,7 @@ export default function CodeBlock({ code, language }: CodeBlockProps) {
       className="my-3 rounded-lg border overflow-hidden"
       style={{
         borderColor: 'rgba(255, 255, 255, 0.06)',
-        background: '#161b22',
+        background: '#1a1717',
       }}
     >
       {/* Header: language label + copy button */}
