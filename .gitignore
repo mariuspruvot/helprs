@@ -16,6 +16,7 @@ npm-debug.log*
 
 # Build outputs
 apps/web/dist/
+site/
 
 # Environment
 .env
