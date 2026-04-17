@@ -1,142 +1,148 @@
-# Architecture — Frontend (web)
+# Architecture -- Frontend (web)
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
 ## Executive Summary
 
-React SPA frontend for **helPRs** providing GitHub OAuth login, installation setup/settings, a marketing landing page, and the core interactive comprehension session UI with real-time SSE streaming, diff viewing, and scoring.
+React 19 single-page application providing the UI for helPRs. Feature-based module architecture with Zustand for state management, React Query for server state, and SSE for real-time container output streaming. The frontend is being adapted for skill selection and container-based result display.
 
 ## Technology Stack
 
 | Category | Technology | Version | Purpose |
 |----------|-----------|---------|---------|
-| Framework | React | 19.2 | UI library |
 | Language | TypeScript | 6.0 | Type-safe development |
-| Build | Vite | 8.0 | Dev server + bundler |
-| Styling | Tailwind CSS | 4.2 | Utility-first CSS |
-| State | Zustand | 5.0 | Lightweight state management |
-| Data Fetching | TanStack React Query | 5.97 | Server state + caching |
-| Routing | React Router | 7.14 | Client-side routing |
-| Markdown | react-markdown + remark-gfm | 10.1 | Chat message rendering |
-| Diff Viewer | react-diff-view + refractor | 3.3 | Unified diff display with syntax highlighting |
-| Panels | react-resizable-panels | 4.9 | Resizable split layout |
-| Testing | Vitest + Testing Library | 4.1 | Unit/component testing |
-| Linting | ESLint + typescript-eslint | 10.2 | Code quality |
+| Framework | React | 19 | UI framework |
+| Build | Vite | 8 | Dev server + bundler |
+| Styling | Tailwind CSS | 4 | Utility-first CSS |
+| Routing | react-router | 7 | Client-side routing |
+| State | Zustand | 5 | Client state management |
+| Server State | @tanstack/react-query | 5 | Data fetching + caching |
+| Diff Viewer | react-diff-view | 3.3 | PR diff rendering |
+| Markdown | react-markdown + remark-gfm | 10.1 | Message rendering |
+| Syntax Highlighting | refractor | 4.9 | Code block highlighting |
+| Resizable Panels | react-resizable-panels | 4.9 | Desktop split layout |
+| Testing | vitest + @testing-library/react | 4.1 / 16.3 | Test framework |
+| Linting | eslint + typescript-eslint | 10 / 8 | Code quality |
 
 ## Architecture Pattern
 
-**Feature-based architecture** with collocated components, state, and API logic per feature module.
-
 ```
 src/
-  app.tsx              -- Router + QueryClient provider
-  features/
-    auth/              -- OAuth flow + auth state
-    installation/      -- Setup wizard + settings CRUD
-    landing/           -- Marketing landing page
-    session/           -- Core comprehension session (17 components)
-    demo/              -- (placeholder)
-  shared/
-    api/client.ts      -- Authenticated fetch wrapper (apiFetch)
-    hooks/             -- useViewport, useReducedMotion, useSSE, parseSSE
-    theme/tokens.ts    -- Design tokens (dark theme, amber accent)
++-- main.tsx              # Entry point (StrictMode + App)
++-- app.tsx               # Routes + providers (QueryClient, BrowserRouter)
++-- index.css             # Global styles (Tailwind 4 + design tokens)
+|
++-- features/             # Feature modules (domain-organized)
+|   +-- auth/             # OAuth flow + auth state
+|   +-- landing/          # Marketing page
+|   +-- dashboard/        # Installation grid
+|   +-- installation/     # Credential setup + settings
+|   +-- session/          # Container result display + skill execution
+|       +-- hooks/        # Session-specific hooks
+|       +-- store.ts      # Zustand session UI state
+|
++-- shared/               # Cross-feature infrastructure
+    +-- api/client.ts     # apiFetch wrapper (auth + retry)
+    +-- components/       # AppShell layout
+    +-- hooks/            # useSSE, parseSSE, useViewport, useReducedMotion
+    +-- theme/tokens.ts   # Design system tokens
+    +-- types/            # Shared TypeScript types
+    +-- utils/            # Validation utilities
 ```
 
-## Routing
+## Routing Architecture
 
-| Path | Component | Guard | Description |
-|------|-----------|-------|-------------|
-| `/` | `LandingPage` | None | Marketing landing page |
-| `/auth/callback` | `OAuthCallback` | None | GitHub OAuth callback handler |
-| `/installations/:installationId/setup` | `SetupView` | `ProtectedRoute` | First-time setup wizard |
-| `/installations/:installationId/settings` | `SettingsView` | `ProtectedRoute` | Installation settings CRUD |
-| `/sessions/:sessionId` | `ChatView` | `ProtectedRoute` | Main comprehension session |
+```
+BrowserRouter
++-- /                          -> LandingPage (public)
++-- /auth/callback             -> OAuthCallback (public)
++-- ProtectedRoute             -> Requires isAuthenticated
+    +-- AppShell               -> Top nav + <Outlet>
+        +-- /dashboard         -> DashboardPage
+        +-- /installations/:id/setup    -> SetupView
+        +-- /installations/:id/settings -> SettingsView
+        +-- /sessions/:id      -> SessionView (container results)
+```
 
-`ProtectedRoute` checks `useAuthStore.isAuthenticated`; unauthenticated users are redirected to `{API_BASE}/api/v1/auth/github` (full-page OAuth redirect). Return URL is preserved in `sessionStorage`.
+**Auth flow:**
+
+1. `ProtectedRoute` checks `useAuthStore.isAuthenticated`
+2. If false: saves `returnUrl` to sessionStorage, redirects to GitHub OAuth
+3. `OAuthCallback` receives `?access_token=`, calls `GET /auth/me`, stores user
+4. Navigates to saved `returnUrl` or `/dashboard`
 
 ## State Management
 
 ### Zustand Stores
 
-#### `useAuthStore`
+**`useAuthStore`** -- Authentication state
 
 ```typescript
-{
-  accessToken: string | null
-  user: User | null
-  isAuthenticated: boolean
-  returnUrl: string | null
-}
+{ accessToken, user, isAuthenticated, returnUrl }
+// Actions: login(token), logout(), setUser(user), setReturnUrl(url)
 ```
 
-Actions: `login(token)`, `logout()`, `setUser(user)`, `setReturnUrl(url)`
+**`useSessionStore`** -- Session UI state
 
-#### `useSessionStore`
-
-```typescript
-{
-  session: SessionResponse | null
-  activeFileIndex: number
-  panelRatio: number              // 0.3..0.8, default 0.6
-  messages: ChatMessage[]
-  streamingQuestion: ChatMessage | null
-  streamingFeedback: ChatMessage | null
-  answerInputDisabled: boolean
-  sessionCompleted: boolean
-  reportedQuestions: number[]
-  feedbackSubmitted: boolean
-  highlightFileTrigger: number
-  diffCollapsed: boolean
-}
-```
-
-18 actions for session lifecycle, file navigation, layout, streaming, answer flow, scoring, and reporting.
+The session store is being adapted for container-based output. Currently manages streaming state, messages, and result display. *Exact shape will evolve as container module is implemented.*
 
 ### React Query
 
-Single query: `['session', sessionId]` with `staleTime: 60s`, custom retry (no retry on 4xx, max 2 on 5xx).
+Single query: `useSession(sessionId)` wrapping `GET /api/v1/sessions/:id`
 
-## API Integration
+## Real-time Streaming Architecture (Post-Pivot)
 
-### Transport: `apiFetch`
+The frontend receives SSE events relayed from ephemeral containers through the backend:
 
-Central authenticated fetch wrapper at `shared/api/client.ts`:
+```
+SessionView
+  +-- useSSE(url, handlers)
+        +-- EventSource(container relay endpoint)
+              +-- Container output events (streamed via API passthrough)
+              +-- done -> container completed
+              +-- error -> show error banner
+```
 
-- Base URL from `VITE_API_URL` (default: `http://localhost:8000`)
-- Auto-injects `Authorization: Bearer {token}` from auth store
-- On 401: silent refresh via `POST /api/v1/auth/refresh`, retry original request
-- On refresh failure: `logout()` + OAuth redirect
-- `credentials: 'include'` on all requests
-
-### SSE Transport
-
-Two mechanisms:
-
-1. **EventSource** (`useSSE` hook): For `GET /stream`. Token as `?access_token=` query param. Exponential backoff reconnection (500ms to 16s).
-2. **Fetch + ReadableStream** (`consumeSSEStream`): For `POST /answers`. Uses `AbortController` for cleanup.
+The exact SSE event types will be defined when the container module is implemented. The existing `useSSE` and `parseSSE` hooks will be reused for the passthrough stream.
 
 ## Responsive Layout Strategy
 
-| Viewport | Width | Layout | Implementation |
-|----------|-------|--------|----------------|
-| Desktop | >= 1100px | `SplitLayout` | Horizontal resizable split (60/40 default) via react-resizable-panels |
-| Tablet | 768-1099px | `TabbedLayout` | Tab bar switching Chat/Diff, ARIA tablist |
-| Mobile | < 768px | `MobileLayout` | Chat only with desktop suggestion banner |
+| Viewport | Breakpoint | Component | Behavior |
+|----------|-----------|-----------|----------|
+| Desktop | >= 1100px | `SplitLayout` | Resizable result/diff panels |
+| Tablet | 768-1099px | `TabbedLayout` | Result/Diff tabs with keyboard navigation |
+| Mobile | < 768px | `MobileLayout` | Results only + "open on desktop" banner |
 
-Viewport detection via `useViewport` hook (rAF-throttled resize listener).
+Detection: `useViewport()` hook with `matchMedia` listeners.
 
-## Context Providers (Session)
+## API Client (`shared/api/client.ts`)
 
-| Context | Type | Purpose |
-|---------|------|---------|
-| `DiffFilePathsContext` | `readonly string[]` | File paths from diff for code-link detection |
-| `CodeLinkActionsContext` | `{scrollTo, preview, clearPreview}` | Proxy to DiffViewer imperative handle |
-| `DiffViewerHandleRefContext` | `MutableRefObject<DiffViewerHandle>` | DiffViewer registration |
+Central `apiFetch` function:
 
-## Design System
+1. Reads JWT from `useAuthStore`
+2. Sets `Authorization: Bearer` header
+3. On 401: attempts `POST /auth/refresh` with httpOnly cookie
+4. On refresh success: retries original request with new token
+5. On refresh failure: clears store, redirects to GitHub OAuth
+6. All requests include `credentials: 'include'`
 
-- **Theme**: Dark background with amber accent (punctuation only)
-- **Typography**: Inter body + monospace headlines
-- **Design tokens**: Centralized in `shared/theme/tokens.ts`
-- **Style**: Raycast-inspired depth, macOS terminal blocks on landing page
-- **Syntax highlighting**: 10 languages registered via refractor (TS, JS, Python, Go, Rust, JSON, YAML, MD, JSX, TSX)
+## Session Persistence
+
+| Key | Storage | Purpose |
+|-----|---------|---------|
+| `helprs.returnUrl` | sessionStorage | Persist OAuth return URL |
+
+## Environment Variables (Vite)
+
+| Variable | Default | Used By |
+|----------|---------|---------|
+| `VITE_API_URL` | `http://localhost:8000` | `api/client.ts`, `ProtectedRoute` |
+| `VITE_GITHUB_APP_SLUG` | `helprs` | `InstallCTA`, `DashboardPage` |
+
+## Key Design Decisions
+
+1. **Feature-based organization**: each feature is self-contained with components, hooks, and state
+2. **Zustand over Redux**: simpler API, no boilerplate, sufficient for this app's complexity
+3. **SSE passthrough**: frontend consumes the same SSE protocol, now backed by container relay instead of direct AI generation
+4. **Three responsive layouts**: separate components (not CSS-only) for each viewport
+5. **Path aliases**: `@/*` maps to `./src/*` via tsconfig + Vite

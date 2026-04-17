@@ -1,149 +1,160 @@
 # Source Tree Analysis
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
-## Annotated Directory Tree
+## Repository Structure
 
 ```
-helprs/                              # Project root (monorepo)
-├── apps/
-│   ├── api/                         # Part: api (FastAPI Backend)
-│   │   ├── src/helprs/
-│   │   │   ├── main.py              # ★ Entry point — create_app() factory
-│   │   │   ├── core/
-│   │   │   │   ├── config.py        # Settings (pydantic-settings, .env)
-│   │   │   │   ├── database.py      # Async engine + session factory
-│   │   │   │   ├── dependencies.py  # DI: get_db, get_current_user, get_settings
-│   │   │   │   ├── middleware.py     # Request logging middleware
-│   │   │   │   └── security.py      # JWT creation/validation, Fernet encryption
-│   │   │   ├── modules/
-│   │   │   │   ├── identity/        # GitHub OAuth + user management
-│   │   │   │   │   ├── router.py    # /auth/* endpoints
-│   │   │   │   │   ├── service.py   # OAuth flow, token management
-│   │   │   │   │   ├── models.py    # GitHubUser model
-│   │   │   │   │   └── schemas.py   # UserResponse, TokenResponse
-│   │   │   │   ├── installation/    # GitHub App installation management
-│   │   │   │   │   ├── router.py    # /installations/* endpoints
-│   │   │   │   │   ├── service.py   # BYOK, suppression labels
-│   │   │   │   │   ├── models.py    # Installation, BYOKConfig models
-│   │   │   │   │   └── schemas.py   # InstallationResponse, BYOKRequest
-│   │   │   │   ├── webhook/         # GitHub webhook processing
-│   │   │   │   │   ├── router.py    # /webhooks/github endpoint
-│   │   │   │   │   ├── service.py   # Event dispatch, crash-replay, reaper
-│   │   │   │   │   ├── models.py    # WebhookEvent model
-│   │   │   │   │   └── schemas.py   # Webhook DTOs
-│   │   │   │   ├── billing/         # Billing module (stub, removed per open-source pivot)
-│   │   │   │   └── comprehension/   # ★ Core feature — Socratic sessions (Clean Architecture)
-│   │   │   │       ├── domain/
-│   │   │   │       │   ├── entities.py       # Session, Question, Answer, Score dataclasses
-│   │   │   │       │   ├── value_objects.py   # SessionRole, SessionStatus, Verdict, Topic enums
-│   │   │   │       │   ├── interfaces.py      # Protocol: SessionRepository, LLMProvider
-│   │   │   │       │   └── services.py        # estimate_question_count, derive_verdict
-│   │   │   │       ├── application/
-│   │   │   │       │   ├── commands.py        # StartSessionCommand
-│   │   │   │       │   ├── queries.py         # GetSessionQuery, GetSessionResult
-│   │   │   │       │   └── handlers.py        # StartSessionHandler, GetSessionHandler
-│   │   │   │       ├── infrastructure/
-│   │   │   │       │   ├── models.py          # Session, Question, Answer, Score ORM models
-│   │   │   │       │   ├── repositories.py    # SqlAlchemySessionRepository
-│   │   │   │       │   ├── agents.py          # PydanticAILLMProvider (Claude Sonnet)
-│   │   │   │       │   ├── github_diff.py     # Diff fetching (streaming, 1MB cap)
-│   │   │   │       │   └── diff_refs.py       # Diff parsing, file-ref extraction
-│   │   │   │       └── presentation/
-│   │   │   │           ├── routers.py         # GET session, POST report, POST feedback
-│   │   │   │           ├── sse.py             # ★ SSE streaming: GET /stream, POST /answers
-│   │   │   │           ├── schemas.py         # SessionResponse, ScoreResponse
-│   │   │   │           ├── dependencies.py    # get_llm_provider factory
-│   │   │   │           └── answer_pubsub.py   # In-process ephemeral text registry
-│   │   │   └── admin/
-│   │   │       └── views.py          # SQLAdmin panel views
-│   │   ├── tests/                    # Mirrors modules/ structure
-│   │   │   └── modules/
-│   │   │       ├── identity/
-│   │   │       ├── installation/
-│   │   │       ├── webhook/
-│   │   │       └── comprehension/
-│   │   ├── alembic/                  # DB migrations
-│   │   │   └── versions/             # 9 migration files
-│   │   ├── pyproject.toml            # Python project config (uv, ruff, pytest)
-│   │   └── alembic.ini               # Alembic config
-│   │
-│   └── web/                          # Part: web (React Frontend)
-│       ├── src/
-│       │   ├── app.tsx               # ★ Entry point — Router + QueryClient
-│       │   ├── features/
-│       │   │   ├── auth/             # GitHub OAuth flow
-│       │   │   │   ├── OAuthCallback.tsx   # OAuth return handler
-│       │   │   │   ├── ProtectedRoute.tsx  # Auth guard
-│       │   │   │   └── store.ts            # useAuthStore (Zustand)
-│       │   │   ├── installation/     # Setup wizard + settings
-│       │   │   │   ├── SetupView.tsx       # 3-step setup wizard
-│       │   │   │   └── SettingsView.tsx    # BYOK + labels CRUD
-│       │   │   ├── landing/          # Marketing landing page
-│       │   │   │   ├── LandingPage.tsx     # Hero, how-it-works, BYOK, CTA
-│       │   │   │   └── InstallCTA.tsx      # GitHub App install button
-│       │   │   ├── session/          # ★ Core feature — 17 components
-│       │   │   │   ├── ChatView.tsx        # Top-level session page
-│       │   │   │   ├── ChatPanel.tsx       # Message list + SSE + submit
-│       │   │   │   ├── ChatMessage.tsx     # Markdown chat bubble
-│       │   │   │   ├── AnswerInput.tsx     # Auto-resizing textarea
-│       │   │   │   ├── SessionHeader.tsx   # Header bar with progress
-│       │   │   │   ├── DiffViewer.tsx      # Unified diff viewer
-│       │   │   │   ├── SplitLayout.tsx     # Desktop resizable split
-│       │   │   │   ├── TabbedLayout.tsx    # Tablet tabbed layout
-│       │   │   │   ├── MobileLayout.tsx    # Mobile chat-only
-│       │   │   │   ├── CodeLink.tsx        # Inline file:line link
-│       │   │   │   ├── ScoreCard.tsx       # Comprehension score display
-│       │   │   │   ├── ReportButton.tsx    # Question report flag
-│       │   │   │   ├── SessionFeedback.tsx # Post-session thumbs + comment
-│       │   │   │   ├── store.ts            # useSessionStore (Zustand)
-│       │   │   │   ├── api.ts              # fetchSession
-│       │   │   │   ├── types.ts            # Wire types (hand-synced)
-│       │   │   │   └── refractorSetup.ts   # Syntax highlighting (10 langs)
-│       │   │   └── demo/              # (placeholder)
-│       │   └── shared/
-│       │       ├── api/client.ts      # apiFetch: authenticated fetch wrapper
-│       │       ├── hooks/
-│       │       │   ├── useViewport.ts      # Desktop/tablet/mobile detection
-│       │       │   ├── useReducedMotion.ts # prefers-reduced-motion
-│       │       │   ├── useSSE.ts           # EventSource with reconnection
-│       │       │   └── parseSSE.ts         # ReadableStream SSE parser
-│       │       └── theme/tokens.ts    # Design tokens (dark theme, amber)
-│       ├── package.json               # Dependencies + scripts
-│       └── tsconfig.json              # TypeScript config (ES2023, strict)
-│
-├── infra/                             # Part: infra (Docker/Coolify)
-│   ├── docker/
-│   │   ├── Dockerfile.api             # Multi-stage: dev + production
-│   │   ├── Dockerfile.web             # Multi-stage: dev + build + production
-│   │   └── nginx.conf                 # SPA fallback + asset caching
-│   └── coolify/
-│       └── docker-compose.prod.yml    # Production compose (3 services)
-│
-├── .github/workflows/
-│   ├── ci.yml                         # Lint + test + build (4 parallel + gated)
-│   └── deploy.yml                     # Build + push to GHCR + Coolify webhook
-│
-├── docker-compose.yml                 # Local dev compose
-├── docker-compose.override.yml        # RSA key injection (YAML block scalar)
-├── Makefile                           # dev, lint, test, build, migrate
-├── .env.example                       # Environment variable documentation
-├── CLAUDE.md                          # AI development context
-├── design/                            # Design assets
-└── challenge-me/                      # Side project / experiments
+helprs/                              # Monorepo root
++-- apps/
+|   +-- api/                         # FastAPI Backend (Python 3.12)
+|   |   +-- alembic/                 # Database migrations
+|   |   |   +-- env.py               # Migration runtime config
+|   |   |   +-- versions/            # Migration files
+|   |   +-- src/helprs/              # Application source
+|   |   |   +-- main.py              # Entry point -- create_app() factory
+|   |   |   +-- admin/               # SQLAdmin panel views
+|   |   |   |   +-- views.py         # Admin model views
+|   |   |   +-- core/                # Framework foundation
+|   |   |   |   +-- config.py        # Pydantic Settings (env vars)
+|   |   |   |   +-- database.py      # AsyncEngine + async_sessionmaker
+|   |   |   |   +-- dependencies.py  # FastAPI Depends (get_db, get_current_user)
+|   |   |   |   +-- exceptions.py    # Custom HTTP exceptions + handlers
+|   |   |   |   +-- middleware.py     # CORS, timing, Sentry middleware
+|   |   |   |   +-- security.py      # JWT encode/decode, Fernet encrypt/decrypt
+|   |   |   +-- modules/             # Domain modules
+|   |   |       +-- identity/        # GitHub OAuth + user management (flat)
+|   |   |       |   +-- router.py    # /api/v1/auth/* endpoints
+|   |   |       |   +-- service.py   # OAuth flow, token management
+|   |   |       |   +-- models.py    # GitHubUser SQLAlchemy model
+|   |   |       |   +-- schemas.py   # UserResponse, TokenResponse
+|   |   |       +-- installation/    # GitHub App installation management (flat)
+|   |   |       |   +-- router.py    # /api/v1/installations/* endpoints
+|   |   |       |   +-- service.py   # Credential validation, label management
+|   |   |       |   +-- models.py    # Installation, BYOKConfig models
+|   |   |       |   +-- schemas.py   # Installation request/response schemas
+|   |   |       +-- webhook/         # GitHub webhook processing (flat)
+|   |   |       |   +-- router.py    # /api/v1/webhooks/github endpoint
+|   |   |       |   +-- handlers.py  # Event-specific handlers
+|   |   |       |   +-- dispatcher.py # Event routing + retry logic
+|   |   |       |   +-- verification.py # HMAC signature verification
+|   |   |       |   +-- tasks.py     # Background task execution
+|   |   |       |   +-- repository.py # WebhookEvent CRUD
+|   |   |       |   +-- models.py    # WebhookEvent model
+|   |   |       +-- container/       # NEW: container orchestration (Coming in Phase 2)
+|   |   |           +-- router.py    # Session + SSE relay endpoints
+|   |   |           +-- service.py   # Container lifecycle management
+|   |   |           +-- orchestrator.py # Docker SDK integration
+|   |   |           +-- models.py    # ContainerSession model
+|   |   |           +-- schemas.py   # Request/response schemas
+|   |   +-- tests/                   # Test suite
+|   |   |   +-- conftest.py          # Sets env vars BEFORE imports
+|   |   |   +-- core/               # Core module tests
+|   |   |   +-- modules/
+|   |   |       +-- identity/       # Auth tests
+|   |   |       +-- installation/   # Installation tests
+|   |   |       +-- webhook/        # Webhook tests
+|   |   |       +-- container/      # Container tests (Coming in Phase 2)
+|   |   +-- pyproject.toml          # Project config (uv, ruff, pytest)
+|   |
+|   +-- web/                         # React Frontend (TypeScript)
+|       +-- src/
+|       |   +-- main.tsx             # Entry point -- ReactDOM.createRoot
+|       |   +-- app.tsx              # App component -- routes + providers
+|       |   +-- index.css            # Global styles (Tailwind 4 + custom tokens)
+|       |   +-- features/            # Feature modules
+|       |   |   +-- auth/            # OAuth flow + auth state
+|       |   |   |   +-- store.ts     # Zustand auth store
+|       |   |   |   +-- OAuthCallback.tsx
+|       |   |   |   +-- ProtectedRoute.tsx
+|       |   |   +-- landing/         # Marketing page
+|       |   |   |   +-- LandingPage.tsx
+|       |   |   |   +-- InstallCTA.tsx
+|       |   |   +-- dashboard/       # Installation grid
+|       |   |   |   +-- DashboardPage.tsx
+|       |   |   +-- installation/    # Setup + settings views
+|       |   |   |   +-- SetupView.tsx
+|       |   |   |   +-- SettingsView.tsx
+|       |   |   +-- session/         # Container result display (adapting)
+|       |   |       +-- store.ts     # Zustand session UI state
+|       |   |       +-- hooks/       # Session-specific hooks
+|       |   +-- shared/              # Shared infrastructure
+|       |       +-- api/client.ts    # apiFetch wrapper (auth, retry, refresh)
+|       |       +-- components/
+|       |       |   +-- AppShell.tsx  # Top nav bar + layout wrapper
+|       |       +-- hooks/
+|       |       |   +-- useSSE.ts    # EventSource wrapper
+|       |       |   +-- parseSSE.ts  # SSE stream consumer
+|       |       |   +-- useViewport.ts
+|       |       |   +-- useReducedMotion.ts
+|       |       +-- theme/tokens.ts  # Design system tokens
+|       |       +-- types/
+|       |       +-- utils/
+|       +-- package.json
+|       +-- tsconfig.json
+|       +-- vite.config.ts
+|       +-- nginx.conf               # Production static file serving
+|
++-- skills/                          # Skill definitions (Coming in Phase 2)
+|   +-- challenge-me/                # Socratic quiz on PR changes
+|   +-- code-review/                 # Multi-layer adversarial code review
+|   +-- security-audit/              # Vulnerability scan on diff
+|   +-- doc-generator/               # Generate/update documentation
+|   +-- test-suggester/              # Propose missing test cases
+|
++-- infra/                           # Infrastructure
+|   +-- docker/
+|   |   +-- Dockerfile.api           # Python multi-stage (dev/production)
+|   |   +-- Dockerfile.web           # Node multi-stage (dev/build/production)
+|   |   +-- Dockerfile.claude-runner # Claude Code CLI container (Coming in Phase 2)
+|   |   +-- nginx.conf               # SPA routing + asset caching
+|   +-- coolify/
+|       +-- docker-compose.prod.yml  # Production compose (Coolify)
+|
++-- docs/                            # Project documentation
+|   +-- adr-001-claude-code-container-pivot.md  # Architecture decision record
+|   +-- project-overview.md
+|   +-- architecture-api.md
+|   +-- architecture-web.md
+|   +-- architecture-infra.md
+|   +-- integration-architecture.md
+|   +-- api-contracts-api.md
+|   +-- data-models-api.md
+|   +-- component-inventory-web.md
+|   +-- source-tree-analysis.md
+|   +-- development-guide.md
+|   +-- deployment-guide.md
+|   +-- index.md
+|
++-- .github/workflows/
+|   +-- ci.yml                       # CI: lint + test (4 parallel) + build gate
+|   +-- deploy.yml                   # CD: GHCR push + Coolify webhook
+|
++-- docker-compose.yml               # Dev environment (api:8000, web:5173, db:5432)
++-- docker-compose.override.yml      # Dev secrets (GitHub App private key)
++-- Makefile                         # dev, lint, test, build, migrate targets
++-- mkdocs.yml                       # Documentation site config
++-- CLAUDE.md                        # AI assistant instructions
++-- README.md                        # Project README
 ```
 
-## Critical Folders Summary
+## Critical Folders
 
-| Folder | Part | Purpose |
-|--------|------|---------|
-| `apps/api/src/helprs/core/` | api | Config, DB, DI, middleware, security |
-| `apps/api/src/helprs/modules/comprehension/` | api | Core business logic (Clean Architecture) |
-| `apps/api/src/helprs/modules/identity/` | api | GitHub OAuth + user management |
-| `apps/api/src/helprs/modules/installation/` | api | BYOK + installation config |
-| `apps/api/src/helprs/modules/webhook/` | api | Webhook processing + durability |
-| `apps/web/src/features/session/` | web | Core comprehension UI (17 components) |
-| `apps/web/src/features/auth/` | web | OAuth flow + auth state |
-| `apps/web/src/shared/` | web | API client, hooks, design tokens |
-| `infra/docker/` | infra | Dockerfiles + nginx config |
-| `.github/workflows/` | infra | CI/CD pipelines |
+| Path | Purpose | Key Files |
+|------|---------|-----------|
+| `apps/api/src/helprs/core/` | Framework foundation -- config, DB, auth, middleware | `config.py`, `security.py`, `dependencies.py` |
+| `apps/api/src/helprs/modules/container/` | Container orchestration (Phase 2) | `orchestrator.py`, `service.py`, `router.py` |
+| `apps/api/src/helprs/modules/webhook/` | GitHub webhook ingestion pipeline | `handlers.py`, `dispatcher.py`, `verification.py` |
+| `apps/web/src/features/session/` | Container result display UI | Adapting for container output |
+| `apps/web/src/shared/api/` | API client with auth token management | `client.ts` |
+| `skills/` | Skill definitions for Claude Code (Phase 2) | Per-skill agent folders |
+| `infra/docker/` | Container build definitions | `Dockerfile.api`, `Dockerfile.web`, `Dockerfile.claude-runner` |
+| `.github/workflows/` | CI/CD pipeline | `ci.yml`, `deploy.yml` |
+
+## Removed (Post-Pivot)
+
+| Path | Was | Reason |
+|------|-----|--------|
+| `apps/api/src/helprs/modules/comprehension/` | DDD module (domain/application/infrastructure/presentation) | Replaced by container-based skill execution |
+| `apps/api/src/helprs/modules/billing/` | Empty billing stub | Removed per open-source pivot |
+| `tests/modules/comprehension/` | Comprehension module tests | Module removed |

@@ -1,91 +1,141 @@
-# Component Inventory — Frontend (web)
+# Component Inventory -- Frontend
 
-> Auto-generated on 2026-04-13 by project documentation workflow (deep scan).
+> Auto-generated on 2026-04-17 (post-pivot rewrite)
 
-## Layout Components
+## Overview
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `SplitLayout` | `session/SplitLayout.tsx` | Desktop (>=1100px) horizontal resizable split via react-resizable-panels |
-| `TabbedLayout` | `session/TabbedLayout.tsx` | Tablet (768-1099px) tab bar switching Chat/Diff, ARIA tablist |
-| `MobileLayout` | `session/MobileLayout.tsx` | Mobile (<768px) chat-only with desktop suggestion banner |
+The frontend is being adapted for the container-based architecture. Core auth, dashboard, and installation components remain unchanged. The session feature will evolve to display container skill output instead of the previous Socratic Q&A flow.
 
-## Feature Components
+## App Shell & Routing
 
-### Auth
+### App.tsx
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `OAuthCallback` | `auth/OAuthCallback.tsx` | Reads `access_token` from query params, fetches user, navigates to return URL |
-| `ProtectedRoute` | `auth/ProtectedRoute.tsx` | Auth guard — redirects unauthenticated to GitHub OAuth |
+`apps/web/src/app.tsx`
 
-### Installation
+- **Props:** None (root component)
+- **State:** Module-level `QueryClient` singleton
+- **Providers:** `QueryClientProvider`, `BrowserRouter`
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `SetupView` | `installation/SetupView.tsx` | 3-step wizard: API key -> suppression labels -> completion |
-| `SettingsView` | `installation/SettingsView.tsx` | Full CRUD: BYOK status, update/delete key, manage labels |
+**Routes defined:**
 
-### Landing
+| Path | Component | Auth Required | Layout |
+|------|-----------|---------------|--------|
+| `/` | `LandingPage` | No | None |
+| `/auth/callback` | `OAuthCallback` | No | None |
+| `/dashboard` | `DashboardPage` | Yes | `AppShell` (via `ProtectedRoute`) |
+| `/installations/:installationId/setup` | `SetupView` | Yes | `AppShell` |
+| `/installations/:installationId/settings` | `SettingsView` | Yes | `AppShell` |
+| `/sessions/:sessionId` | `SessionView` | Yes | `AppShell` |
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `LandingPage` | `landing/LandingPage.tsx` | Hero, how-it-works, BYOK/privacy, problem statement, CTA, footer |
-| `InstallCTA` | `landing/InstallCTA.tsx` | Amber button linking to GitHub App install |
+---
 
-### Session (Core — 17 components)
+## Feature Modules
 
-| Component | Location | Props | Purpose |
-|-----------|----------|-------|---------|
-| `ChatView` | `session/ChatView.tsx` | `:sessionId` from URL | Top-level page. Error screens for 403/404/422/429. |
-| `ChatPanel` | `session/ChatPanel.tsx` | `session: SessionResponse` | Message list + SSE + answer submission |
-| `ChatMessage` | `session/ChatMessage.tsx` | `message: ChatMessageType` | Markdown bubble (react-markdown + remark-gfm) |
-| `AnswerInput` | `session/AnswerInput.tsx` | `disabled, sessionCompleted, onSubmit` | Auto-resizing textarea, Enter-to-submit |
-| `SessionHeader` | `session/SessionHeader.tsx` | `session: SessionResponse` | Fixed 48px header: repo, PR, role badge, progress |
-| `DiffViewer` | `session/DiffViewer.tsx` | `session, onClose?` | Unified diff with file nav, syntax highlighting, imperative API |
-| `CodeLink` | `session/CodeLink.tsx` | `file, line` | Inline file:line button — click scrolls, hover previews |
-| `ScoreCard` | `session/ScoreCard.tsx` | `score: ScoreData` | 4 dimension bars, verdict badge, gaps list, animated |
-| `ReportButton` | `session/ReportButton.tsx` | `sessionId, questionNumber, alreadyReported?` | Flag icon + reason selector dropdown (6 reasons) |
-| `SessionFeedback` | `session/SessionFeedback.tsx` | `sessionId, existingFeedback?` | Post-session thumbs up/down + optional comment |
+### auth/
 
-### Landing Internal Components (not exported)
+| File | Component/Export | Description |
+|------|-----------------|-------------|
+| `store.ts` | `useAuthStore` (Zustand) | Auth state: accessToken, user, isAuthenticated, returnUrl |
+| `OAuthCallback.tsx` | `OAuthCallback` | OAuth return handler |
+| `ProtectedRoute.tsx` | `ProtectedRoute` | Auth guard -> redirect to GitHub OAuth |
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `Section` | `landing/LandingPage.tsx` | Centered max-width section wrapper |
-| `Divider` | `landing/LandingPage.tsx` | Subtle horizontal rule |
-| `Overline` | `landing/LandingPage.tsx` | Amber uppercase section label |
-| `Terminal` | `landing/LandingPage.tsx` | macOS-style terminal block |
+### landing/
 
-### ChatView Internal Components (not exported)
+| File | Component | Description |
+|------|-----------|-------------|
+| `LandingPage.tsx` | `LandingPage` | Marketing page |
+| `InstallCTA.tsx` | `InstallCTA` | GitHub App install button |
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `ErrorScreen` | `session/ChatView.tsx` | Error display with optional retry |
-| `SessionSkeleton` | `session/ChatView.tsx` | Loading skeleton (header + panels) |
-| `LoadedLayout` | `session/ChatView.tsx` | Viewport detection + context providers |
+### dashboard/
+
+| File | Component | Description |
+|------|-----------|-------------|
+| `DashboardPage.tsx` | `DashboardPage` | Lists installations with status |
+
+### installation/
+
+| File | Component | Description |
+|------|-----------|-------------|
+| `SetupView.tsx` | `SetupView` | First-time credential setup wizard |
+| `SettingsView.tsx` | `SettingsView` | Edit credentials + suppression labels |
+
+### session/ -- Adapting for Container Output
+
+The session feature is being refactored to display container skill results. The existing chat/diff viewer infrastructure will be adapted:
+
+- **Skill selection UI** -- user picks which skill to run. *Coming in Phase 2.*
+- **Container output stream** -- real-time display of Claude Code output via SSE relay
+- **Result display** -- formatted output from completed skill execution
+
+Existing components that will be adapted or replaced:
+
+| Component | Current Purpose | Post-Pivot Status |
+|-----------|----------------|-------------------|
+| `ChatPanel.tsx` | Socratic Q&A chat | Will become container output display |
+| `DiffViewer.tsx` | PR diff viewer | Retained -- still useful for context |
+| `SessionHeader.tsx` | Progress bar + PR info | Adapted for skill execution status |
+| `SplitLayout.tsx` | Desktop resizable panels | Retained |
+| `TabbedLayout.tsx` | Tablet tabs | Retained |
+| `MobileLayout.tsx` | Mobile layout | Retained |
+| `ScoreCard.tsx` | Score breakdown | Removed (no more scoring) |
+| `AnswerInput.tsx` | Answer textarea | Removed (no more Q&A) |
+| `ReportButton.tsx` | Question report | Removed |
+| `SessionFeedback.tsx` | Thumbs up/down | May be retained for skill feedback |
+
+---
+
+## Shared Components
+
+| File | Component | Used By | Description |
+|------|-----------|---------|-------------|
+| `AppShell.tsx` | `AppShell` | `App.tsx` | Top nav bar (logo, Dashboard link, avatar, Logout) |
+
+---
+
+## State Management
+
+### Zustand Stores
+
+| Store | File | Key State | Used By |
+|-------|------|-----------|---------|
+| `useAuthStore` | `features/auth/store.ts` | `accessToken, user, isAuthenticated, returnUrl` | ProtectedRoute, OAuthCallback, AppShell, api/client.ts |
+| `useSessionStore` | `features/session/store.ts` | Session UI state (adapting for container output) | Session feature components |
+
+### React Query
+
+| Query | Endpoint | Hook | Used By |
+|-------|----------|------|---------|
+| Session | `GET /api/v1/sessions/:id` | `useSession(sessionId)` | `SessionView` |
+
+---
+
+## API Client Layer
+
+### `apiFetch` (shared/api/client.ts)
+
+Central fetch wrapper with:
+
+- Automatic `Authorization: Bearer` header from auth store
+- 401 retry with token refresh
+- Force re-auth redirect on refresh failure
+- `credentials: 'include'` on all requests
+
+---
 
 ## Shared Hooks
 
-| Hook | Location | Purpose |
-|------|----------|---------|
-| `useViewport` | `shared/hooks/useViewport.ts` | Returns `desktop` / `tablet` / `mobile`. Breakpoints: 1100px, 768px. rAF-throttled. |
-| `useReducedMotion` | `shared/hooks/useReducedMotion.ts` | Tracks `prefers-reduced-motion: reduce` |
-| `useSSE` | `shared/hooks/useSSE.ts` | EventSource wrapper with exponential backoff reconnection |
-| `parseSSE` / `consumeSSEStream` | `shared/hooks/parseSSE.ts` | Async SSE byte-stream parser for fetch ReadableStream |
+| Hook | File | Purpose |
+|------|------|---------|
+| `useSSE` | `shared/hooks/useSSE.ts` | EventSource wrapper (will be reused for container output relay) |
+| `parseSSE` | `shared/hooks/parseSSE.ts` | SSE stream consumer |
+| `useViewport` | `shared/hooks/useViewport.ts` | Responsive breakpoint detection |
+| `useReducedMotion` | `shared/hooks/useReducedMotion.ts` | Accessibility hook |
 
-## Shared Utilities
+---
 
-| Module | Location | Purpose |
-|--------|----------|---------|
-| `apiFetch` | `shared/api/client.ts` | Authenticated fetch wrapper with auto-refresh |
-| `tokens` | `shared/theme/tokens.ts` | Design tokens: colors, spacing, radius, typography |
-| `refractorSetup` | `session/refractorSetup.ts` | 10 languages for syntax highlighting |
+## Environment Variables (Vite)
 
-## Context Providers
-
-| Context | Type | Purpose |
-|---------|------|---------|
-| `DiffFilePathsContext` | `readonly string[]` | File paths from diff for code-link detection |
-| `CodeLinkActionsContext` | `{scrollTo, preview, clearPreview}` | Proxy to DiffViewer imperative handle |
-| `DiffViewerHandleRefContext` | `MutableRefObject<DiffViewerHandle>` | DiffViewer registration |
+| Variable | Default | Used By |
+|----------|---------|---------|
+| `VITE_API_URL` | `http://localhost:8000` | `api/client.ts`, `ProtectedRoute` |
+| `VITE_GITHUB_APP_SLUG` | `helprs` | `InstallCTA`, `DashboardPage` |
