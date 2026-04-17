@@ -47,6 +47,7 @@ infra/
 - **Container orchestration**: `container` module manages ephemeral Docker lifecycle, credential injection, result relay
 - **Skills as agents**: each skill is a self-contained folder with workflow definitions, mounted into containers
 - **SSE passthrough**: backend relays container output to frontend (no AI response generation in backend)
+- **Conversation UI**: frontend renders session output as a structured conversation with markdown (react-markdown + remark-gfm), syntax highlighting (shiki with JS regex engine), diff coloring, and collapsible tool_use/thinking blocks. Components: `ConversationOutput` (scroll container) -> `MessageBlock` (role dispatch) -> `MarkdownContent` / `CodeBlock` / `ToolUseBlock` / `ThinkingBlock`. Data flows as `StreamMessage[]` (structured content blocks) instead of flat text lines.
 - **Session persistence**: stream-json events are batch-persisted to `session_events` table (JSONB) during SSE streaming via `stream_and_persist()`. Completed sessions can be replayed from `GET /sessions/{id}/events`. The streaming pipeline is layered: `stream_events()` (raw tuples) -> `stream_and_persist()` (SSE + DB writes) or `stream_output()` (SSE only, for tests).
 - **Stream-json protocol**: containers emit NDJSON with 5 event types: `system` (init/retry), `assistant` (one event per content block — thinking/text/tool_use), `user` (tool_result), `result` (session end + metadata), `rate_limit_event`. The `result.result` field duplicates the last assistant text — only display assistant events, use result for status only. No `--include-partial-messages` flag, so no `stream_event` deltas.
 - **API prefix**: all routes under `/api/v1`
@@ -91,6 +92,7 @@ Required `.env` at repo root (see docker-compose.yml):
 ## Gotchas
 
 - Always run `make lint` before pushing — ruff + eslint must pass
+- **Shiki in tests**: any test rendering session components must mock `./shiki` (highlighter, SHIKI_THEME, SUPPORTED_LANGS) to avoid loading real TextMate grammars in jsdom
 - **Debug SSE pipeline**: `claude -p "prompt" --output-format stream-json --verbose 2>/dev/null` captures raw stream-json to validate event parsing
 - DB migrations: `make migrate` inside Docker, or `cd apps/api && uv run alembic upgrade head` locally
 - Test conftest **must** set env vars before importing from `helprs.*`
