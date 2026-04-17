@@ -37,8 +37,18 @@ CONTAINER_TTL_SECONDS = 15 * 60
 # Base image for the claude-runner container
 CLAUDE_RUNNER_IMAGE = "helprs/claude-runner:latest"
 
-# Path where skills are located on the host
-SKILLS_BASE_PATH = Path(__file__).resolve().parents[5] / "skills"
+# Path where skills are located inside THIS container (for validation).
+# In Docker: /app/skills. Locally: repo root relative to this file.
+_LOCAL_SKILLS_PATH = Path(__file__).resolve().parents[5] / "skills"
+_DOCKER_SKILLS_PATH = Path("/app/skills")
+SKILLS_BASE_PATH = _DOCKER_SKILLS_PATH if _DOCKER_SKILLS_PATH.exists() else _LOCAL_SKILLS_PATH
+
+# Host path for skills — needed for Docker-in-Docker volume mounts.
+# The API container can't use its own /app/skills path as a bind mount source
+# for child containers; Docker needs the HOST filesystem path.
+import os
+
+SKILLS_HOST_PATH = os.environ.get("SKILLS_HOST_PATH", str(SKILLS_BASE_PATH))
 
 
 class DockerClient(Protocol):
@@ -111,8 +121,8 @@ class AioDockerClient:
                 "NetworkMode": "bridge",
             },
         }
-        container = await self._docker.containers.create_container(config)
-        return container["Id"]
+        container = await self._docker.containers.create(config)
+        return container.id
 
     async def start_container(self, container_id: str) -> None:
         container = await self._docker.containers.get(container_id)
@@ -238,8 +248,10 @@ async def start_container(
         "REPO_FULL_NAME": cs.repo_full_name,
     }
 
+    # Use HOST path for volume mount (Docker-in-Docker requires host paths)
+    host_skill_path = f"{SKILLS_HOST_PATH}/{cs.skill_name}"
     volumes = [
-        f"{skill_path}:/skills/{cs.skill_name}:ro",
+        f"{host_skill_path}:/skills/{cs.skill_name}:ro",
     ]
 
     labels = {
