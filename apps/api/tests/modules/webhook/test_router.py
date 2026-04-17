@@ -196,9 +196,9 @@ class TestWebhookPersistenceAndBackgroundDispatch:
             },
         )
 
-    async def test_pull_request_opened_is_persisted_and_ignored(self, app_client, webhook_secret, session_factory):
-        """pull_request.opened has no handler after the comprehension removal;
-        the event is persisted but marked ignored by the dispatcher."""
+    async def test_pull_request_opened_is_persisted_and_processed(self, app_client, webhook_secret, session_factory):
+        """pull_request.opened creates a container session via the handler;
+        the event is persisted and marked processed by the dispatcher."""
         delivery_id = _delivery_id()
         response = await self._post_pr(app_client, webhook_secret, action="opened", delivery_id=delivery_id)
         assert response.status_code == 200
@@ -210,7 +210,7 @@ class TestWebhookPersistenceAndBackgroundDispatch:
 
         assert row.event_type == "pull_request"
         assert row.action == "opened"
-        assert row.status == "ignored"
+        assert row.status == "processed"
         assert row.github_installation_id == 12345678
         assert row.processed_at is not None
 
