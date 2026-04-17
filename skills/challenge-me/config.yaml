@@ -1,0 +1,18 @@
+name: challenge-me
+description: "Socratic comprehension quiz -- probes whether the PR author truly understands their own changes"
+version: "1.0.0"
+
+# The skill needs full file context to ask questions about callers, dependencies,
+# and code surrounding the diff hunks.
+fetch_strategy: shallow_clone
+
+estimated_duration: "5-10 min"
+
+# Output is streamed token-by-token via SSE so the frontend renders incrementally.
+output_format: sse_stream
+
+tags:
+  - comprehension
+  - socratic
+  - quiz
+  - code-review-prep
