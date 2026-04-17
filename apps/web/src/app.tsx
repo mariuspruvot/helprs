@@ -4,7 +4,7 @@ import OAuthCallback from './features/auth/OAuthCallback'
 import ProtectedRoute from './features/auth/ProtectedRoute'
 import SetupView from './features/installation/SetupView'
 import SettingsView from './features/installation/SettingsView'
-import ChatView from './features/session/ChatView'
+import SessionView from './features/session/SessionView'
 import LandingPage from './features/landing/LandingPage'
 
 // Module-level singleton so the cache survives re-renders of <App />.
@@ -19,7 +19,7 @@ export default function App() {
           <Route path="/auth/callback" element={<OAuthCallback />} />
           <Route path="/installations/:installationId/setup" element={<ProtectedRoute><SetupView /></ProtectedRoute>} />
           <Route path="/installations/:installationId/settings" element={<ProtectedRoute><SettingsView /></ProtectedRoute>} />
-          <Route path="/sessions/:sessionId" element={<ProtectedRoute><ChatView /></ProtectedRoute>} />
+          <Route path="/session/:installationId/*" element={<ProtectedRoute><SessionView /></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
