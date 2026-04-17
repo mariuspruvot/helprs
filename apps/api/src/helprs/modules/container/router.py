@@ -114,13 +114,29 @@ async def get_container_session(
 
 
 @router.get("/sessions/{session_id}/stream")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def stream_container_output(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    offset: int = 0,
 ):
-    """SSE endpoint streaming container stdout/stderr."""
+    """SSE endpoint streaming container stdout/stderr.
+
+    Accepts an ``offset`` query parameter: the number of events to skip.
+    Clients should pass the last received event ``id`` so that reconnects
+    resume from where they left off instead of replaying the full log.
+
+    Also reads the ``Last-Event-ID`` header (sent automatically by
+    EventSource on native auto-reconnect) as a fallback when the query
+    parameter is absent or zero.
+    """
+    # EventSource auto-reconnect sends Last-Event-ID header, not query params.
+    if offset == 0:
+        last_event_id = request.headers.get("last-event-id", "")
+        if last_event_id.isdigit():
+            offset = int(last_event_id)
+
     cs = await get_session_or_404(db, session_id)
 
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
@@ -130,7 +146,7 @@ async def stream_container_output(
 
     async def _event_stream():
         try:
-            async for event in stream_output(docker, cs.container_id):
+            async for event in stream_output(docker, cs.container_id, offset=offset):
                 yield event
         finally:
             await docker.close()

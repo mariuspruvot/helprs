@@ -47,6 +47,7 @@ infra/
 - **Container orchestration**: `container` module manages ephemeral Docker lifecycle, credential injection, result relay
 - **Skills as agents**: each skill is a self-contained folder with workflow definitions, mounted into containers
 - **SSE passthrough**: backend relays container output to frontend (no AI response generation in backend)
+- **Stream-json protocol**: containers emit NDJSON with 5 event types: `system` (init/retry), `assistant` (one event per content block — thinking/text/tool_use), `user` (tool_result), `result` (session end + metadata), `rate_limit_event`. The `result.result` field duplicates the last assistant text — only display assistant events, use result for status only. No `--include-partial-messages` flag, so no `stream_event` deltas.
 - **API prefix**: all routes under `/api/v1`
 - **Admin panel**: SQLAdmin at `/admin`, configured in `admin/views.py`
 
@@ -87,6 +88,7 @@ Required `.env` at repo root (see docker-compose.yml):
 ## Gotchas
 
 - Always run `make lint` before pushing — ruff + eslint must pass
+- **Debug SSE pipeline**: `claude -p "prompt" --output-format stream-json --verbose 2>/dev/null` captures raw stream-json to validate event parsing
 - DB migrations: `make migrate` inside Docker, or `cd apps/api && uv run alembic upgrade head` locally
 - Test conftest **must** set env vars before importing from `helprs.*`
 - **Agent-readiness**: This repo must be fully understandable by a fresh Claude Code instance with no prior context. Keep docs and CLAUDE.md accurate.
