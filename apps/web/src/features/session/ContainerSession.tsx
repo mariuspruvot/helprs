@@ -12,6 +12,7 @@ import { useAuthStore } from '../auth/store'
 import {
   buildStreamUrl,
   createContainerSession,
+  sendMessage,
   stopContainerSession,
 } from './containerApi'
 import TerminalOutput from './TerminalOutput'
@@ -41,10 +42,13 @@ export default function ContainerSession({
   const [status, setStatus] = useState<ContainerStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
+  const [userInput, setUserInput] = useState('')
+  const [sending, setSending] = useState(false)
 
   const lineIdRef = useRef(0)
   const eventSourceRef = useRef<EventSource | null>(null)
   const mountedRef = useRef(true)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const appendLine = useCallback((text: string) => {
     if (!mountedRef.current) return
@@ -219,6 +223,33 @@ export default function ContainerSession({
     }
   }, [session, appendLine])
 
+  const handleSendMessage = useCallback(async () => {
+    if (!session || !userInput.trim() || sending) return
+    const content = userInput.trim()
+    setSending(true)
+    setUserInput('')
+    appendLine(`> ${content}`)
+    try {
+      await sendMessage(session.id, content)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to send'
+      appendLine(`[error] ${msg}`)
+    } finally {
+      setSending(false)
+      inputRef.current?.focus()
+    }
+  }, [session, userInput, sending, appendLine])
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        handleSendMessage()
+      }
+    },
+    [handleSendMessage],
+  )
+
   const isRunning = status === 'running' || status === 'starting'
   const isTerminal = status === 'completed' || status === 'failed' || status === 'stopped'
 
@@ -317,6 +348,41 @@ export default function ContainerSession({
       <div className="flex-1 min-h-0">
         <TerminalOutput lines={lines} isRunning={isRunning} />
       </div>
+
+      {/* Message input */}
+      {isRunning && (
+        <div
+          className="shrink-0 px-4 py-3 flex items-center gap-3 border-t"
+          style={{ borderColor: 'rgba(255, 255, 255, 0.06)', background: '#1a1717' }}
+        >
+          <span className="text-text-muted text-[13px] select-none">&gt;</span>
+          <input
+            ref={inputRef}
+            type="text"
+            data-testid="message-input"
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Type your answer..."
+            disabled={sending}
+            className="flex-1 bg-transparent text-text-primary text-[14px] font-mono outline-none placeholder:text-text-muted disabled:opacity-50"
+            autoFocus
+          />
+          <button
+            data-testid="send-button"
+            onClick={handleSendMessage}
+            disabled={sending || !userInput.trim()}
+            className="text-[12px] font-semibold px-3 py-1 rounded-[6px] transition-all cursor-pointer disabled:opacity-30"
+            style={{
+              color: '#E2A039',
+              background: 'rgba(226, 160, 57, 0.1)',
+              border: '1px solid rgba(226, 160, 57, 0.2)',
+            }}
+          >
+            {sending ? 'Sending...' : 'Send'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
