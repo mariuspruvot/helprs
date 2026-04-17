@@ -9,6 +9,8 @@ services:
     volumes:
       - ./apps/api/src:/app/src
       - ./apps/api/alembic:/app/alembic
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./skills:/app/skills:ro
     env_file: .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://helprs:helprs@db:5432/helprs
