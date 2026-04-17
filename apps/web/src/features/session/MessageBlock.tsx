@@ -9,10 +9,8 @@
  */
 
 import { memo } from 'react'
-import type { StreamMessage, ContentBlockData } from './containerTypes'
+import type { StreamMessage } from './containerTypes'
 import MarkdownContent from './MarkdownContent'
-import ThinkingBlock from './ThinkingBlock'
-import ToolUseBlock from './ToolUseBlock'
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
@@ -25,31 +23,18 @@ function formatDuration(ms: number): string {
 
 interface MessageBlockProps {
   message: StreamMessage
-  /** Tool results from subsequent user events, keyed by tool_use_id. */
-  toolResults: Map<string, ContentBlockData>
 }
 
-function AssistantMessage({ blocks, toolResults }: { blocks: ContentBlockData[]; toolResults: Map<string, ContentBlockData> }) {
+function AssistantMessage({ message }: { message: StreamMessage }) {
+  // Only render text blocks — tool_use and thinking are internal activity
+  const textBlocks = message.blocks.filter((b) => b.type === 'text')
+  if (textBlocks.length === 0) return null
+
   return (
     <div className="py-3">
-      {blocks.map((block, i) => {
-        switch (block.type) {
-          case 'text':
-            return <MarkdownContent key={i} text={block.text ?? ''} />
-          case 'thinking':
-            return <ThinkingBlock key={i} text={block.text ?? ''} />
-          case 'tool_use':
-            return (
-              <ToolUseBlock
-                key={i}
-                block={block}
-                result={block.tool_use_id ? toolResults.get(block.tool_use_id) : undefined}
-              />
-            )
-          default:
-            return null
-        }
-      })}
+      {textBlocks.map((block, i) => (
+        <MarkdownContent key={i} text={block.text ?? ''} />
+      ))}
     </div>
   )
 }
@@ -117,10 +102,10 @@ function ResultMessage({ message }: { message: StreamMessage }) {
   )
 }
 
-function MessageBlockInner({ message, toolResults }: MessageBlockProps) {
+function MessageBlockInner({ message }: MessageBlockProps) {
   switch (message.role) {
     case 'assistant':
-      return <AssistantMessage blocks={message.blocks} toolResults={toolResults} />
+      return <AssistantMessage message={message} />
     case 'user':
       // User messages with text blocks are user input (typed in the input bar)
       if (message.blocks.length > 0 && message.blocks[0].type === 'text') {

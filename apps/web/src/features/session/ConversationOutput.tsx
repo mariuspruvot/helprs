@@ -6,8 +6,8 @@
  * Preserves auto-scroll, running indicator, and accessible log role.
  */
 
-import { useEffect, useMemo, useRef } from 'react'
-import type { StreamMessage, ContentBlockData } from './containerTypes'
+import { useEffect, useRef } from 'react'
+import type { StreamMessage } from './containerTypes'
 import MessageBlock from './MessageBlock'
 
 interface ConversationOutputProps {
@@ -15,28 +15,9 @@ interface ConversationOutputProps {
   isRunning: boolean
 }
 
-/**
- * Build a map of tool_use_id -> tool_result block by scanning user messages.
- * This allows ToolUseBlock to display its paired result inline.
- */
-function buildToolResultsMap(messages: StreamMessage[]): Map<string, ContentBlockData> {
-  const map = new Map<string, ContentBlockData>()
-  for (const msg of messages) {
-    if (msg.role !== 'user') continue
-    for (const block of msg.blocks) {
-      if (block.type === 'tool_result' && block.tool_use_id) {
-        map.set(block.tool_use_id, block)
-      }
-    }
-  }
-  return map
-}
-
 export default function ConversationOutput({ messages, isRunning }: ConversationOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
-
-  const toolResults = useMemo(() => buildToolResultsMap(messages), [messages])
 
   function handleScroll() {
     const el = containerRef.current
@@ -58,37 +39,6 @@ export default function ConversationOutput({ messages, isRunning }: Conversation
       className="flex flex-col h-full"
       style={{ background: '#0D0D0D' }}
     >
-      {/* Header bar */}
-      <div
-        className="flex items-center gap-2 px-4 py-2 border-b"
-        style={{
-          borderColor: 'rgba(255, 255, 255, 0.06)',
-          background: '#111111',
-        }}
-      >
-        <div className="flex gap-1.5">
-          <span className="w-3 h-3 rounded-full" style={{ background: '#FF5F57' }} />
-          <span className="w-3 h-3 rounded-full" style={{ background: '#FEBC2E' }} />
-          <span className="w-3 h-3 rounded-full" style={{ background: '#28C840' }} />
-        </div>
-        <span
-          className="text-[12px] font-mono ml-2"
-          style={{ color: 'rgba(255, 255, 255, 0.4)' }}
-        >
-          helPRs session
-        </span>
-        {isRunning && (
-          <span
-            data-testid="conversation-running-indicator"
-            className="ml-auto text-[11px] font-mono flex items-center gap-1.5"
-            style={{ color: '#E2A039' }}
-          >
-            <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: '#E2A039' }} />
-            running
-          </span>
-        )}
-      </div>
-
       {/* Conversation body */}
       <div
         ref={containerRef}
@@ -103,7 +53,7 @@ export default function ConversationOutput({ messages, isRunning }: Conversation
           <p className="text-text-muted text-[13px] font-sans">No output yet.</p>
         )}
         {messages.map((message) => (
-          <MessageBlock key={message.id} message={message} toolResults={toolResults} />
+          <MessageBlock key={message.id} message={message} />
         ))}
         {isRunning && messages.length > 0 && (
           <span
