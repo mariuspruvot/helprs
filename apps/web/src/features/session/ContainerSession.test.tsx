@@ -129,12 +129,15 @@ describe('ContainerSession', () => {
     expect(screen.getAllByText(/challenge-me/).length).toBeGreaterThan(0)
 
     await waitFor(() => {
-      expect(mockedCreate).toHaveBeenCalledWith({
-        installation_id: defaultProps.installationId,
-        pr_number: 42,
-        repo_full_name: 'acme/helprs',
-        skill_name: 'challenge-me',
-      })
+      expect(mockedCreate).toHaveBeenCalledWith(
+        {
+          installation_id: defaultProps.installationId,
+          pr_number: 42,
+          repo_full_name: 'acme/helprs',
+          skill_name: 'challenge-me',
+        },
+        expect.any(AbortSignal),
+      )
     })
   })
 
