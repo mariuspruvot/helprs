@@ -229,17 +229,6 @@ export default function ContainerSession({
         const parsed = parseStreamMessage(event.data as string)
         if (parsed) {
           appendMessage(parsed)
-          // When we receive a result event, the session is done — close SSE
-          // and update status immediately. Don't wait for the SSE `done` event
-          // because the container may already be shutting down (causes 502 on send).
-          if (parsed.role === 'result') {
-            source.close()
-            eventSourceRef.current = null
-            setStatus(parsed.isError ? 'failed' : 'completed')
-            if (parsed.isError) {
-              setError('Session ended with error')
-            }
-          }
         }
       }
 
@@ -342,8 +331,18 @@ export default function ContainerSession({
     try {
       await sendMessage(session.id, content)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to send'
-      appendError(msg)
+      // 502 means the container is already gone — session ended between
+      // the last response and this send. Transition gracefully.
+      if (err instanceof Error && err.message.includes('502')) {
+        setStatus('completed')
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close()
+          eventSourceRef.current = null
+        }
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to send'
+        appendError(msg)
+      }
     } finally {
       setSending(false)
       inputRef.current?.focus()

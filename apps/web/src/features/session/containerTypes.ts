@@ -200,6 +200,10 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
       return null
     }
 
+    // Result events fire after each Claude turn in interactive sessions,
+    // NOT only at session end. Hide them entirely — the SSE `done` event
+    // handles the actual session-end transition. Errors are surfaced
+    // because they indicate a fatal failure.
     case 'result': {
       const res = event as ResultEvent
       if (res.is_error) {
@@ -207,20 +211,6 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
           role: 'result',
           blocks: [{ type: 'text', text: 'Session ended with error' }],
           isError: true,
-          totalCostUsd: res.total_cost_usd,
-          numTurns: res.num_turns,
-          durationMs: res.duration_ms,
-        }
-      }
-      // Success — only emit if we have metadata to show
-      if (res.num_turns !== undefined || res.duration_ms !== undefined) {
-        return {
-          role: 'result',
-          blocks: [],
-          isError: false,
-          totalCostUsd: res.total_cost_usd,
-          numTurns: res.num_turns,
-          durationMs: res.duration_ms,
         }
       }
       return null
