@@ -35,13 +35,17 @@ PROMPT_JSON=$(node -e "process.stdout.write(JSON.stringify(process.argv[1]))" "$
 FIFO=/tmp/claude-input
 mkfifo "$FIFO"
 
-# Feed the initial prompt, then keep the FIFO open for subsequent messages
-# from the container orchestrator (written via docker exec).
-{
-  echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":${PROMPT_JSON}}}"
-  # Keep stdin open -- the orchestrator sends follow-up messages here
-  cat "$FIFO"
-} | exec claude \
+# Keep a persistent write fd (fd 3) on the FIFO so that `cat` never sees EOF
+# between individual docker-exec writes. Each `echo ... > $FIFO` from the
+# orchestrator opens+writes+closes its own fd, but cat keeps reading because
+# fd 3 is still open. The fd closes naturally when the container is stopped.
+exec 3>"$FIFO"
+
+# Send the initial prompt via the persistent handle
+echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":${PROMPT_JSON}}}" >&3
+
+# cat reads from FIFO until ALL writers close (fd 3 + any exec writers)
+cat <"$FIFO" | exec claude \
     --input-format stream-json \
     --output-format stream-json \
     --verbose \

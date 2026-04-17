@@ -171,7 +171,7 @@ describe('ContainerSession', () => {
       expect(mockEventSources.length).toBeGreaterThan(0)
     })
 
-    expect(mockedBuildStreamUrl).toHaveBeenCalledWith('test-session-id', 'test-token')
+    expect(mockedBuildStreamUrl).toHaveBeenCalledWith('test-session-id', 'test-token', 0)
   })
 
   test('calls onBack when back button is clicked', async () => {

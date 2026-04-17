@@ -11,6 +11,7 @@ container's stdin via a FIFO. Output is streamed from stdout.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -137,21 +138,24 @@ class AioDockerClient:
 
     async def container_logs(self, container_id: str, follow: bool = False) -> AsyncIterator[str]:
         container = await self._docker.containers.get(container_id)
-        async for line in container.log(stdout=True, stderr=True, follow=follow):
+        # Only read stdout — Claude Code writes stream-json to stdout.
+        # stderr contains verbose/diagnostic output that duplicates events.
+        async for line in container.log(stdout=True, stderr=False, follow=follow):
             yield line
 
     async def write_to_container(self, container_id: str, data: str) -> None:
         """Write a message to the container's FIFO via docker exec.
 
         The entrypoint reads from /tmp/claude-input FIFO, so we write there.
+        Uses base64 encoding to safely pass arbitrary JSON through the shell
+        without risking interpretation of special characters ($, `, !, etc.).
         """
         container = await self._docker.containers.get(container_id)
+        encoded = base64.b64encode(data.encode()).decode()
         exec_obj = await container.exec(
-            cmd=["bash", "-c", f"echo {json.dumps(data)} > /tmp/claude-input"],
-            stdout=False,
-            stderr=False,
+            cmd=["sh", "-c", f"echo {encoded} | base64 -d > /tmp/claude-input"],
         )
-        await exec_obj.start()
+        await exec_obj.start(detach=True)
 
     async def wait_container(self, container_id: str) -> int:
         container = await self._docker.containers.get(container_id)
@@ -293,10 +297,49 @@ async def start_container(
 async def stream_output(
     docker: DockerClient,
     container_id: str,
+    offset: int = 0,
 ) -> AsyncIterator[str]:
-    """Async generator yielding container log lines as SSE events."""
-    async for line in docker.container_logs(container_id, follow=True):
-        yield f"data: {line}\n\n"
+    """Async generator yielding container log lines as SSE events.
+
+    Docker may split long stdout lines (e.g. stream-json tool_result
+    events with full file contents) across multiple log frames.  We
+    buffer chunks and only emit complete newline-delimited lines so
+    the frontend always receives valid, parseable JSON per SSE event.
+
+    Each event includes an incrementing ``id:`` field so that clients
+    can resume from the last received event via the ``offset`` query
+    parameter (number of events to skip).
+
+    When the container is quiet (Claude is thinking), the Docker log
+    stream produces no data.  We send SSE comments (``:``) every
+    ``KEEPALIVE_INTERVAL`` seconds to prevent idle-timeout disconnects.
+    """
+    keepalive_interval = 15.0
+    event_id = 0
+    buffer = ""
+
+    log_iter = docker.container_logs(container_id, follow=True).__aiter__()
+    while True:
+        try:
+            chunk = await asyncio.wait_for(log_iter.__anext__(), timeout=keepalive_interval)
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                event_id += 1
+                if event_id <= offset:
+                    continue
+                yield f"id: {event_id}\ndata: {line}\n\n"
+        except TimeoutError:
+            # No data from container — send SSE keepalive comment to
+            # prevent the HTTP connection from being closed by proxies
+            # or the browser.  SSE comments are silently ignored by
+            # EventSource clients.
+            yield ": keepalive\n\n"
+        except StopAsyncIteration:
+            break
 
 
 async def send_message(

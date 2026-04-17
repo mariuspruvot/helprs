@@ -45,85 +45,121 @@ export interface TerminalLine {
   id: number
   text: string
   timestamp: number
-  kind?: 'text' | 'tool' | 'system' | 'error' | 'user' | 'result'
+  kind?: 'text' | 'error' | 'status'
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code stream-json protocol (NDJSON, one JSON object per line)
+//
+// Without --include-partial-messages (our config), 5 top-level event types:
+//
+//   system     — lifecycle: init, api_retry, compact_boundary, plugin_install
+//   assistant  — one event per content block (thinking, text, tool_use).
+//                Each block is a separate event sharing the same message.id.
+//   user       — tool_result blocks and user input
+//   result     — final event; result field duplicates the last assistant text
+//   rate_limit_event — rate limit info
+//
+// With --include-partial-messages, a 6th type appears:
+//   stream_event — raw Claude API deltas (content_block_delta, etc.)
+//
+// See: https://code.claude.com/docs/en/headless (Stream responses)
+//      https://code.claude.com/docs/en/agent-sdk/streaming-output
+// ---------------------------------------------------------------------------
+
+interface ContentBlock {
+  type: string
+  text?: string
+}
+
+interface AssistantEvent {
+  type: 'assistant'
+  message: { content: ContentBlock[] }
+}
+
+interface SystemEvent {
+  type: 'system'
+  subtype: string
+  attempt?: number
+  max_retries?: number
+  error?: string
+}
+
+interface ResultEvent {
+  type: 'result'
+  subtype: string
+  is_error: boolean
+  result?: string
+  total_cost_usd?: number
+  num_turns?: number
+  duration_ms?: number
+}
+
+type StreamJsonEvent =
+  | AssistantEvent
+  | SystemEvent
+  | ResultEvent
+  | { type: 'user' }
+  | { type: 'rate_limit_event' }
+  | { type: 'stream_event' }
+  | { type: string }
+
 /**
- * Parse a Claude Code stream-json line into displayable text.
- * Returns null for events that should be hidden (internal system events).
+ * Parse a Claude Code stream-json line into displayable content.
+ *
+ * Returns null for events that should be hidden from the terminal.
+ * The result event is used for session-end signaling only — its `result`
+ * field duplicates the last assistant text and must NOT be displayed.
  */
 export function parseStreamEvent(raw: string): { text: string; kind: TerminalLine['kind'] } | null {
-  let event: Record<string, unknown>
+  let event: StreamJsonEvent
   try {
-    event = JSON.parse(raw)
+    event = JSON.parse(raw) as StreamJsonEvent
   } catch {
-    // Not JSON -- show as raw text
-    return { text: raw, kind: 'text' }
-  }
-
-  const type = event.type as string
-
-  // Assistant text messages
-  if (type === 'assistant') {
-    const message = event.message as Record<string, unknown> | undefined
-    const content = (message?.content ?? []) as Array<Record<string, unknown>>
-    const parts: string[] = []
-    for (const block of content) {
-      if (block.type === 'text' && typeof block.text === 'string') {
-        parts.push(block.text)
-      }
-      if (block.type === 'tool_use') {
-        const name = block.name as string
-        const input = block.input as Record<string, unknown> | undefined
-        const summary = input?.command ?? input?.pattern ?? input?.file_path ?? input?.query ?? ''
-        parts.push(`[tool] ${name}: ${summary}`)
-      }
-    }
-    if (parts.length === 0) return null
-    return { text: parts.join('\n'), kind: 'text' }
-  }
-
-  // Tool results (user turn with tool_result)
-  if (type === 'user') {
-    const message = event.message as Record<string, unknown> | undefined
-    const content = (message?.content ?? []) as Array<Record<string, unknown>>
-    for (const block of content) {
-      if (block.type === 'tool_result') {
-        // Don't show full tool results -- too verbose
-        return null
-      }
-    }
-    // Regular user message (e.g. the initial prompt)
+    // Not JSON — Docker log frame fragments or entrypoint plumbing.
     return null
   }
 
-  // Final result
-  if (type === 'result') {
-    const result = event.result as string | undefined
-    if (result) {
-      return { text: result, kind: 'result' }
+  switch (event.type) {
+    // Assistant content blocks — only display text blocks.
+    // thinking and tool_use blocks are internal activity.
+    case 'assistant': {
+      const content = (event as AssistantEvent).message?.content ?? []
+      const parts: string[] = []
+      for (const block of content) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          parts.push(block.text)
+        }
+      }
+      if (parts.length === 0) return null
+      return { text: parts.join('\n'), kind: 'text' }
     }
-    const isError = event.is_error as boolean
-    if (isError) {
-      return { text: `Session ended with error`, kind: 'error' }
+
+    // System events — surface API retries so the user knows why it's slow.
+    case 'system': {
+      const sys = event as SystemEvent
+      if (sys.subtype === 'api_retry') {
+        const msg = `API retry (attempt ${sys.attempt ?? '?'}/${sys.max_retries ?? '?'})`
+        return { text: msg, kind: 'status' }
+      }
+      // init, compact_boundary, plugin_install — hide
+      return null
     }
-    return null
+
+    // Result event — session-end signal only.
+    // The result.result field duplicates the last assistant text, so we
+    // intentionally do NOT display it.  Only surface errors.
+    case 'result': {
+      const res = event as ResultEvent
+      if (res.is_error) {
+        return { text: 'Session ended with error', kind: 'error' }
+      }
+      // Success — no display (avoids duplicating the last assistant text)
+      return null
+    }
+
+    // user, rate_limit_event, stream_event, unknown — hide
+    default:
+      return null
   }
-
-  // System events (init, rate_limit, task_progress)
-  if (type === 'system') {
-    const subtype = event.subtype as string | undefined
-    if (subtype === 'task_progress') {
-      const desc = event.description as string | undefined
-      if (desc) return { text: `... ${desc}`, kind: 'system' }
-    }
-    // Hide init, rate_limit, etc.
-    return null
-  }
-
-  // Rate limit events -- hide
-  if (type === 'rate_limit_event') return null
-
-  // Unknown -- show raw for debugging
-  return { text: raw, kind: 'text' }
 }
