@@ -16,6 +16,9 @@ import {
   stopContainerSession,
 } from './containerApi'
 import TerminalOutput from './TerminalOutput'
+import {
+  parseStreamEvent,
+} from './containerTypes'
 import type {
   ContainerSessionResponse,
   ContainerStatus,
@@ -50,13 +53,14 @@ export default function ContainerSession({
   const mountedRef = useRef(true)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const appendLine = useCallback((text: string) => {
+  const appendLine = useCallback((text: string, kind?: TerminalLine['kind']) => {
     if (!mountedRef.current) return
     lineIdRef.current += 1
     const line: TerminalLine = {
       id: lineIdRef.current,
       text,
       timestamp: Date.now(),
+      kind,
     }
     setLines((prev) => [...prev, line])
   }, [])
@@ -114,25 +118,14 @@ export default function ContainerSession({
         setStatus('running')
       })
 
-      // Default message event — container output lines
+      // Default message event — parse Claude Code stream-json
       source.onmessage = (event: MessageEvent) => {
         if (!mountedRef.current) return
-        appendLine(event.data as string)
-      }
-
-      // Typed events from the backend SSE stream
-      source.addEventListener('output', (event: MessageEvent) => {
-        if (!mountedRef.current) return
-        try {
-          const parsed = JSON.parse(event.data as string) as { text?: string }
-          if (parsed.text) {
-            appendLine(parsed.text)
-          }
-        } catch {
-          // Raw text fallback
-          appendLine(event.data as string)
+        const parsed = parseStreamEvent(event.data as string)
+        if (parsed) {
+          appendLine(parsed.text, parsed.kind)
         }
-      })
+      }
 
       source.addEventListener('status', (event: MessageEvent) => {
         if (!mountedRef.current) return

@@ -85,7 +85,23 @@ export default function TerminalOutput({ lines, isRunning }: TerminalOutputProps
           <p className="text-text-muted text-[13px]">No output yet.</p>
         )}
         {lines.map((line) => (
-          <div key={line.id} className="whitespace-pre-wrap break-words">
+          <div
+            key={line.id}
+            className="whitespace-pre-wrap break-words"
+            style={
+              line.kind === 'tool'
+                ? { color: '#6e6e73', fontSize: '12px' }
+                : line.kind === 'system'
+                  ? { color: '#6e6e73', fontSize: '12px', fontStyle: 'italic' }
+                  : line.kind === 'error'
+                    ? { color: '#ff6961' }
+                    : line.kind === 'user'
+                      ? { color: '#E2A039' }
+                      : line.kind === 'result'
+                        ? { color: '#E0E0E0', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }
+                        : undefined
+            }
+          >
             {line.text}
           </div>
         ))}
