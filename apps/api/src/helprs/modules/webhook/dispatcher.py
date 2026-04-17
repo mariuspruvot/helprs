@@ -16,6 +16,7 @@ from helprs.modules.webhook.handlers import (
     handle_installation_deleted,
     handle_installation_suspended,
     handle_installation_unsuspended,
+    handle_pull_request_opened,
 )
 
 logger = structlog.get_logger()
@@ -44,6 +45,7 @@ _HANDLERS: dict[tuple[str, str], WebhookHandler] = {
     ("installation", "deleted"): handle_installation_deleted,
     ("installation", "suspended"): handle_installation_suspended,
     ("installation", "unsuspended"): handle_installation_unsuspended,
+    ("pull_request", "opened"): handle_pull_request_opened,
 }
 
 
