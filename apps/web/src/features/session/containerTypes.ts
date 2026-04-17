@@ -45,7 +45,7 @@ export interface TerminalLine {
   id: number
   text: string
   timestamp: number
-  kind?: 'text' | 'tool' | 'system' | 'error' | 'user' | 'result'
+  kind?: 'text' | 'error' | 'user' | 'result'
 }
 
 /**
@@ -57,19 +57,16 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
   try {
     event = JSON.parse(raw)
   } catch {
-    // Not JSON — if it looks like a truncated JSON fragment (from Docker
-    // log frame splitting), suppress it.  Only show genuinely non-JSON
-    // lines (git clone output, entrypoint messages, etc.).
-    const trimmed = raw.trimStart()
-    if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('"')) {
-      return null
-    }
-    return { text: raw, kind: 'text' }
+    // Not JSON — suppress everything.  Non-JSON lines are either Docker
+    // log frame fragments or entrypoint plumbing (git clone, branch
+    // checkout, etc.).  Only the parsed conversation matters.
+    return null
   }
 
   const type = event.type as string
 
-  // Assistant text messages
+  // Assistant text messages — only show text blocks (the conversation).
+  // tool_use blocks are internal activity and should not be visible.
   if (type === 'assistant') {
     const message = event.message as Record<string, unknown> | undefined
     const content = (message?.content ?? []) as Array<Record<string, unknown>>
@@ -77,12 +74,6 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
     for (const block of content) {
       if (block.type === 'text' && typeof block.text === 'string') {
         parts.push(block.text)
-      }
-      if (block.type === 'tool_use') {
-        const name = block.name as string
-        const input = block.input as Record<string, unknown> | undefined
-        const summary = input?.command ?? input?.pattern ?? input?.file_path ?? input?.query ?? ''
-        parts.push(`[tool] ${name}: ${summary}`)
       }
     }
     if (parts.length === 0) return null
@@ -116,16 +107,8 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
     return null
   }
 
-  // System events (init, rate_limit, task_progress)
-  if (type === 'system') {
-    const subtype = event.subtype as string | undefined
-    if (subtype === 'task_progress') {
-      const desc = event.description as string | undefined
-      if (desc) return { text: `... ${desc}`, kind: 'system' }
-    }
-    // Hide init, rate_limit, etc.
-    return null
-  }
+  // System events — hide all (init, rate_limit, task_progress, etc.)
+  if (type === 'system') return null
 
   // Rate limit events -- hide
   if (type === 'rate_limit_event') return null
