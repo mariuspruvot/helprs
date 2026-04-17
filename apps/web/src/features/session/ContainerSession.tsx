@@ -51,9 +51,13 @@ export default function ContainerSession({
 
   const lineIdRef = useRef(0)
   const sseOffsetRef = useRef(0)
+  const reconnectCountRef = useRef(0)
   const eventSourceRef = useRef<EventSource | null>(null)
   const mountedRef = useRef(true)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const MAX_RECONNECTS = 5
+  const RECONNECT_BASE_DELAY_MS = 2000
 
   const appendLine = useCallback((text: string, kind?: TerminalLine['kind']) => {
     if (!mountedRef.current) return
@@ -73,6 +77,7 @@ export default function ContainerSession({
     const abortController = new AbortController()
     lineIdRef.current = 0
     sseOffsetRef.current = 0
+    reconnectCountRef.current = 0
     setLines([])
 
     async function init() {
@@ -111,6 +116,19 @@ export default function ContainerSession({
     }
 
     async function pollSessionStatus(sessionId: string) {
+      reconnectCountRef.current += 1
+      if (reconnectCountRef.current > MAX_RECONNECTS) {
+        setStatus('failed')
+        setError('Lost connection to session')
+        appendLine('[error] Lost connection after multiple retries.')
+        return
+      }
+
+      // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+      const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectCountRef.current - 1)
+      await new Promise((r) => setTimeout(r, delay))
+      if (!mountedRef.current) return
+
       try {
         const fresh = await getContainerSession(sessionId)
         if (!mountedRef.current) return
@@ -121,7 +139,6 @@ export default function ContainerSession({
           setError('Container failed')
           appendLine('[error] Container failed.')
         } else if (fresh.status === 'running') {
-          appendLine('[reconnecting] Stream dropped, container still running...')
           connectStream(sessionId)
         }
       } catch {
@@ -146,6 +163,8 @@ export default function ContainerSession({
       source.addEventListener('open', () => {
         if (!mountedRef.current) return
         setStatus('running')
+        // Connection succeeded — reset reconnect counter
+        reconnectCountRef.current = 0
       })
 
       // Default message event — parse Claude Code stream-json
