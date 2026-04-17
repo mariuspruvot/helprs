@@ -229,6 +229,17 @@ export default function ContainerSession({
         const parsed = parseStreamMessage(event.data as string)
         if (parsed) {
           appendMessage(parsed)
+          // When we receive a result event, the session is done — close SSE
+          // and update status immediately. Don't wait for the SSE `done` event
+          // because the container may already be shutting down (causes 502 on send).
+          if (parsed.role === 'result') {
+            source.close()
+            eventSourceRef.current = null
+            setStatus(parsed.isError ? 'failed' : 'completed')
+            if (parsed.isError) {
+              setError('Session ended with error')
+            }
+          }
         }
       }
 
