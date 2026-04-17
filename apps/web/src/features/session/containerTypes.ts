@@ -124,6 +124,8 @@ export function parseStreamEvent(raw: string): { text: string; kind: TerminalLin
   // Rate limit events -- hide
   if (type === 'rate_limit_event') return null
 
-  // Unknown -- show raw for debugging
-  return { text: raw, kind: 'text' }
+  // Hide all other internal/unknown event types (tool_use, tool_result,
+  // content_block_start/delta/stop, message_start/delta/stop, etc.)
+  // Only explicitly handled types above should reach the terminal.
+  return null
 }

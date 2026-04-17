@@ -11,6 +11,7 @@ container's stdin via a FIFO. Output is streamed from stdout.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -144,14 +145,15 @@ class AioDockerClient:
         """Write a message to the container's FIFO via docker exec.
 
         The entrypoint reads from /tmp/claude-input FIFO, so we write there.
+        Uses base64 encoding to safely pass arbitrary JSON through the shell
+        without risking interpretation of special characters ($, `, !, etc.).
         """
         container = await self._docker.containers.get(container_id)
+        encoded = base64.b64encode(data.encode()).decode()
         exec_obj = await container.exec(
-            cmd=["bash", "-c", f"echo {json.dumps(data)} > /tmp/claude-input"],
-            stdout=False,
-            stderr=False,
+            cmd=["sh", "-c", f"echo {encoded} | base64 -d > /tmp/claude-input"],
         )
-        await exec_obj.start()
+        await exec_obj.start(detach=True)
 
     async def wait_container(self, container_id: str) -> int:
         container = await self._docker.containers.get(container_id)
@@ -293,10 +295,20 @@ async def start_container(
 async def stream_output(
     docker: DockerClient,
     container_id: str,
+    offset: int = 0,
 ) -> AsyncIterator[str]:
-    """Async generator yielding container log lines as SSE events."""
+    """Async generator yielding container log lines as SSE events.
+
+    Each event includes an incrementing ``id:`` field so that clients can
+    resume from the last received event via the ``offset`` query parameter
+    (number of events to skip).
+    """
+    event_id = 0
     async for line in docker.container_logs(container_id, follow=True):
-        yield f"data: {line}\n\n"
+        event_id += 1
+        if event_id <= offset:
+            continue
+        yield f"id: {event_id}\ndata: {line}\n\n"
 
 
 async def send_message(
