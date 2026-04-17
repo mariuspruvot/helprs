@@ -1,10 +1,10 @@
 # Component Inventory -- Frontend
 
-> Auto-generated on 2026-04-17 (post-pivot rewrite)
+> Updated 2026-04-17 (post-cleanup)
 
 ## Overview
 
-The frontend is being adapted for the container-based architecture. Core auth, dashboard, and installation components remain unchanged. The session feature will evolve to display container skill output instead of the previous Socratic Q&A flow.
+The frontend is a lightweight React SPA for the container-based skill execution flow. It handles GitHub OAuth, installation management, skill selection, and real-time display of container output via SSE.
 
 ## App Shell & Routing
 
@@ -18,14 +18,13 @@ The frontend is being adapted for the container-based architecture. Core auth, d
 
 **Routes defined:**
 
-| Path | Component | Auth Required | Layout |
-|------|-----------|---------------|--------|
-| `/` | `LandingPage` | No | None |
-| `/auth/callback` | `OAuthCallback` | No | None |
-| `/dashboard` | `DashboardPage` | Yes | `AppShell` (via `ProtectedRoute`) |
-| `/installations/:installationId/setup` | `SetupView` | Yes | `AppShell` |
-| `/installations/:installationId/settings` | `SettingsView` | Yes | `AppShell` |
-| `/sessions/:sessionId` | `SessionView` | Yes | `AppShell` |
+| Path | Component | Auth Required |
+|------|-----------|---------------|
+| `/` | `LandingPage` | No |
+| `/auth/callback` | `OAuthCallback` | No |
+| `/installations/:installationId/setup` | `SetupView` | Yes (`ProtectedRoute`) |
+| `/installations/:installationId/settings` | `SettingsView` | Yes (`ProtectedRoute`) |
+| `/session/:installationId/*` | `SessionView` | Yes (`ProtectedRoute`) |
 
 ---
 
@@ -36,100 +35,70 @@ The frontend is being adapted for the container-based architecture. Core auth, d
 | File | Component/Export | Description |
 |------|-----------------|-------------|
 | `store.ts` | `useAuthStore` (Zustand) | Auth state: accessToken, user, isAuthenticated, returnUrl |
-| `OAuthCallback.tsx` | `OAuthCallback` | OAuth return handler |
-| `ProtectedRoute.tsx` | `ProtectedRoute` | Auth guard -> redirect to GitHub OAuth |
+| `OAuthCallback.tsx` | `OAuthCallback` | OAuth return handler -- exchanges code for token |
+| `ProtectedRoute.tsx` | `ProtectedRoute` | Auth guard, redirects to GitHub OAuth if unauthenticated |
 
 ### landing/
 
 | File | Component | Description |
 |------|-----------|-------------|
-| `LandingPage.tsx` | `LandingPage` | Marketing page |
+| `LandingPage.tsx` | `LandingPage` | Product landing page |
+| `LandingPage.test.tsx` | -- | Tests for LandingPage |
 | `InstallCTA.tsx` | `InstallCTA` | GitHub App install button |
-
-### dashboard/
-
-| File | Component | Description |
-|------|-----------|-------------|
-| `DashboardPage.tsx` | `DashboardPage` | Lists installations with status |
+| `InstallCTA.test.tsx` | -- | Tests for InstallCTA |
 
 ### installation/
 
 | File | Component | Description |
 |------|-----------|-------------|
-| `SetupView.tsx` | `SetupView` | First-time credential setup wizard |
+| `SetupView.tsx` | `SetupView` | Post-install credential setup wizard |
 | `SettingsView.tsx` | `SettingsView` | Edit credentials + suppression labels |
 
-### session/ -- Adapting for Container Output
+### session/ -- Container Skill Execution
 
-The session feature is being refactored to display container skill results. The existing chat/diff viewer infrastructure will be adapted:
+| File | Component | Description |
+|------|-----------|-------------|
+| `SessionView.tsx` | `SessionView` | Route component orchestrating SkillSelector and ContainerSession |
+| `SkillSelector.tsx` | `SkillSelector` | Displays available skills as cards (challenge-me, code-review, security-audit) |
+| `SkillSelector.test.tsx` | -- | Tests for SkillSelector |
+| `ContainerSession.tsx` | `ContainerSession` | Manages container lifecycle: create session, connect SSE, display output, stop |
+| `ContainerSession.test.tsx` | -- | Tests for ContainerSession |
+| `TerminalOutput.tsx` | `TerminalOutput` | Terminal-like renderer with macOS-style window chrome, auto-scroll |
+| `TerminalOutput.test.tsx` | -- | Tests for TerminalOutput |
+| `containerApi.ts` | `createSession`, `getSession`, `stopSession` | API client for container endpoints |
+| `containerTypes.ts` | `ContainerSessionRequest`, `ContainerSessionResponse`, `Skill`, `TerminalLine`, etc. | TypeScript types for container sessions |
 
-- **Skill selection UI** -- user picks which skill to run. *Coming in Phase 2.*
-- **Container output stream** -- real-time display of Claude Code output via SSE relay
-- **Result display** -- formatted output from completed skill execution
+### demo/
 
-Existing components that will be adapted or replaced:
-
-| Component | Current Purpose | Post-Pivot Status |
-|-----------|----------------|-------------------|
-| `ChatPanel.tsx` | Socratic Q&A chat | Will become container output display |
-| `DiffViewer.tsx` | PR diff viewer | Retained -- still useful for context |
-| `SessionHeader.tsx` | Progress bar + PR info | Adapted for skill execution status |
-| `SplitLayout.tsx` | Desktop resizable panels | Retained |
-| `TabbedLayout.tsx` | Tablet tabs | Retained |
-| `MobileLayout.tsx` | Mobile layout | Retained |
-| `ScoreCard.tsx` | Score breakdown | Removed (no more scoring) |
-| `AnswerInput.tsx` | Answer textarea | Removed (no more Q&A) |
-| `ReportButton.tsx` | Question report | Removed |
-| `SessionFeedback.tsx` | Thumbs up/down | May be retained for skill feedback |
+Empty feature directory (`.gitkeep` only). Reserved for future fixture-based demo flow.
 
 ---
 
-## Shared Components
+## Shared
 
-| File | Component | Used By | Description |
-|------|-----------|---------|-------------|
-| `AppShell.tsx` | `AppShell` | `App.tsx` | Top nav bar (logo, Dashboard link, avatar, Logout) |
+### api/
+
+| File | Export | Description |
+|------|--------|-------------|
+| `client.ts` | `apiFetch` | Central fetch wrapper with automatic `Authorization: Bearer` header, 401 retry with token refresh, force re-auth on failure |
+
+### components/
+
+Empty (`.gitkeep` only). No shared components currently.
 
 ---
 
 ## State Management
 
-### Zustand Stores
+### Zustand Store
 
 | Store | File | Key State | Used By |
 |-------|------|-----------|---------|
-| `useAuthStore` | `features/auth/store.ts` | `accessToken, user, isAuthenticated, returnUrl` | ProtectedRoute, OAuthCallback, AppShell, api/client.ts |
-| `useSessionStore` | `features/session/store.ts` | Session UI state (adapting for container output) | Session feature components |
+| `useAuthStore` | `features/auth/store.ts` | `accessToken, user, isAuthenticated, returnUrl` | ProtectedRoute, OAuthCallback, api/client.ts |
 
 ### React Query
 
-| Query | Endpoint | Hook | Used By |
-|-------|----------|------|---------|
-| Session | `GET /api/v1/sessions/:id` | `useSession(sessionId)` | `SessionView` |
-
----
-
-## API Client Layer
-
-### `apiFetch` (shared/api/client.ts)
-
-Central fetch wrapper with:
-
-- Automatic `Authorization: Bearer` header from auth store
-- 401 retry with token refresh
-- Force re-auth redirect on refresh failure
-- `credentials: 'include'` on all requests
-
----
-
-## Shared Hooks
-
-| Hook | File | Purpose |
-|------|------|---------|
-| `useSSE` | `shared/hooks/useSSE.ts` | EventSource wrapper (will be reused for container output relay) |
-| `parseSSE` | `shared/hooks/parseSSE.ts` | SSE stream consumer |
-| `useViewport` | `shared/hooks/useViewport.ts` | Responsive breakpoint detection |
-| `useReducedMotion` | `shared/hooks/useReducedMotion.ts` | Accessibility hook |
+Used via `QueryClientProvider` in App.tsx. No custom hooks currently defined -- queries are inline in components.
 
 ---
 
@@ -138,4 +107,4 @@ Central fetch wrapper with:
 | Variable | Default | Used By |
 |----------|---------|---------|
 | `VITE_API_URL` | `http://localhost:8000` | `api/client.ts`, `ProtectedRoute` |
-| `VITE_GITHUB_APP_SLUG` | `helprs` | `InstallCTA`, `DashboardPage` |
+| `VITE_GITHUB_APP_SLUG` | `helprs` | `InstallCTA` |
