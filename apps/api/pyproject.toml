@@ -19,6 +19,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.19.0",
     "slowapi>=0.1.9",
     "itsdangerous>=2.2.0",
+    "aiodocker>=0.23.0",
 ]
 
 [dependency-groups]
