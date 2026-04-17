@@ -22,8 +22,9 @@ from typing import TYPE_CHECKING, Protocol
 import structlog
 from sqlalchemy import select
 
+from helprs.core.database import get_db_context
 from helprs.core.exceptions import ExternalServiceError, NotFoundError
-from helprs.modules.container.models import ContainerSession, ContainerStatus
+from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -294,25 +295,17 @@ async def start_container(
     return cs
 
 
-async def stream_output(
+async def stream_events(
     docker: DockerClient,
     container_id: str,
-    offset: int = 0,
-) -> AsyncIterator[str]:
-    """Async generator yielding container log lines as SSE events.
+) -> AsyncIterator[tuple[int, str]]:
+    """Yield ``(event_id, raw_line)`` tuples from container log stream.
 
-    Docker may split long stdout lines (e.g. stream-json tool_result
-    events with full file contents) across multiple log frames.  We
-    buffer chunks and only emit complete newline-delimited lines so
-    the frontend always receives valid, parseable JSON per SSE event.
+    Handles Docker log frame buffering (long lines split across chunks),
+    newline splitting, and keepalive signaling.
 
-    Each event includes an incrementing ``id:`` field so that clients
-    can resume from the last received event via the ``offset`` query
-    parameter (number of events to skip).
-
-    When the container is quiet (Claude is thinking), the Docker log
-    stream produces no data.  We send SSE comments (``:``) every
-    ``KEEPALIVE_INTERVAL`` seconds to prevent idle-timeout disconnects.
+    Yields ``(0, "")`` as a sentinel for keepalive intervals (no data
+    from container for 15 seconds — Claude is thinking).
     """
     keepalive_interval = 15.0
     event_id = 0
@@ -329,17 +322,119 @@ async def stream_output(
                 if not line:
                     continue
                 event_id += 1
-                if event_id <= offset:
-                    continue
-                yield f"id: {event_id}\ndata: {line}\n\n"
+                yield (event_id, line)
         except TimeoutError:
-            # No data from container — send SSE keepalive comment to
-            # prevent the HTTP connection from being closed by proxies
-            # or the browser.  SSE comments are silently ignored by
-            # EventSource clients.
-            yield ": keepalive\n\n"
+            yield (0, "")
         except StopAsyncIteration:
             break
+
+
+async def stream_output(
+    docker: DockerClient,
+    container_id: str,
+    offset: int = 0,
+) -> AsyncIterator[str]:
+    """Yield SSE-formatted events without persistence.
+
+    Thin wrapper over :func:`stream_events` that formats tuples as SSE.
+    Used by tests and code paths that don't need DB persistence.
+    """
+    async for event_id, line in stream_events(docker, container_id):
+        if event_id == 0:
+            yield ": keepalive\n\n"
+            continue
+        if event_id <= offset:
+            continue
+        yield f"id: {event_id}\ndata: {line}\n\n"
+
+
+_PERSIST_BATCH_SIZE = 10
+
+
+async def stream_and_persist(
+    docker: DockerClient,
+    container_id: str,
+    session_id: UUID,
+    offset: int = 0,
+    batch_size: int = _PERSIST_BATCH_SIZE,
+) -> AsyncIterator[str]:
+    """Stream container output as SSE while persisting events to the DB.
+
+    Wraps :func:`stream_events`, yields the same SSE format as
+    :func:`stream_output`, but also batch-inserts events into the
+    ``session_events`` table via :func:`get_db_context`.
+
+    Events at or below *offset* are skipped for SSE output but still
+    persisted (they may not have been flushed before a prior disconnect).
+    Duplicate ``(session_id, event_id)`` pairs are silently ignored via
+    ``ON CONFLICT DO NOTHING``.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    pending: list[tuple[int, dict]] = []
+
+    async def _flush() -> None:
+        if not pending:
+            return
+        batch = pending[:]
+        pending.clear()
+        try:
+            async with get_db_context() as db:
+                stmt = pg_insert(SessionEvent.__table__).values(
+                    [{"session_id": session_id, "event_id": eid, "data": data} for eid, data in batch]
+                )
+                stmt = stmt.on_conflict_do_nothing(
+                    constraint="uq_session_events_session_event",
+                )
+                await db.execute(stmt)
+        except Exception:
+            await logger.aexception(
+                "event_persist_failed",
+                session_id=str(session_id),
+                batch_size=len(batch),
+            )
+
+    async for event_id, line in stream_events(docker, container_id):
+        if event_id == 0:
+            # Keepalive — flush pending if any
+            await _flush()
+            yield ": keepalive\n\n"
+            continue
+
+        # Parse to JSONB-safe dict
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            parsed = {"_raw": line}
+
+        pending.append((event_id, parsed))
+
+        if len(pending) >= batch_size:
+            await _flush()
+
+        if event_id <= offset:
+            continue
+        yield f"id: {event_id}\ndata: {line}\n\n"
+
+    # Final flush for remaining events
+    await _flush()
+
+
+# ---------------------------------------------------------------------------
+# Session event retrieval
+# ---------------------------------------------------------------------------
+
+
+async def get_session_events(
+    db: AsyncSession,
+    session_id: UUID,
+) -> list[SessionEvent]:
+    """Return all persisted events for a session, ordered by event_id."""
+    await get_session_or_404(db, session_id)
+    result = await db.execute(
+        select(SessionEvent).where(SessionEvent.session_id == session_id).order_by(SessionEvent.event_id)
+    )
+    return list(result.scalars().all())
 
 
 async def send_message(

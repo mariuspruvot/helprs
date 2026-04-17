@@ -85,3 +85,21 @@ class StopSessionResponse(BaseModel):
     id: uuid.UUID
     status: str
     message: str
+
+
+class SessionEventResponse(BaseModel):
+    """A single persisted stream-json event."""
+
+    model_config = {"from_attributes": True}
+
+    event_id: int
+    data: dict
+    created_at: datetime
+
+
+class SessionEventsListResponse(BaseModel):
+    """All persisted events for a session."""
+
+    session_id: uuid.UUID
+    events: list[SessionEventResponse]
+    total: int

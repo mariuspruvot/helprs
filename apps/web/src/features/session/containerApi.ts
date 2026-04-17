@@ -6,6 +6,7 @@ import { apiFetch, API_BASE } from '../../shared/api/client'
 import type {
   ContainerSessionRequest,
   ContainerSessionResponse,
+  SessionEventsListResponse,
   StopSessionResponse,
 } from './containerTypes'
 
@@ -77,6 +78,18 @@ export async function sendMessage(sessionId: string, content: string): Promise<v
   })
   if (!resp.ok) {
     throw new ContainerSessionError(resp.status, `Failed to send message: ${resp.status}`)
+  }
+}
+
+export async function getSessionEvents(sessionId: string): Promise<SessionEventsListResponse> {
+  const resp = await apiFetch(`/api/v1/containers/sessions/${sessionId}/events`)
+  if (!resp.ok) {
+    throw new ContainerSessionError(resp.status, `Failed to fetch session events: ${resp.status}`)
+  }
+  try {
+    return (await resp.json()) as SessionEventsListResponse
+  } catch {
+    throw new ContainerSessionError(resp.status, 'Malformed events response body')
   }
 }
 

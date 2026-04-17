@@ -4,7 +4,8 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from helprs.core.database import Base
@@ -47,3 +48,22 @@ class ContainerSession(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SessionEvent(Base):
+    """A single stream-json event persisted from a container session.
+
+    Stores raw NDJSON events (assistant, system, user, result) as JSONB
+    so completed sessions can be replayed from the database.
+    """
+
+    __tablename__ = "session_events"
+    __table_args__ = (UniqueConstraint("session_id", "event_id", name="uq_session_events_session_event"),)
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("container_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False)

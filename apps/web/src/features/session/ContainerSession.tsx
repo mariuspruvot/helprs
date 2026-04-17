@@ -13,11 +13,13 @@ import {
   buildStreamUrl,
   createContainerSession,
   getContainerSession,
+  getSessionEvents,
   sendMessage,
   stopContainerSession,
 } from './containerApi'
 import TerminalOutput from './TerminalOutput'
 import {
+  parseStoredEvent,
   parseStreamEvent,
 } from './containerTypes'
 import type {
@@ -32,6 +34,8 @@ interface ContainerSessionProps {
   prNumber: number
   skillName: string
   onBack: () => void
+  /** When set, loads an existing session instead of creating a new one. */
+  existingSessionId?: string
 }
 
 export default function ContainerSession({
@@ -40,6 +44,7 @@ export default function ContainerSession({
   prNumber,
   skillName,
   onBack,
+  existingSessionId,
 }: ContainerSessionProps) {
   const [session, setSession] = useState<ContainerSessionResponse | null>(null)
   const [lines, setLines] = useState<TerminalLine[]>([])
@@ -80,8 +85,38 @@ export default function ContainerSession({
     reconnectCountRef.current = 0
     setLines([])
 
+    async function loadStoredEvents(sessionId: string) {
+      try {
+        const resp = await getSessionEvents(sessionId)
+        for (const evt of resp.events) {
+          const parsed = parseStoredEvent(evt.data)
+          if (parsed) {
+            appendLine(parsed.text, parsed.kind)
+          }
+        }
+      } catch {
+        appendLine('[error] Failed to load session history.')
+      }
+    }
+
     async function init() {
       try {
+        // Load an existing session (history view) instead of creating a new one
+        if (existingSessionId) {
+          const existing = await getContainerSession(existingSessionId)
+          if (abortController.signal.aborted) return
+          setSession(existing)
+          setStatus(existing.status)
+
+          const isTerminalStatus = ['completed', 'failed', 'timeout', 'stopped'].includes(existing.status)
+          if (isTerminalStatus) {
+            await loadStoredEvents(existing.id)
+          } else if (existing.status === 'running') {
+            connectStream(existing.id)
+          }
+          return
+        }
+
         setStatus('starting')
         appendLine(`Starting ${skillName} for ${repoFullName}#${prNumber}...`)
 
@@ -135,9 +170,11 @@ export default function ContainerSession({
         setStatus(fresh.status)
         if (fresh.status === 'completed') {
           appendLine('Session completed.')
+          await loadStoredEvents(sessionId)
         } else if (fresh.status === 'failed') {
           setError('Container failed')
           appendLine('[error] Container failed.')
+          await loadStoredEvents(sessionId)
         } else if (fresh.status === 'running') {
           connectStream(sessionId)
         }
@@ -248,7 +285,7 @@ export default function ContainerSession({
         eventSourceRef.current = null
       }
     }
-  }, [installationId, repoFullName, prNumber, skillName, appendLine])
+  }, [installationId, repoFullName, prNumber, skillName, existingSessionId, appendLine])
 
   const handleStop = useCallback(async () => {
     if (!session) return
