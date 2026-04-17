@@ -255,7 +255,7 @@ class TestContainerSessionLifecycle:
                 db=db,
                 session_id=cs.id,
                 docker=_fake_docker,
-                anthropic_api_key="sk-ant-test",
+                claude_oauth_token="test-oauth-token",
                 github_token="gho_test",
                 skills_base_path=skills_path,
             )

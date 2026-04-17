@@ -25,13 +25,18 @@ PROMPT="${PROMPT//\{\{PR_DESCRIPTION\}\}/$PR_DESCRIPTION}"
 PROMPT="${PROMPT//\{\{FILE_LIST\}\}/$FILE_LIST}"
 PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
 
+# CLAUDE_CODE_OAUTH_TOKEN is read automatically by Claude Code CLI
+# (set by the container orchestrator from the user's stored token)
+
 # Run Claude Code in non-interactive print mode
-# --dangerously-skip-permissions: no human to approve tool use in a container
 # --print: non-interactive, streams output to stdout
-# -p is implicit when prompt is provided after --print
+# --dangerously-skip-permissions: no human to approve tool use in a container
+# --output-format stream-json: for SSE passthrough to the frontend
+# --max-turns 15: prevent runaway sessions
+# --max-budget-usd 1.00: cost safety net (only applies if API key is used instead)
 exec claude \
     --print \
     --dangerously-skip-permissions \
-    --model sonnet \
     --output-format stream-json \
+    --max-turns 15 \
     "$PROMPT"
