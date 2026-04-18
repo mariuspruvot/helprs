@@ -158,15 +158,17 @@ async def stream_container_output(
             # Stream ended naturally — container exited.
             # Mark session completed in DB and send done event to frontend.
             msg = "Session completed."
+            status = "completed"
             try:
                 async with get_db_context() as db_ctx:
-                    result = await mark_completed(db_ctx, session_id, docker)
-                    if result.status == ContainerStatus.FAILED:
+                    completed = await mark_completed(db_ctx, session_id, docker)
+                    status = completed.status.value
+                    if completed.status == ContainerStatus.FAILED:
                         msg = "Session failed."
             except Exception:
                 pass  # Best effort; cleanup task handles stragglers
 
-            yield f"event: done\ndata: {json.dumps({'message': msg})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'message': msg, 'status': status})}\n\n"
         finally:
             await docker.close()
 

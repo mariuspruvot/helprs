@@ -138,11 +138,17 @@ interface ResultEvent {
   duration_ms?: number
 }
 
+interface ErrorEvent {
+  type: 'error'
+  error: { message: string }
+}
+
 type StreamJsonEvent =
   | AssistantEvent
   | SystemEvent
   | ResultEvent
   | UserEvent
+  | ErrorEvent
   | { type: 'rate_limit_event' }
   | { type: 'stream_event' }
   | { type: string }
@@ -214,6 +220,16 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
         }
       }
       return null
+    }
+
+    // Entrypoint error events — emitted when setup fails (e.g. deleted branch).
+    case 'error': {
+      const err = event as ErrorEvent
+      return {
+        role: 'result',
+        blocks: [{ type: 'text', text: err.error?.message ?? 'Unknown error' }],
+        isError: true,
+      }
     }
 
     // rate_limit_event, stream_event, unknown — hide
