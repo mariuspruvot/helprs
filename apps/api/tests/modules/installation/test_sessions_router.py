@@ -249,9 +249,7 @@ class TestListInstallationSessions:
         client, installation = authed_client_with_installation
 
         with _mock_github_admin():
-            response = await client.get(
-                f"/api/v1/installations/{installation.github_installation_id}/sessions"
-            )
+            response = await client.get(f"/api/v1/installations/{installation.github_installation_id}/sessions")
 
         assert response.status_code == 200
         item = response.json()["items"][0]

@@ -59,7 +59,7 @@ wait $diff_pid || {
 
 # Checkout PR branch (requires completed clone)
 cd /workspace
-gh pr checkout "$PR_NUMBER" || {
+gh pr checkout "$PR_NUMBER" --detach || {
   emit_error "Failed to checkout PR #${PR_NUMBER}. The branch may have been deleted after the PR was merged."
   exit 1
 }
