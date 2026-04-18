@@ -12,6 +12,8 @@ from helprs.modules.installation.schemas import (
     InstallationListResponse,
     InstallationResponse,
     PaginatedSessionsResponse,
+    PostResultsSettingRequest,
+    PostResultsSettingResponse,
     SessionSummaryResponse,
     SuppressionLabelsRequest,
     SuppressionLabelsResponse,
@@ -23,6 +25,7 @@ from helprs.modules.installation.service import (
     get_installations_for_user,
     get_session_counts_for_installations,
     get_sessions_for_installation,
+    update_post_results_setting,
     update_suppression_labels,
     verify_admin_permission,
 )
@@ -45,6 +48,7 @@ def _build_installation_response(installation) -> dict:
         "byok_key_hint": installation.byok_config.key_hint if installation.byok_config else None,
         "byok_key_status": installation.byok_config.key_status if installation.byok_config else None,
         "byok_validated_at": installation.byok_config.validated_at if installation.byok_config else None,
+        "post_results_to_pr": installation.post_results_to_pr,
     }
     return data
 
@@ -194,3 +198,25 @@ async def list_installation_sessions(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+@router.put(
+    "/{installation_id}/post-results",
+    response_model=PostResultsSettingResponse,
+)
+@limiter.limit("10/minute")
+async def put_post_results_setting(
+    installation_id: int,
+    body: PostResultsSettingRequest,
+    request: Request,
+    session: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+):
+    """Enable or disable automatic posting of session results to PRs."""
+    installation = await get_installation_by_github_id(session, installation_id)
+    if not installation:
+        raise NotFoundError("Installation not found")
+    await verify_admin_permission(user, installation, settings)
+    updated = await update_post_results_setting(session, installation.id, body.post_results_to_pr)
+    return PostResultsSettingResponse(post_results_to_pr=updated.post_results_to_pr)
