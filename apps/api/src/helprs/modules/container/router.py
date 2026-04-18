@@ -1,10 +1,12 @@
 """Container session API routes."""
 
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from helprs.core.database import get_db_context
 from helprs.core.dependencies import DbSession, GetSettings
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
@@ -24,6 +26,7 @@ from helprs.modules.container.service import (
     create_session,
     get_session_events,
     get_session_or_404,
+    mark_completed,
     send_message,
     start_container,
     stop_container,
@@ -151,6 +154,19 @@ async def stream_container_output(
         try:
             async for event in stream_and_persist(docker, cs.container_id, session_id=session_id, offset=offset):
                 yield event
+
+            # Stream ended naturally — container exited.
+            # Mark session completed in DB and send done event to frontend.
+            msg = "Session completed."
+            try:
+                async with get_db_context() as db_ctx:
+                    result = await mark_completed(db_ctx, session_id, docker)
+                    if result.status == ContainerStatus.FAILED:
+                        msg = "Session failed."
+            except Exception:
+                pass  # Best effort; cleanup task handles stragglers
+
+            yield f"event: done\ndata: {json.dumps({'message': msg})}\n\n"
         finally:
             await docker.close()
 
