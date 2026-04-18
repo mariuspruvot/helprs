@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from helprs.core.config import get_settings
-from helprs.core.database import Base
+from helprs.core.database import Base, clear_session_factory, set_session_factory
 from helprs.core.security import create_access_token, fernet_encrypt
 from helprs.main import create_app
 from helprs.modules.identity.models import GitHubUser
@@ -36,9 +36,11 @@ async def app_with_db():
     application = create_app()
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     application.state.session_factory = session_factory
+    set_session_factory(session_factory)
 
     yield application
 
+    clear_session_factory()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
@@ -101,8 +103,10 @@ async def seeded_app(app_with_db):
 class FakeDockerClientForRouter:
     """Minimal fake that is injected via monkeypatch."""
 
-    def __init__(self):
+    def __init__(self, log_lines: list[str] | None = None, exit_code: int = 0):
         self.container_id = "fake-router-container-id"
+        self._log_lines = log_lines or ['{"type":"system","subtype":"init"}\n', '{"type":"assistant","message":{}}\n']
+        self._exit_code = exit_code
 
     async def create_container(self, image, environment, volumes, labels):
         return self.container_id
@@ -117,11 +121,14 @@ class FakeDockerClientForRouter:
         pass
 
     async def container_logs(self, container_id, follow=False) -> AsyncIterator[str]:
-        yield "log line 1"
-        yield "log line 2"
+        for line in self._log_lines:
+            yield line
+
+    async def write_to_container(self, container_id, data):
+        pass
 
     async def wait_container(self, container_id):
-        return 0
+        return self._exit_code
 
     async def close(self):
         pass
@@ -241,3 +248,89 @@ class TestStopSession:
                 )
 
         assert resp.status_code == 404
+
+
+class TestStreamDoneEvent:
+    async def test_stream_emits_done_event_when_container_exits(self, seeded_app):
+        """When docker logs end (container exit), the SSE stream must emit an event: done."""
+        app = seeded_app["app"]
+        token = seeded_app["access_token"]
+        installation_id = seeded_app["installation_id"]
+
+        # Create a RUNNING session in the DB via the service layer
+        session_factory = app.state.session_factory
+        async with session_factory() as session:
+            from helprs.modules.container.models import ContainerSession, ContainerStatus
+
+            cs = ContainerSession(
+                installation_id=installation_id,
+                pr_number=1,
+                repo_full_name="org/repo",
+                skill_name="challenge-me",
+                status=ContainerStatus.RUNNING,
+                container_id="fake-router-container-id",
+            )
+            session.add(cs)
+            await session.commit()
+            session_id = cs.id
+
+        fake_docker = FakeDockerClientForRouter()
+
+        with patch(
+            "helprs.modules.container.router._get_docker_client",
+            return_value=fake_docker,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get(
+                    f"/api/v1/containers/sessions/{session_id}/stream",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+        assert resp.status_code == 200
+        body = resp.text
+        # The last SSE frame must be an event: done
+        assert "event: done" in body
+        assert '"message"' in body
+
+    async def test_stream_marks_session_completed_in_db(self, seeded_app):
+        """After the stream ends, the session status should be COMPLETED in the DB."""
+        app = seeded_app["app"]
+        token = seeded_app["access_token"]
+        installation_id = seeded_app["installation_id"]
+
+        session_factory = app.state.session_factory
+        async with session_factory() as session:
+            from helprs.modules.container.models import ContainerSession, ContainerStatus
+
+            cs = ContainerSession(
+                installation_id=installation_id,
+                pr_number=2,
+                repo_full_name="org/repo",
+                skill_name="challenge-me",
+                status=ContainerStatus.RUNNING,
+                container_id="fake-router-container-id",
+            )
+            session.add(cs)
+            await session.commit()
+            session_id = cs.id
+
+        fake_docker = FakeDockerClientForRouter()
+
+        with patch(
+            "helprs.modules.container.router._get_docker_client",
+            return_value=fake_docker,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.get(
+                    f"/api/v1/containers/sessions/{session_id}/stream",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+        # Verify session is COMPLETED in DB
+        async with session_factory() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(select(ContainerSession).where(ContainerSession.id == session_id))
+            updated = result.scalar_one()
+            assert updated.status == ContainerStatus.COMPLETED
+            assert updated.completed_at is not None
