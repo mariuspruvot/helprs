@@ -401,8 +401,8 @@ export default function ContainerSession({
 
         <span className="text-text-muted text-[12px]">|</span>
 
-        <span className="text-text-primary text-[13px] font-sans">{repoFullName}</span>
-        <span className="text-text-muted text-[12px]">#{prNumber}</span>
+        <span className="text-text-primary text-[13px] font-sans">{session?.repo_full_name ?? repoFullName}</span>
+        <span className="text-text-muted text-[12px]">#{session?.pr_number ?? prNumber}</span>
 
         <span
           className="text-[11px] px-2 py-0.5 rounded-full font-medium font-mono"
@@ -412,7 +412,7 @@ export default function ContainerSession({
             border: '1px solid rgba(226, 160, 57, 0.2)',
           }}
         >
-          {skillName}
+          {session?.skill_name ?? skillName}
         </span>
 
         {/* Status badge */}
