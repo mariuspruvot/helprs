@@ -18,12 +18,14 @@ const SKILLS: Skill[] = [
     label: 'Code Review',
     description: 'Multi-layer adversarial code review',
     duration: '3-5 min',
+    comingSoon: true,
   },
   {
     name: 'security-audit',
     label: 'Security Audit',
     description: 'Vulnerability scan on your diff',
     duration: '1-3 min',
+    comingSoon: true,
   },
 ]
 
@@ -66,8 +68,8 @@ export default function SkillSelector({
           <button
             key={skill.name}
             data-testid={`skill-card-${skill.name}`}
-            onClick={() => onSelectSkill(skill.name)}
-            disabled={disabled}
+            onClick={() => !skill.comingSoon && onSelectSkill(skill.name)}
+            disabled={disabled || skill.comingSoon}
             className="text-left p-5 rounded-[10px] transition-all duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
               background: '#1a1717',
@@ -102,12 +104,25 @@ export default function SkillSelector({
                 >
                   {skill.duration}
                 </span>
-                <span
-                  className="text-[12px] font-semibold font-mono"
-                  style={{ color: '#E2A039' }}
-                >
-                  Run &rarr;
-                </span>
+                {skill.comingSoon ? (
+                  <span
+                    className="text-[11px] font-mono px-2 py-0.5 rounded-full"
+                    style={{
+                      color: 'rgba(226, 160, 57, 0.7)',
+                      background: 'rgba(226, 160, 57, 0.08)',
+                      border: '1px solid rgba(226, 160, 57, 0.15)',
+                    }}
+                  >
+                    Coming soon
+                  </span>
+                ) : (
+                  <span
+                    className="text-[12px] font-semibold font-mono"
+                    style={{ color: '#E2A039' }}
+                  >
+                    Run &rarr;
+                  </span>
+                )}
               </div>
             </div>
           </button>

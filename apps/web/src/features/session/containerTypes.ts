@@ -51,6 +51,7 @@ export interface Skill {
   label: string
   description: string
   duration: string
+  comingSoon?: boolean
 }
 
 // ---------------------------------------------------------------------------
