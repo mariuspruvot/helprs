@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-# Container TTL: 15 minutes maximum
-CONTAINER_TTL_SECONDS = 15 * 60
+# Default container TTL (overridden by Settings.CONTAINER_TTL_SECONDS)
+_DEFAULT_CONTAINER_TTL_SECONDS = 15 * 60
 
 # Base image for the claude-runner container
 CLAUDE_RUNNER_IMAGE = "helprs/claude-runner:latest"
@@ -546,6 +546,7 @@ async def mark_completed(
     db: AsyncSession,
     session_id: UUID,
     docker: DockerClient,
+    ttl_seconds: int = _DEFAULT_CONTAINER_TTL_SECONDS,
 ) -> ContainerSession:
     """Wait for the container to finish, capture exit code, clean up."""
     cs = await get_session_or_404(db, session_id)
@@ -556,7 +557,7 @@ async def mark_completed(
     try:
         exit_code = await asyncio.wait_for(
             docker.wait_container(cs.container_id),
-            timeout=CONTAINER_TTL_SECONDS,
+            timeout=ttl_seconds,
         )
         cs.status = ContainerStatus.COMPLETED if exit_code == 0 else ContainerStatus.FAILED
     except TimeoutError:
@@ -580,12 +581,13 @@ async def mark_completed(
 async def cleanup_expired(
     db: AsyncSession,
     docker: DockerClient,
+    ttl_seconds: int = _DEFAULT_CONTAINER_TTL_SECONDS,
 ) -> int:
     """Find sessions past TTL and destroy their containers.
 
     Returns the number of sessions cleaned up.
     """
-    cutoff = datetime.now(UTC).timestamp() - CONTAINER_TTL_SECONDS
+    cutoff = datetime.now(UTC).timestamp() - ttl_seconds
     cutoff_dt = datetime.fromtimestamp(cutoff, tz=UTC)
 
     result = await db.execute(
@@ -617,3 +619,56 @@ async def cleanup_expired(
         await logger.ainfo("expired_sessions_cleaned", count=cleaned)
 
     return cleaned
+
+
+async def cleanup_all_running(
+    db: AsyncSession,
+    docker: DockerClient,
+) -> int:
+    """Stop ALL running/pending sessions. Used during graceful shutdown."""
+    result = await db.execute(
+        select(ContainerSession).where(
+            ContainerSession.status.in_([ContainerStatus.RUNNING, ContainerStatus.PENDING]),
+        )
+    )
+    sessions = list(result.scalars().all())
+
+    cleaned = 0
+    for cs in sessions:
+        if cs.container_id:
+            with contextlib.suppress(Exception):
+                await docker.stop_container(cs.container_id)
+                await docker.remove_container(cs.container_id, force=True)
+        cs.status = ContainerStatus.COMPLETED
+        cs.completed_at = datetime.now(UTC)
+        cleaned += 1
+
+    if cleaned:
+        await db.flush()
+        await logger.ainfo("shutdown_sessions_stopped", count=cleaned)
+
+    return cleaned
+
+
+async def reconcile_stale_sessions(db: AsyncSession) -> int:
+    """Mark any RUNNING/PENDING sessions as FAILED on boot.
+
+    After a crash, containers are gone but DB records still show RUNNING.
+    This reconciles them immediately rather than waiting for TTL expiry.
+    """
+    result = await db.execute(
+        select(ContainerSession).where(
+            ContainerSession.status.in_([ContainerStatus.RUNNING, ContainerStatus.PENDING]),
+        )
+    )
+    stale = list(result.scalars().all())
+
+    for cs in stale:
+        cs.status = ContainerStatus.FAILED
+        cs.completed_at = datetime.now(UTC)
+
+    if stale:
+        await db.flush()
+        await logger.ainfo("stale_sessions_reconciled", count=len(stale))
+
+    return len(stale)

@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # string is for link composition. See deferred-work.md nice-to-have #11.
     APP_BASE_URL: str = "http://localhost:5173"
 
+    # Container orchestration
+    CONTAINER_TTL_SECONDS: int = 900  # 15 minutes
+
     # Environment
     ENVIRONMENT: str = "development"
 
@@ -60,6 +63,28 @@ class Settings(BaseSettings):
                 "'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
             ) from e
         return v
+
+    @model_validator(mode="after")
+    def validate_production_secrets(self) -> "Settings":
+        """Enforce that critical secrets are set when ENVIRONMENT is production."""
+        if self.ENVIRONMENT != "production":
+            return self
+        missing: list[str] = []
+        if not self.ADMIN_PASSWORD:
+            missing.append("ADMIN_PASSWORD")
+        if len(self.SECRET_KEY) < 32:
+            missing.append("SECRET_KEY (must be >= 32 characters)")
+        if not self.GITHUB_WEBHOOK_SECRET:
+            missing.append("GITHUB_WEBHOOK_SECRET")
+        if not self.GITHUB_APP_PRIVATE_KEY:
+            missing.append("GITHUB_APP_PRIVATE_KEY")
+        if not self.GITHUB_CLIENT_ID:
+            missing.append("GITHUB_CLIENT_ID")
+        if not self.GITHUB_CLIENT_SECRET:
+            missing.append("GITHUB_CLIENT_SECRET")
+        if missing:
+            raise ValueError(f"Production environment requires: {', '.join(missing)}")
+        return self
 
 
 @lru_cache

@@ -3,11 +3,11 @@
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from helprs.core.database import get_db_context
-from helprs.core.dependencies import DbSession, GetSettings
+from helprs.core.dependencies import DbSession, GetSettings, get_current_user
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
 from helprs.core.security import fernet_decrypt
@@ -49,6 +49,7 @@ async def create_container_session(
     request: Request,
     db: DbSession,
     settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Create a container session and start the container.
 
@@ -87,6 +88,7 @@ async def create_container_session(
         pr_number=body.pr_number,
         repo_full_name=body.repo_full_name,
         skill_name=body.skill_name,
+        user_id=user.id,
     )
 
     # Start the container
@@ -112,6 +114,7 @@ async def get_container_session(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Get the current status of a container session."""
     cs = await get_session_or_404(db, session_id)
@@ -125,6 +128,7 @@ async def stream_container_output(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    user=Depends(get_current_user),  # noqa: B008
     offset: int = 0,
 ):
     """SSE endpoint streaming container stdout/stderr.
@@ -189,6 +193,7 @@ async def get_session_events_endpoint(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Retrieve persisted stream-json events for a session.
 
@@ -210,6 +215,7 @@ async def send_session_message(
     body: SendMessageRequest,
     request: Request,
     db: DbSession,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Send a user message to a running container session.
 
@@ -235,6 +241,7 @@ async def stop_container_session(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Stop a running container session."""
     docker = _get_docker_client()

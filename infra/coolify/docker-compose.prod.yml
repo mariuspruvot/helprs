@@ -6,10 +6,29 @@ services:
       target: production
     ports:
       - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../skills:/app/skills:ro
     env_file: ../../.env
+    environment:
+      - ENVIRONMENT=production
+      - SKILLS_HOST_PATH=${SKILLS_HOST_PATH}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - APP_BASE_URL=${APP_BASE_URL}
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
     restart: unless-stopped
 
   web:
@@ -19,6 +38,11 @@ services:
       target: production
     ports:
       - "80:80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
     restart: unless-stopped
 
   db:
@@ -26,7 +50,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-helprs}
       POSTGRES_USER: ${POSTGRES_USER:-helprs}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-helprs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -34,6 +58,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     restart: unless-stopped
 
 volumes:
