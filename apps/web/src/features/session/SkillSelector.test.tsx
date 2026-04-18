@@ -35,18 +35,28 @@ describe('SkillSelector', () => {
     expect(prElements.length).toBeGreaterThan(0)
   })
 
-  test('calls onSelectSkill when a card is clicked', () => {
+  test('calls onSelectSkill when an available skill card is clicked', () => {
     const onSelectSkill = vi.fn()
     render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
 
     fireEvent.click(screen.getByTestId('skill-card-challenge-me'))
     expect(onSelectSkill).toHaveBeenCalledWith('challenge-me')
+  })
+
+  test('does not call onSelectSkill for coming-soon skills', () => {
+    const onSelectSkill = vi.fn()
+    render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
 
     fireEvent.click(screen.getByTestId('skill-card-code-review'))
-    expect(onSelectSkill).toHaveBeenCalledWith('code-review')
-
     fireEvent.click(screen.getByTestId('skill-card-security-audit'))
-    expect(onSelectSkill).toHaveBeenCalledWith('security-audit')
+    expect(onSelectSkill).not.toHaveBeenCalled()
+  })
+
+  test('shows Coming soon badge for unreleased skills', () => {
+    render(<SkillSelector {...defaultProps} />)
+
+    const badges = screen.getAllByText('Coming soon')
+    expect(badges.length).toBe(2)
   })
 
   test('disables cards when disabled prop is true', () => {
