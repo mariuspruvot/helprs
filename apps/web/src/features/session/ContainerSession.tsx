@@ -53,6 +53,7 @@ export default function ContainerSession({
   const [stopping, setStopping] = useState(false)
   const [userInput, setUserInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [isThinking, setIsThinking] = useState(true)
 
   const msgIdRef = useRef(0)
   const sseOffsetRef = useRef(0)
@@ -226,6 +227,17 @@ export default function ContainerSession({
         if (event.lastEventId) {
           sseOffsetRef.current = parseInt(event.lastEventId, 10) || sseOffsetRef.current
         }
+
+        // Track turn state: cursor pulses while Claude generates,
+        // stops when a result event signals turn complete.
+        try {
+          const raw = JSON.parse(event.data as string) as { type?: string }
+          if (raw.type === 'assistant') setIsThinking(true)
+          else if (raw.type === 'result') setIsThinking(false)
+        } catch {
+          // ignore — thinking state is best-effort
+        }
+
         const parsed = parseStreamMessage(event.data as string)
         if (parsed) {
           appendMessage(parsed)
@@ -252,6 +264,7 @@ export default function ContainerSession({
         source.close()
         eventSourceRef.current = null
         setStatus('completed')
+        setIsThinking(false)
         try {
           const parsed = JSON.parse(event.data as string) as { message?: string }
           appendStatus(parsed.message ?? 'Session completed.')
@@ -323,6 +336,7 @@ export default function ContainerSession({
     const content = userInput.trim()
     setSending(true)
     setUserInput('')
+    setIsThinking(true)
     // Show user's input as a user message in the conversation
     appendMessage({
       role: 'user',
@@ -455,7 +469,7 @@ export default function ContainerSession({
 
       {/* Conversation output */}
       <div className="flex-1 min-h-0">
-        <ConversationOutput messages={messages} isRunning={isRunning} />
+        <ConversationOutput messages={messages} isRunning={isRunning && isThinking} />
       </div>
 
       {/* Message input */}
