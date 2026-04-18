@@ -65,6 +65,7 @@ class InstallationResponse(BaseModel):
     byok_key_status: str | None = None
     byok_validated_at: datetime | None = None
     suppression_labels: list[str] = []
+    session_count: int = 0
 
 
 class InstallationDetailResponse(InstallationResponse):
@@ -74,3 +75,24 @@ class InstallationDetailResponse(InstallationResponse):
 class InstallationListResponse(BaseModel):
     items: list[InstallationResponse]
     total: int
+
+
+class SessionSummaryResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    pr_number: int
+    repo_full_name: str
+    skill_name: str
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class PaginatedSessionsResponse(BaseModel):
+    items: list[SessionSummaryResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
