@@ -27,25 +27,49 @@ gh auth status > /dev/null 2>&1 || {
   exit 1
 }
 
-# Clone the repo and check out the PR branch.
-# Errors from gh/git go to stderr (invisible to our stdout-only stream),
-# so we emit a structured error event before exiting on failure.
-gh repo clone "$REPO_FULL_NAME" /workspace || {
+# ---------------------------------------------------------------------------
+# Parallel I/O: clone, metadata fetch, and diff fetch run concurrently.
+# Metadata/diff use -R flag to hit the GitHub API directly — no local repo
+# needed, so they can overlap with the clone.
+# ---------------------------------------------------------------------------
+
+gh repo clone "$REPO_FULL_NAME" /workspace -- --depth=1 &
+clone_pid=$!
+
+gh pr view "$PR_NUMBER" -R "$REPO_FULL_NAME" \
+    --json title,author,body,files > /tmp/pr_meta.json &
+meta_pid=$!
+
+gh pr diff "$PR_NUMBER" -R "$REPO_FULL_NAME" > /tmp/pr_diff.txt &
+diff_pid=$!
+
+# Wait for each job individually — background failures don't trigger set -e.
+wait $clone_pid || {
   emit_error "Failed to clone repository ${REPO_FULL_NAME}. It may have been deleted or made private."
   exit 1
 }
+wait $meta_pid || {
+  emit_error "Failed to fetch PR #${PR_NUMBER} metadata from GitHub API."
+  exit 1
+}
+wait $diff_pid || {
+  emit_error "Failed to fetch PR #${PR_NUMBER} diff from GitHub API."
+  exit 1
+}
+
+# Checkout PR branch (requires completed clone)
 cd /workspace
 gh pr checkout "$PR_NUMBER" || {
   emit_error "Failed to checkout PR #${PR_NUMBER}. The branch may have been deleted after the PR was merged."
   exit 1
 }
 
-# Fetch PR metadata for the prompt context
-PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
-PR_AUTHOR=$(gh pr view "$PR_NUMBER" --json author --jq '.author.login')
-PR_DESCRIPTION=$(gh pr view "$PR_NUMBER" --json body --jq '.body // "No description provided."')
-PR_DIFF=$(gh pr diff "$PR_NUMBER")
-FILE_LIST=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path')
+# Parse metadata from the single combined API response
+PR_TITLE=$(jq -r '.title' /tmp/pr_meta.json)
+PR_AUTHOR=$(jq -r '.author.login' /tmp/pr_meta.json)
+PR_DESCRIPTION=$(jq -r '.body // "No description provided."' /tmp/pr_meta.json)
+PR_DIFF=$(cat /tmp/pr_diff.txt)
+FILE_LIST=$(jq -r '.files[].path' /tmp/pr_meta.json)
 
 # Read the prompt template and substitute placeholders
 PROMPT=$(cat "/skills/$SKILL_NAME/prompt.md")
