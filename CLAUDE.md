@@ -36,7 +36,8 @@ infra/
 4. Backend spins up an ephemeral Docker container with Claude Code CLI
 5. Container runs the assigned skill against the PR (using `gh` CLI for fast checkout)
 6. Results stream back via SSE passthrough to the frontend
-7. Container is destroyed after completion or timeout
+7. User can send follow-up messages via FIFO; each triggers `claude -c -p` (continues the conversation)
+8. Container is destroyed after completion or timeout
 
 **Key**: Users provide their Claude credentials once in the admin panel (BYOK). The backend never calls the Claude API directly -- containers use the credentials natively via Claude Code CLI.
 
@@ -49,7 +50,8 @@ infra/
 - **SSE passthrough**: backend relays container output to frontend (no AI response generation in backend)
 - **Conversation UI**: frontend renders session output as a structured conversation with markdown (react-markdown + remark-gfm), syntax highlighting (shiki with JS regex engine), diff coloring, and collapsible tool_use/thinking blocks. Components: `ConversationOutput` (scroll container) -> `MessageBlock` (role dispatch) -> `MarkdownContent` / `CodeBlock` / `ToolUseBlock` / `ThinkingBlock`. Data flows as `StreamMessage[]` (structured content blocks) instead of flat text lines.
 - **Session persistence**: stream-json events are batch-persisted to `session_events` table (JSONB) during SSE streaming via `stream_and_persist()`. Completed sessions can be replayed from `GET /sessions/{id}/events`. The streaming pipeline is layered: `stream_events()` (raw tuples) -> `stream_and_persist()` (SSE + DB writes) or `stream_output()` (SSE only, for tests).
-- **Stream-json protocol**: containers emit NDJSON with 5 event types: `system` (init/retry), `assistant` (one event per content block — thinking/text/tool_use), `user` (tool_result), `result` (session end + metadata), `rate_limit_event`. The `result.result` field duplicates the last assistant text — only display assistant events, use result for status only. No `--include-partial-messages` flag, so no `stream_event` deltas.
+- **Multi-turn via per-turn invocations**: `--input-format stream-json` exits after each turn (by design). The entrypoint runs `claude -p` for the first turn, then loops reading user messages from a FIFO and calling `claude -c -p` (--continue) for each subsequent turn. Each invocation emits its own `system` init + `result` events — frontend should expect multiple `system`/`result` events per session.
+- **Stream-json protocol**: containers emit NDJSON with 5 event types: `system` (init/retry), `assistant` (one event per content block — thinking/text/tool_use), `user` (tool_result), `result` (turn end + metadata), `rate_limit_event`. The `result.result` field duplicates the last assistant text — only display assistant events, use result for status only. No `--include-partial-messages` flag, so no `stream_event` deltas.
 - **API prefix**: all routes under `/api/v1`
 - **Admin panel**: SQLAdmin at `/admin`, configured in `admin/views.py`
 

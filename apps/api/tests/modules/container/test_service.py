@@ -19,6 +19,7 @@ from helprs.modules.container.service import (
     get_session_events,
     get_session_or_404,
     mark_completed,
+    send_message,
     start_container,
     stop_container,
     stream_and_persist,
@@ -55,6 +56,7 @@ class FakeDockerClient:
         self.started: list[str] = []
         self.stopped: list[str] = []
         self.removed: list[str] = []
+        self.written: list[tuple[str, str]] = []
 
     async def create_container(
         self,
@@ -82,6 +84,9 @@ class FakeDockerClient:
     async def container_logs(self, container_id: str, follow: bool = False) -> AsyncIterator[str]:
         for line in self._log_lines:
             yield line
+
+    async def write_to_container(self, container_id: str, data: str) -> None:
+        self.written.append((container_id, data))
 
     async def wait_container(self, container_id: str) -> int:
         return self._exit_code
@@ -736,3 +741,48 @@ class TestGetSessionEvents:
 
         with pytest.raises(NotFoundError):
             await get_session_events(db, uuid.uuid4())
+
+
+# ---------------------------------------------------------------------------
+# Tests: send_message
+# ---------------------------------------------------------------------------
+
+
+class TestSendMessage:
+    async def test_writes_raw_content_to_container(
+        self,
+        db: AsyncSession,
+        installation: Installation,
+        docker: FakeDockerClient,
+    ):
+        cs = await create_session(db, installation.id, 1, "org/repo", "challenge-me")
+        cs.status = ContainerStatus.RUNNING
+        cs.container_id = "fake-container-abc123"
+        await db.flush()
+
+        await send_message(db=db, session_id=cs.id, docker=docker, content="my answer")
+
+        assert len(docker.written) == 1
+        container_id, data = docker.written[0]
+        assert container_id == "fake-container-abc123"
+        assert data == "my answer"
+
+    async def test_rejects_non_running_session(
+        self,
+        db: AsyncSession,
+        installation: Installation,
+        docker: FakeDockerClient,
+    ):
+        from helprs.core.exceptions import ExternalServiceError
+
+        cs = await create_session(db, installation.id, 1, "org/repo", "challenge-me")
+        # Session is still PENDING (no container started)
+
+        with pytest.raises(ExternalServiceError, match="Container is not running"):
+            await send_message(db=db, session_id=cs.id, docker=docker, content="hello")
+
+    async def test_raises_404_for_unknown_session(self, db: AsyncSession, docker: FakeDockerClient):
+        from helprs.core.exceptions import NotFoundError
+
+        with pytest.raises(NotFoundError):
+            await send_message(db=db, session_id=uuid.uuid4(), docker=docker, content="hello")
