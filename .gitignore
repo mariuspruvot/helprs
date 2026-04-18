@@ -43,6 +43,9 @@ docker-compose.override.yaml
 htmlcov/
 .pytest_cache/
 
+# Playwright MCP debug artifacts
+.playwright-mcp/
+
 # Alembic
 apps/api/alembic/versions/*.pyc
 
