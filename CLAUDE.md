@@ -110,6 +110,9 @@ Required `.env` at repo root (see docker-compose.yml):
 - **Agent-readiness**: This repo must be fully understandable by a fresh Claude Code instance with no prior context. Keep docs and CLAUDE.md accurate.
 - **Worktree merges**: Always `git stash --include-untracked` before merging worktree branches into main — uncommitted local changes cause modify/delete conflicts
 - **Worktrees and node_modules**: `npm install` must be run in each worktree separately — `node_modules` aren't shared from the main tree
+- **Shallow clone + `gh pr checkout --detach`**: `gh pr checkout` (without `--detach`) fails on `--depth=1` clones because git can't set up tracking branches from shallow refs. Always use `--detach` — containers don't need tracking branches, just files on disk.
+- **Installation IDs in URLs**: frontend routes (`/installations/:id`) use `github_installation_id` (integer, e.g. `123093268`), NOT the internal UUID. The API installation endpoints also expect the GitHub integer ID.
+- **Fast-failing container race**: if a container exits before the SSE stream fully drains, the client may disconnect before `mark_completed()` runs, leaving the session stuck as RUNNING with 0 persisted events. The 5-minute cleanup task marks these as TIMEOUT. Root cause: generator cancellation on client disconnect skips the post-stream `mark_completed` call in `_event_stream()`.
 
 ## Key Decisions
 
