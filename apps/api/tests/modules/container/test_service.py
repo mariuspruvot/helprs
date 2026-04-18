@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from helprs.core.database import Base, clear_session_factory, set_session_factory
 from helprs.modules.container.models import ContainerStatus, SessionEvent
 from helprs.modules.container.service import (
-    CONTAINER_TTL_SECONDS,
+    _DEFAULT_CONTAINER_TTL_SECONDS,
     cleanup_expired,
     create_session,
     get_session,
@@ -568,7 +568,7 @@ class TestCleanupExpired:
             skill_name="challenge-me",
         )
         # Backdate and set running via ORM so the session sees the update
-        cs.created_at = datetime.now(UTC) - timedelta(seconds=CONTAINER_TTL_SECONDS + 120)
+        cs.created_at = datetime.now(UTC) - timedelta(seconds=_DEFAULT_CONTAINER_TTL_SECONDS + 120)
         cs.status = ContainerStatus.RUNNING
         await db.flush()
 

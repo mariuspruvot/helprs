@@ -56,6 +56,9 @@ infra/
 - **Admin panel**: SQLAdmin at `/admin`, configured in `admin/views.py`
 - **Dashboard**: user-facing installation management at `/installations` -- installation list, session history, session replay. Authenticated users redirect from `/` to `/installations`. SQLAdmin remains at `/admin` as superadmin escape hatch.
 - **Cross-module queries**: installation module queries `ContainerSession` model directly (inline import in service functions) for session counts and lists. This avoids circular imports while keeping the API surface on the installation router.
+- **Auth on all REST routes**: identity and installation routers use `Depends(get_current_user)`, container router uses it too. The webhook handler bypasses REST routes entirely — it calls `create_session()` directly (DB record only, no container start). Container start happens when the authenticated frontend calls the REST endpoint.
+- **Production env validation**: `Settings` has a `model_validator` that enforces non-empty secrets when `ENVIRONMENT=production`. Tests use `ENVIRONMENT=test` to skip this.
+- **Graceful lifecycle**: lifespan reconciles stale RUNNING/PENDING sessions on boot (marks FAILED), and stops all running containers on shutdown. Periodic cleanup uses configurable `CONTAINER_TTL_SECONDS` from settings.
 
 ## Skills
 
@@ -88,11 +91,8 @@ cd apps/api && uv run alembic revision --autogenerate -m "description"  # New mi
 
 ## Environment
 
-Required `.env` at repo root (see docker-compose.yml):
-- `DATABASE_URL` — Postgres connection string
-- `SECRET_KEY` — app secret
-- `GITHUB_APP_ID`, `GITHUB_WEBHOOK_SECRET` — GitHub App config
-- `FERNET_KEY` — encryption key for stored credentials
+Required `.env` at repo root — see `.env.example` for all variables with generation instructions.
+Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_ORIGINS`, `CONTAINER_TTL_SECONDS`, `UVICORN_WORKERS`.
 
 ## Gotchas
 
@@ -113,6 +113,8 @@ Required `.env` at repo root (see docker-compose.yml):
 - **Shallow clone + `gh pr checkout --detach`**: `gh pr checkout` (without `--detach`) fails on `--depth=1` clones because git can't set up tracking branches from shallow refs. Always use `--detach` — containers don't need tracking branches, just files on disk.
 - **Installation IDs in URLs**: frontend routes (`/installations/:id`) use `github_installation_id` (integer, e.g. `123093268`), NOT the internal UUID. The API installation endpoints also expect the GitHub integer ID.
 - **Fast-failing container race**: if a container exits before the SSE stream fully drains, the client may disconnect before `mark_completed()` runs, leaving the session stuck as RUNNING with 0 persisted events. The 5-minute cleanup task marks these as TIMEOUT. Root cause: generator cancellation on client disconnect skips the post-stream `mark_completed` call in `_event_stream()`.
+- **Flaky dispatcher tests**: `test_issues_opened_is_ignored_and_logged` and `test_pull_request_closed_is_ignored` fail when run as part of the full suite due to structlog `configure_logging()` state contamination from `create_app()` in earlier tests. They pass in isolation.
+- **Multi-worker background tasks**: with `--workers N`, each uvicorn worker runs its own lifespan (webhook reaper + container cleanup). Both are idempotent: reaper uses atomic row-level claim (`mark_processing`), cleanup suppresses double-stop exceptions.
 
 ## Key Decisions
 
@@ -122,3 +124,5 @@ Required `.env` at repo root (see docker-compose.yml):
 - **Dashboard over SQLAdmin**: user-facing operations (installation list, session history, token config) go through the dashboard UI; SQLAdmin is the superadmin escape hatch
 - **Open source target**: designed for self-hosting with own Claude licenses
 - **Post-results to PR**: after session completion, the API can post score card as a PR comment — opt-in per installation via `post_results_to_pr` boolean; extraction and formatting in `container/pr_comment.py`, triggered in `_event_stream()` after `mark_completed()`
+- **Coolify deployment**: TLS terminates at the Coolify reverse proxy, not in nginx. Nginx serves the SPA with security headers but no HTTPS config. SSE `X-Accel-Buffering: no` header is set by the API, not nginx.
+- **Non-root API container**: production Dockerfile uses `appuser`. Port 8000 > 1024 so no privilege needed. Docker socket mount still grants Docker access regardless of USER.

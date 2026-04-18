@@ -5,7 +5,8 @@ import contextlib
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from helprs.core.config import get_settings
 from helprs.core.database import (
@@ -113,13 +114,14 @@ async def _run_container_cleanup(
     """
     from helprs.modules.container.service import AioDockerClient, cleanup_expired
 
+    ttl = get_settings().CONTAINER_TTL_SECONDS
     try:
         while True:
             await asyncio.sleep(interval_seconds)
             try:
                 docker = AioDockerClient()
                 async with app.state.session_factory() as db:
-                    cleaned = await cleanup_expired(db, docker)
+                    cleaned = await cleanup_expired(db, docker, ttl_seconds=ttl)
                     await db.commit()
                     if cleaned:
                         logger.info("container_cleanup_cycle", cleaned=cleaned)
@@ -164,6 +166,18 @@ def create_app() -> FastAPI:
             # server starts serving traffic immediately (AC #2).
             await _replay_pending_webhook_events(app)
 
+            # Reconcile container sessions left in RUNNING/PENDING by a
+            # prior crash — mark them FAILED immediately rather than
+            # waiting for TTL expiry.
+            try:
+                from helprs.modules.container.service import reconcile_stale_sessions
+
+                async with session_factory() as db:
+                    await reconcile_stale_sessions(db)
+                    await db.commit()
+            except Exception:
+                logger.exception("session_reconciliation_failed")
+
             # Periodic reaper: handles rows that get stuck mid-run (e.g.
             # mark_processed commit failure) without waiting for the next
             # restart.
@@ -188,6 +202,20 @@ def create_app() -> FastAPI:
             if tracked:
                 await asyncio.gather(*tracked, return_exceptions=True)
 
+            # Stop all running containers before shutting down.
+            try:
+                from helprs.modules.container.service import AioDockerClient, cleanup_all_running
+
+                docker = AioDockerClient()
+                async with session_factory() as db:
+                    stopped = await cleanup_all_running(db, docker)
+                    await db.commit()
+                    if stopped:
+                        logger.info("shutdown_containers_stopped", count=stopped)
+                await docker.close()
+            except Exception:
+                logger.exception("shutdown_container_cleanup_failed")
+
             clear_session_factory()
             await engine.dispose()
 
@@ -200,6 +228,15 @@ def create_app() -> FastAPI:
 
     # Exception handlers
     app.add_exception_handler(DomainError, domain_exception_handler)
+
+    async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("unhandled_exception", path=request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "internal_error", "message": "An unexpected error occurred"},
+        )
+
+    app.add_exception_handler(Exception, _unhandled_exception_handler)
 
     # Middleware (CORS, logging, rate limiting)
     setup_middleware(app, settings)
@@ -222,7 +259,17 @@ def create_app() -> FastAPI:
     # Health check
     @app.get("/health")
     async def health_check():
-        return {"status": "ok"}
+        from sqlalchemy import text
+
+        try:
+            async with app.state.session_factory() as db:
+                await db.execute(text("SELECT 1"))
+            return {"status": "ok", "db": "ok"}
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "degraded", "db": "unreachable"},
+            )
 
     return app
 

@@ -85,7 +85,7 @@ async def github_callback(
     access_token, refresh_token = create_token_pair(user, settings)
 
     # Redirect to frontend with access_token, set refresh token as httpOnly cookie
-    frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+    frontend_url = settings.APP_BASE_URL
     redirect_url = f"{frontend_url}/auth/callback?access_token={access_token}"
 
     is_secure = settings.ENVIRONMENT != "development"
