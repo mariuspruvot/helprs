@@ -503,6 +503,64 @@ async def delete_byok_config(session: AsyncSession, installation_id: uuid.UUID) 
     return True
 
 
+# --- Session Query Services ---
+
+
+async def get_sessions_for_installation(
+    session: AsyncSession,
+    installation_id: uuid.UUID,
+    page: int = 1,
+    per_page: int = 20,
+    status_filter: str | None = None,
+) -> tuple[list, int]:
+    """Return paginated sessions for an installation, newest first."""
+    from sqlalchemy import func
+
+    from helprs.modules.container.models import ContainerSession, ContainerStatus
+
+    base_filter = ContainerSession.installation_id == installation_id
+    query = select(ContainerSession).where(base_filter)
+    count_query = select(func.count()).select_from(ContainerSession).where(base_filter)
+
+    if status_filter:
+        status_enum = ContainerStatus(status_filter)
+        query = query.where(ContainerSession.status == status_enum)
+        count_query = count_query.where(ContainerSession.status == status_enum)
+
+    total_result = await session.execute(count_query)
+    total = total_result.scalar_one()
+
+    query = query.order_by(ContainerSession.created_at.desc())
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    result = await session.execute(query)
+    items = list(result.scalars().all())
+
+    return items, total
+
+
+async def get_session_counts_for_installations(
+    session: AsyncSession,
+    installation_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Batch-fetch session counts for multiple installations."""
+    if not installation_ids:
+        return {}
+
+    from sqlalchemy import func
+
+    from helprs.modules.container.models import ContainerSession
+
+    result = await session.execute(
+        select(
+            ContainerSession.installation_id,
+            func.count(ContainerSession.id),
+        )
+        .where(ContainerSession.installation_id.in_(installation_ids))
+        .group_by(ContainerSession.installation_id)
+    )
+    return dict(result.all())
+
+
 # --- Suppression Labels Services ---
 
 LABEL_PATTERN = re.compile(r"^[a-zA-Z0-9\-]+$")
