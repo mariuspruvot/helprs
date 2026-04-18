@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# Clean shutdown: kill child processes on SIGTERM/SIGINT (docker stop).
+cleanup() {
+  kill 0 2>/dev/null || true
+  exit 0
+}
+trap cleanup SIGTERM SIGINT
+
 # gh CLI auto-detects GITHUB_TOKEN env var -- no explicit login needed.
 gh auth status > /dev/null 2>&1 || {
   echo "ERROR: GitHub authentication failed" >&2
@@ -28,26 +35,39 @@ PROMPT="${PROMPT//\{\{PR_DESCRIPTION\}\}/$PR_DESCRIPTION}"
 PROMPT="${PROMPT//\{\{FILE_LIST\}\}/$FILE_LIST}"
 PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
 
-# JSON-encode the prompt using node (available in the base image)
-PROMPT_JSON=$(node -e "process.stdout.write(JSON.stringify(process.argv[1]))" "$PROMPT")
+# ---------------------------------------------------------------------------
+# Multi-turn conversation via per-turn invocations
+#
+# Claude Code CLI in --input-format stream-json mode exits after completing
+# each conversation turn (emits result event, then exit 0). It does NOT wait
+# for the next user message on stdin.
+#
+# Fix: run one `claude -p` per turn. The first turn sends the initial skill
+# prompt. Subsequent turns read from a FIFO and use `--continue` to resume
+# the conversation with full context from Claude's local session store.
+# ---------------------------------------------------------------------------
 
-# Write the initial prompt as the first stream-json message to a FIFO.
+# Create FIFO early so docker exec writes never fail with "No such file".
 FIFO=/tmp/claude-input
 mkfifo "$FIFO"
-
-# Keep a persistent write fd (fd 3) on the FIFO so that `cat` never sees EOF
-# between individual docker-exec writes. Each `echo ... > $FIFO` from the
-# orchestrator opens+writes+closes its own fd, but cat keeps reading because
-# fd 3 is still open. The fd closes naturally when the container is stopped.
+# Keep a persistent write fd so the FIFO reader never sees EOF between
+# individual docker-exec writes. Closes when the container is stopped.
 exec 3>"$FIFO"
 
-# Send the initial prompt via the persistent handle
-echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":${PROMPT_JSON}}}" >&3
-
-# cat reads from FIFO until ALL writers close (fd 3 + any exec writers)
-cat <"$FIFO" | exec claude \
-    --input-format stream-json \
+# First turn: initial skill prompt (one-shot, creates the conversation)
+claude -p "$PROMPT" \
     --output-format stream-json \
     --verbose \
     --dangerously-skip-permissions \
-    --max-turns 30
+    --max-turns 30 || true
+
+# Subsequent turns: read user messages from FIFO, continue conversation.
+# Each line is the raw user message content (newline-terminated).
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    claude -c -p "$line" \
+        --output-format stream-json \
+        --verbose \
+        --dangerously-skip-permissions \
+        --max-turns 30 || true
+done < "$FIFO"
