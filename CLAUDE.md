@@ -82,6 +82,7 @@ cd apps/api && uv run alembic revision --autogenerate -m "description"  # New mi
 - `conftest.py` sets env vars (DATABASE_URL, SECRET_KEY, etc.) **before** any app imports — order matters
 - **`FakeDockerClient` log_lines**: must include trailing `\n` for the line-buffering logic in `stream_events()` to split correctly
 - **`get_db_context` in tests**: tests that call `stream_and_persist()` need a `db_with_factory` fixture that calls `set_session_factory()` / `clear_session_factory()` — see `test_service.py` for the pattern
+- **Test fixture isolation**: each test file with its own `db_session` fixture using `create_all`/`drop_all` must call `set_session_factory()` / `clear_session_factory()` to avoid PG enum type collisions when run alongside other test files — see `test_pr_comment.py`
 
 ## Environment
 
@@ -114,3 +115,4 @@ Required `.env` at repo root (see docker-compose.yml):
 - **No pydantic-ai**: AI orchestration handled by Claude Code CLI in containers, not Python agent code
 - **BYOK via admin**: credentials stored once per user, injected as ephemeral env vars into containers
 - **Open source target**: designed for self-hosting with own Claude licenses
+- **Post-results to PR**: after session completion, the API can post score card as a PR comment — opt-in per installation via `post_results_to_pr` boolean; extraction and formatting in `container/pr_comment.py`, triggered in `_event_stream()` after `mark_completed()`
