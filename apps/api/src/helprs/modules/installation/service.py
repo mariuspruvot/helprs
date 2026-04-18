@@ -5,6 +5,7 @@ import random
 import re
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
@@ -23,6 +24,10 @@ from helprs.core.exceptions import (
 )
 from helprs.core.security import create_app_jwt, fernet_decrypt, fernet_encrypt
 from helprs.modules.installation.models import BYOKConfig, Installation
+
+if TYPE_CHECKING:
+    from helprs.modules.container.models import ContainerSession
+    from helprs.modules.identity.models import GitHubUser
 
 logger = structlog.get_logger()
 
@@ -311,6 +316,38 @@ async def get_installation_by_github_id(session: AsyncSession, github_installati
     return result.scalar_one_or_none()
 
 
+async def _get_user_org_logins(user: "GitHubUser", settings: Settings) -> set[str]:
+    """Fetch the GitHub orgs the user belongs to, returned as lowercased logins.
+
+    Uses the user's stored GitHub token to call ``GET /user/orgs``.
+    Requires the ``read:org`` scope on the OAuth App.
+    """
+    try:
+        github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
+    except InvalidToken as e:
+        raise UnauthorizedError("Stored GitHub token is corrupted") from e
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{GITHUB_API_BASE}/user/orgs",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            resp.raise_for_status()
+    except httpx.TimeoutException as e:
+        raise ExternalServiceError("GitHub is temporarily unavailable") from e
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            raise UnauthorizedError("GitHub token is invalid or revoked") from e
+        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
+
+    return {org["login"].lower() for org in resp.json() if isinstance(org, dict) and org.get("login")}
+
+
 async def get_installations_for_user(session: AsyncSession, user, settings: Settings) -> list[Installation]:
     """Get installations the user has access to.
 
@@ -344,30 +381,7 @@ async def get_installations_for_user(session: AsyncSession, user, settings: Sett
     if not org_installs:
         return user_installs
 
-    try:
-        github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
-    except InvalidToken as e:
-        raise UnauthorizedError("Stored GitHub token is corrupted") from e
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{GITHUB_API_BASE}/user/orgs",
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            resp.raise_for_status()
-    except httpx.TimeoutException as e:
-        raise ExternalServiceError("GitHub is temporarily unavailable") from e
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise UnauthorizedError("GitHub token is invalid or revoked") from e
-        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
-
-    user_org_logins = {org["login"].lower() for org in resp.json() if isinstance(org, dict) and org.get("login")}
+    user_org_logins = await _get_user_org_logins(user, settings)
     accessible_org_installs = [i for i in org_installs if i.account_login.lower() in user_org_logins]
     return user_installs + accessible_org_installs
 
@@ -409,6 +423,53 @@ async def verify_admin_permission(user, installation: Installation, settings: Se
     if membership.get("role") != "admin" or membership.get("state") != "active":
         raise ForbiddenError("You do not have admin access to this installation")
     return True
+
+
+async def verify_installation_access(user: "GitHubUser", installation: Installation, settings: Settings) -> bool:
+    """Verify user has member-level access to the installation.
+
+    * **User-type**: access iff ``user.github_id == installation.account_id``.
+    * **Org-type**: access iff the user is an org member (via ``GET /user/orgs``).
+
+    Raises ``ForbiddenError`` when the user has no access.
+    """
+    if installation.account_type == "User":
+        if user.github_id == installation.account_id:
+            return True
+        raise ForbiddenError("You do not have access to this installation")
+
+    # Organization: check membership via /user/orgs
+    user_org_logins = await _get_user_org_logins(user, settings)
+    if installation.account_login.lower() in user_org_logins:
+        return True
+    raise ForbiddenError("You do not have access to this installation")
+
+
+async def verify_session_access(
+    user: "GitHubUser",
+    container_session: "ContainerSession",
+    db: AsyncSession,
+    settings: Settings,
+) -> bool:
+    """Verify user can access a container session.
+
+    Fast path: session owner (``user_id`` matches) skips any GitHub API call.
+    Fallback: check member-level access on the session's installation.
+    """
+    if container_session.user_id is not None and container_session.user_id == user.id:
+        return True
+
+    result = await db.execute(
+        select(Installation).where(
+            Installation.id == container_session.installation_id,
+            Installation.deleted_at.is_(None),
+        )
+    )
+    installation = result.scalar_one_or_none()
+    if not installation:
+        raise ForbiddenError("Installation not found or deleted")
+
+    return await verify_installation_access(user, installation, settings)
 
 
 # --- BYOK Services ---

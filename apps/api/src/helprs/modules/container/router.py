@@ -3,11 +3,11 @@
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from helprs.core.database import get_db_context
-from helprs.core.dependencies import DbSession, GetSettings
+from helprs.core.dependencies import DbSession, GetSettings, get_current_user
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
 from helprs.core.security import fernet_decrypt
@@ -32,7 +32,12 @@ from helprs.modules.container.service import (
     stop_container,
     stream_and_persist,
 )
-from helprs.modules.installation.service import get_byok_config, mint_installation_token
+from helprs.modules.installation.service import (
+    get_byok_config,
+    mint_installation_token,
+    verify_installation_access,
+    verify_session_access,
+)
 
 router = APIRouter(prefix="/containers", tags=["containers"])
 
@@ -49,6 +54,7 @@ async def create_container_session(
     request: Request,
     db: DbSession,
     settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Create a container session and start the container.
 
@@ -70,6 +76,9 @@ async def create_container_session(
     if not installation:
         raise NotFoundError("Installation not found")
 
+    # Verify user has access to this installation
+    await verify_installation_access(user, installation, settings)
+
     # Get stored Claude OAuth token (from claude setup-token)
     byok_config = await get_byok_config(db, installation.id)
     if not byok_config:
@@ -87,6 +96,7 @@ async def create_container_session(
         pr_number=body.pr_number,
         repo_full_name=body.repo_full_name,
         skill_name=body.skill_name,
+        user_id=user.id,
     )
 
     # Start the container
@@ -112,9 +122,12 @@ async def get_container_session(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Get the current status of a container session."""
     cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
     await db.refresh(cs)
     return ContainerSessionResponse.model_validate(cs)
 
@@ -125,6 +138,8 @@ async def stream_container_output(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
     offset: int = 0,
 ):
     """SSE endpoint streaming container stdout/stderr.
@@ -144,6 +159,7 @@ async def stream_container_output(
             offset = int(last_event_id)
 
     cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
 
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
         raise NotFoundError("Container is not running")
@@ -189,12 +205,16 @@ async def get_session_events_endpoint(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Retrieve persisted stream-json events for a session.
 
     Returns all events ordered by ``event_id``, suitable for replaying
     completed sessions in the frontend without an SSE connection.
     """
+    cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
     events = await get_session_events(db, session_id)
     return SessionEventsListResponse(
         session_id=session_id,
@@ -210,12 +230,17 @@ async def send_session_message(
     body: SendMessageRequest,
     request: Request,
     db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Send a user message to a running container session.
 
     The message is forwarded to the container's Claude Code CLI stdin,
     continuing the interactive conversation.
     """
+    cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
+
     docker = _get_docker_client()
     try:
         await send_message(db=db, session_id=session_id, docker=docker, content=body.content)
@@ -235,8 +260,13 @@ async def stop_container_session(
     session_id: UUID,
     request: Request,
     db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
 ):
     """Stop a running container session."""
+    cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
+
     docker = _get_docker_client()
     try:
         cs = await stop_container(db=db, session_id=session_id, docker=docker)

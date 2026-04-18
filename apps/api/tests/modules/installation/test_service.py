@@ -19,6 +19,8 @@ from helprs.modules.installation.service import (
     post_pr_comment_with_retry,
     soft_delete_installation,
     verify_admin_permission,
+    verify_installation_access,
+    verify_session_access,
 )
 
 SAMPLE_WEBHOOK_PAYLOAD = {
@@ -393,3 +395,189 @@ class TestPostPRCommentWithRetry:
                 installation_token="t",
             )
         assert calls == 3
+
+
+# ---------------------------------------------------------------------------
+# Access control — verify_installation_access / verify_session_access
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyInstallationAccess:
+    async def test_user_owner_passes(self, test_user, db_session, settings):
+        user, _ = test_user
+        installation = Installation(
+            github_installation_id=33333333,
+            account_login="testuser",
+            account_id=user.github_id,
+            account_type="User",
+            repository_selection="all",
+            app_slug="helprs",
+            target_type="User",
+        )
+        db_session.add(installation)
+        await db_session.flush()
+
+        result = await verify_installation_access(user, installation, settings)
+        assert result is True
+
+    async def test_user_non_owner_raises_403(self, test_user, db_session, settings):
+        user, _ = test_user
+        installation = Installation(
+            github_installation_id=44444444,
+            account_login="otheruser",
+            account_id=99999999,
+            account_type="User",
+            repository_selection="all",
+            app_slug="helprs",
+            target_type="User",
+        )
+        db_session.add(installation)
+        await db_session.flush()
+
+        with pytest.raises(ForbiddenError):
+            await verify_installation_access(user, installation, settings)
+
+    async def test_org_member_passes(self, test_installation, test_user, settings):
+        user, _ = test_user
+        mock_response = MagicMock()
+        mock_response.json.return_value = [{"login": "test-org"}]
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = await verify_installation_access(user, test_installation, settings)
+        assert result is True
+
+    async def test_org_non_member_raises_403(self, test_installation, test_user, settings):
+        user, _ = test_user
+        mock_response = MagicMock()
+        mock_response.json.return_value = [{"login": "other-org"}]
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(ForbiddenError):
+                await verify_installation_access(user, test_installation, settings)
+
+
+class TestVerifySessionAccess:
+    async def test_session_owner_passes_without_api_call(self, test_user, test_installation, db_session, settings):
+        from helprs.modules.container.models import ContainerSession, ContainerStatus
+
+        user, _ = test_user
+        cs = ContainerSession(
+            installation_id=test_installation.id,
+            user_id=user.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+            status=ContainerStatus.RUNNING,
+            container_id="fake-id",
+        )
+        db_session.add(cs)
+        await db_session.flush()
+
+        # No httpx mock needed — owner path doesn't call GitHub
+        result = await verify_session_access(user, cs, db_session, settings)
+        assert result is True
+
+    async def test_org_member_can_access_others_session(self, test_user, test_installation, db_session, settings):
+        from helprs.modules.container.models import ContainerSession, ContainerStatus
+        from helprs.modules.identity.models import GitHubUser
+
+        user, _ = test_user
+
+        # Create a session owned by a different user
+        from helprs.core.security import fernet_encrypt
+
+        other_user = GitHubUser(
+            github_id=77777777,
+            github_login="otherdev",
+            email="other@test.com",
+            avatar_url=None,
+            github_access_token_enc=fernet_encrypt("gho_other", settings.FERNET_KEY),
+        )
+        db_session.add(other_user)
+        await db_session.flush()
+
+        cs = ContainerSession(
+            installation_id=test_installation.id,
+            user_id=other_user.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+            status=ContainerStatus.RUNNING,
+            container_id="fake-id",
+        )
+        db_session.add(cs)
+        await db_session.flush()
+
+        # Mock GitHub /user/orgs to return the installation's org
+        mock_response = MagicMock()
+        mock_response.json.return_value = [{"login": "test-org"}]
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = await verify_session_access(user, cs, db_session, settings)
+        assert result is True
+
+    async def test_non_member_cannot_access_session(self, test_user, test_installation, db_session, settings):
+        from helprs.modules.container.models import ContainerSession, ContainerStatus
+        from helprs.modules.identity.models import GitHubUser
+
+        user, _ = test_user
+
+        from helprs.core.security import fernet_encrypt
+
+        other_user = GitHubUser(
+            github_id=66666666,
+            github_login="stranger",
+            email="stranger@test.com",
+            avatar_url=None,
+            github_access_token_enc=fernet_encrypt("gho_stranger", settings.FERNET_KEY),
+        )
+        db_session.add(other_user)
+        await db_session.flush()
+
+        cs = ContainerSession(
+            installation_id=test_installation.id,
+            user_id=other_user.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+            status=ContainerStatus.RUNNING,
+            container_id="fake-id",
+        )
+        db_session.add(cs)
+        await db_session.flush()
+
+        # Mock GitHub /user/orgs to return a different org
+        mock_response = MagicMock()
+        mock_response.json.return_value = [{"login": "unrelated-org"}]
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(ForbiddenError):
+                await verify_session_access(user, cs, db_session, settings)
