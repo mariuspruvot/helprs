@@ -11,16 +11,34 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
+# Emit a structured error event to stdout so the SSE pipeline relays it
+# to the frontend before the container exits.
+emit_error() {
+  local msg="$1"
+  # Escape backslashes and double quotes for JSON safety
+  msg="${msg//\\/\\\\}"
+  msg="${msg//\"/\\\"}"
+  printf '{"type":"error","error":{"message":"%s"}}\n' "$msg"
+}
+
 # gh CLI auto-detects GITHUB_TOKEN env var -- no explicit login needed.
 gh auth status > /dev/null 2>&1 || {
-  echo "ERROR: GitHub authentication failed" >&2
+  emit_error "GitHub authentication failed. The token may be expired or invalid."
   exit 1
 }
 
-# Clone the repo and check out the PR branch
-gh repo clone "$REPO_FULL_NAME" /workspace
+# Clone the repo and check out the PR branch.
+# Errors from gh/git go to stderr (invisible to our stdout-only stream),
+# so we emit a structured error event before exiting on failure.
+gh repo clone "$REPO_FULL_NAME" /workspace || {
+  emit_error "Failed to clone repository ${REPO_FULL_NAME}. It may have been deleted or made private."
+  exit 1
+}
 cd /workspace
-gh pr checkout "$PR_NUMBER"
+gh pr checkout "$PR_NUMBER" || {
+  emit_error "Failed to checkout PR #${PR_NUMBER}. The branch may have been deleted after the PR was merged."
+  exit 1
+}
 
 # Fetch PR metadata for the prompt context
 PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')

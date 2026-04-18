@@ -263,12 +263,17 @@ export default function ContainerSession({
         if (!mountedRef.current) return
         source.close()
         eventSourceRef.current = null
-        setStatus('completed')
         setIsThinking(false)
         try {
-          const parsed = JSON.parse(event.data as string) as { message?: string }
+          const parsed = JSON.parse(event.data as string) as { message?: string; status?: string }
+          const finalStatus = parsed.status === 'failed' ? 'failed' : 'completed'
+          setStatus(finalStatus as ContainerStatus)
+          if (finalStatus === 'failed') {
+            setError(parsed.message ?? 'Session failed.')
+          }
           appendStatus(parsed.message ?? 'Session completed.')
         } catch {
+          setStatus('completed')
           appendStatus('Session completed.')
         }
       })
