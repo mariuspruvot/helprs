@@ -20,7 +20,7 @@ apps/api/          — FastAPI backend (Python 3.12, uv)
   tests/           — mirrors modules/ structure
   alembic/         — DB migrations
 apps/web/          — React frontend (Vite, TypeScript)
-  src/features/    — feature modules: auth, landing, installation, session
+  src/features/    — feature modules: auth, dashboard, landing, installation, session
   src/shared/      — API client (shared/api/client.ts)
 skills/            — Claude Code skill definitions (mounted into ephemeral containers)
 infra/
@@ -54,6 +54,8 @@ infra/
 - **Stream-json protocol**: containers emit NDJSON with 5 event types: `system` (init/retry), `assistant` (one event per content block — thinking/text/tool_use), `user` (tool_result), `result` (turn end + metadata), `rate_limit_event`. The `result.result` field duplicates the last assistant text — only display assistant events, use result for status only. No `--include-partial-messages` flag, so no `stream_event` deltas. A 6th type `error` (`{"type":"error","error":{"message":"..."}}`) is emitted by the entrypoint when setup fails (clone/checkout errors). The SSE `done` event includes both `message` and `status` fields — frontend uses `status` to distinguish `completed` vs `failed`.
 - **API prefix**: all routes under `/api/v1`
 - **Admin panel**: SQLAdmin at `/admin`, configured in `admin/views.py`
+- **Dashboard**: user-facing installation management at `/installations` -- installation list, session history, session replay. Authenticated users redirect from `/` to `/installations`. SQLAdmin remains at `/admin` as superadmin escape hatch.
+- **Cross-module queries**: installation module queries `ContainerSession` model directly (inline import in service functions) for session counts and lists. This avoids circular imports while keeping the API surface on the installation router.
 
 ## Skills
 
@@ -112,4 +114,5 @@ Required `.env` at repo root (see docker-compose.yml):
 - **Pre-pivot code**: preserved on branch `pre-pivot/v1`
 - **No pydantic-ai**: AI orchestration handled by Claude Code CLI in containers, not Python agent code
 - **BYOK via admin**: credentials stored once per user, injected as ephemeral env vars into containers
+- **Dashboard over SQLAdmin**: user-facing operations (installation list, session history, token config) go through the dashboard UI; SQLAdmin is the superadmin escape hatch
 - **Open source target**: designed for self-hosting with own Claude licenses
