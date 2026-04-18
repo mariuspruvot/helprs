@@ -178,6 +178,7 @@ class TestCreateSession:
         assert data["pr_number"] == 42
         assert data["repo_full_name"] == "org/repo"
         assert data["skill_name"] == "challenge-me"
+        assert data["user_id"] == str(seeded_app["user_id"])
 
     async def test_create_session_missing_installation(self, seeded_app):
         app = seeded_app["app"]
@@ -256,6 +257,7 @@ class TestStreamDoneEvent:
         app = seeded_app["app"]
         token = seeded_app["access_token"]
         installation_id = seeded_app["installation_id"]
+        user_id = seeded_app["user_id"]
 
         # Create a RUNNING session in the DB via the service layer
         session_factory = app.state.session_factory
@@ -264,6 +266,7 @@ class TestStreamDoneEvent:
 
             cs = ContainerSession(
                 installation_id=installation_id,
+                user_id=user_id,
                 pr_number=1,
                 repo_full_name="org/repo",
                 skill_name="challenge-me",
@@ -297,6 +300,7 @@ class TestStreamDoneEvent:
         app = seeded_app["app"]
         token = seeded_app["access_token"]
         installation_id = seeded_app["installation_id"]
+        user_id = seeded_app["user_id"]
 
         session_factory = app.state.session_factory
         async with session_factory() as session:
@@ -304,6 +308,7 @@ class TestStreamDoneEvent:
 
             cs = ContainerSession(
                 installation_id=installation_id,
+                user_id=user_id,
                 pr_number=2,
                 repo_full_name="org/repo",
                 skill_name="challenge-me",
@@ -334,3 +339,59 @@ class TestStreamDoneEvent:
             updated = result.scalar_one()
             assert updated.status == ContainerStatus.COMPLETED
             assert updated.completed_at is not None
+
+
+class TestAuthRequired:
+    """All container endpoints must return 401 without a valid token."""
+
+    async def test_create_session_without_auth_returns_401(self, seeded_app):
+        app = seeded_app["app"]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/containers/sessions",
+                json={
+                    "installation_id": str(seeded_app["installation_id"]),
+                    "pr_number": 1,
+                    "repo_full_name": "org/repo",
+                    "skill_name": "challenge-me",
+                },
+            )
+        assert resp.status_code == 401
+
+    async def test_get_session_without_auth_returns_401(self, seeded_app):
+        app = seeded_app["app"]
+        fake_id = uuid.uuid4()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(f"/api/v1/containers/sessions/{fake_id}")
+        assert resp.status_code == 401
+
+    async def test_stream_without_auth_returns_401(self, seeded_app):
+        app = seeded_app["app"]
+        fake_id = uuid.uuid4()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(f"/api/v1/containers/sessions/{fake_id}/stream")
+        assert resp.status_code == 401
+
+    async def test_events_without_auth_returns_401(self, seeded_app):
+        app = seeded_app["app"]
+        fake_id = uuid.uuid4()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(f"/api/v1/containers/sessions/{fake_id}/events")
+        assert resp.status_code == 401
+
+    async def test_message_without_auth_returns_401(self, seeded_app):
+        app = seeded_app["app"]
+        fake_id = uuid.uuid4()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/v1/containers/sessions/{fake_id}/message",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 401
+
+    async def test_stop_without_auth_returns_401(self, seeded_app):
+        app = seeded_app["app"]
+        fake_id = uuid.uuid4()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(f"/api/v1/containers/sessions/{fake_id}/stop")
+        assert resp.status_code == 401
