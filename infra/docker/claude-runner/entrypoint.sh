@@ -1,9 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Clean shutdown: kill child processes on SIGTERM/SIGINT (docker stop).
+# Clean shutdown on SIGTERM/SIGINT (docker stop).
+# Do NOT use `kill 0` — it sends SIGTERM to bash's own process group while
+# inside the trap handler, causing exit code 139 instead of 0. Docker kills
+# all remaining processes when PID 1 exits, so explicit child cleanup is
+# unnecessary.
 cleanup() {
-  kill 0 2>/dev/null || true
   exit 0
 }
 trap cleanup SIGTERM SIGINT
@@ -50,9 +53,11 @@ PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
 # Create FIFO early so docker exec writes never fail with "No such file".
 FIFO=/tmp/claude-input
 mkfifo "$FIFO"
-# Keep a persistent write fd so the FIFO reader never sees EOF between
-# individual docker-exec writes. Closes when the container is stopped.
-exec 3>"$FIFO"
+# Keep a persistent fd so the FIFO reader never sees EOF between individual
+# docker-exec writes. Uses read-write mode (<>) because opening a FIFO with
+# O_WRONLY (>) blocks until a reader exists -- but our reader starts later.
+# O_RDWR never blocks on FIFOs. Fd closes when the container is stopped.
+exec 3<>"$FIFO"
 
 # First turn: initial skill prompt (one-shot, creates the conversation)
 claude -p "$PROMPT" \
