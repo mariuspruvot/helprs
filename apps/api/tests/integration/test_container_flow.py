@@ -53,7 +53,7 @@ class FakeDockerClient:
         log_lines: list[str] | None = None,
     ):
         self._container_id = container_id
-        self._log_lines = log_lines or ["output line 1", "output line 2", "done"]
+        self._log_lines = log_lines or ["output line 1\n", "output line 2\n", "done\n"]
         self.created: list[dict] = []
         self.started: list[str] = []
         self.stopped: list[str] = []
@@ -289,9 +289,9 @@ class TestContainerSessionLifecycle:
 
         # Each line should be SSE-formatted
         assert len(events) == 3
-        assert events[0] == "data: output line 1\n\n"
-        assert events[1] == "data: output line 2\n\n"
-        assert events[2] == "data: done\n\n"
+        assert events[0] == "id: 1\ndata: output line 1\n\n"
+        assert events[1] == "id: 2\ndata: output line 2\n\n"
+        assert events[2] == "id: 3\ndata: done\n\n"
 
 
 # ---------------------------------------------------------------------------
