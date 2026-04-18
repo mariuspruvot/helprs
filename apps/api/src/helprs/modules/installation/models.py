@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from helprs.core.database import Base
@@ -24,6 +24,9 @@ class Installation(Base):
     permissions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     events: Mapped[list | None] = mapped_column(JSON, nullable=True)
     suppression_labels: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
+    post_results_to_pr: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

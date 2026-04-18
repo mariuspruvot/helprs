@@ -32,6 +32,7 @@ class InstallationAdmin(ModelView, model=Installation):
         Installation.account_login,
         Installation.account_type,
         Installation.repository_selection,
+        Installation.post_results_to_pr,
         Installation.suspended_at,
         Installation.deleted_at,
         Installation.created_at,

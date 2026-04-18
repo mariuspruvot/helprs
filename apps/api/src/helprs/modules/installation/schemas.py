@@ -50,6 +50,14 @@ class SuppressionLabelsResponse(BaseModel):
     labels: list[str]
 
 
+class PostResultsSettingRequest(BaseModel):
+    post_results_to_pr: bool
+
+
+class PostResultsSettingResponse(BaseModel):
+    post_results_to_pr: bool
+
+
 class InstallationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -66,6 +74,7 @@ class InstallationResponse(BaseModel):
     byok_validated_at: datetime | None = None
     suppression_labels: list[str] = []
     session_count: int = 0
+    post_results_to_pr: bool = False
 
 
 class InstallationDetailResponse(InstallationResponse):
