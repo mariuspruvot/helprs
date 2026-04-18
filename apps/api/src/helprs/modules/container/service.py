@@ -85,7 +85,7 @@ class DockerClient(Protocol):
         ...
 
     async def write_to_container(self, container_id: str, data: str) -> None:
-        """Write data to the container's stdin via exec."""
+        """Write data to the container's FIFO via exec."""
         ...
 
     async def wait_container(self, container_id: str) -> int:
@@ -145,14 +145,16 @@ class AioDockerClient:
             yield line
 
     async def write_to_container(self, container_id: str, data: str) -> None:
-        """Write a message to the container's FIFO via docker exec.
+        """Write data to the container's FIFO via docker exec.
 
-        The entrypoint reads from /tmp/claude-input FIFO, so we write there.
-        Uses base64 encoding to safely pass arbitrary JSON through the shell
+        The entrypoint reads newline-terminated lines from /tmp/claude-input.
+        Uses base64 encoding to safely pass arbitrary text through the shell
         without risking interpretation of special characters ($, `, !, etc.).
+        A trailing newline is always appended so ``read`` in the entrypoint
+        loop receives a complete line.
         """
         container = await self._docker.containers.get(container_id)
-        encoded = base64.b64encode(data.encode()).decode()
+        encoded = base64.b64encode((data + "\n").encode()).decode()
         exec_obj = await container.exec(
             cmd=["sh", "-c", f"echo {encoded} | base64 -d > /tmp/claude-input"],
         )
@@ -445,23 +447,17 @@ async def send_message(
 ) -> None:
     """Send a user message to a running container session.
 
-    Writes a stream-json formatted message to the container's FIFO,
-    which Claude Code CLI reads as the next user turn.
+    Writes the raw user content to the container's FIFO (newline-terminated).
+    The entrypoint reads each line and invokes ``claude -c -p`` to continue
+    the conversation.
     """
     cs = await get_session_or_404(db, session_id)
 
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
         raise ExternalServiceError("Container is not running")
 
-    message = json.dumps(
-        {
-            "type": "user",
-            "message": {"role": "user", "content": content},
-        }
-    )
-
     try:
-        await docker.write_to_container(cs.container_id, message)
+        await docker.write_to_container(cs.container_id, content)
     except Exception as exc:
         await logger.aerror(
             "container_message_failed",
