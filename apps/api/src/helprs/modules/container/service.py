@@ -308,15 +308,39 @@ async def stream_events(
 
     Yields ``(0, "")`` as a sentinel for keepalive intervals (no data
     from container for 15 seconds — Claude is thinking).
+
+    IMPORTANT: We must NOT use ``asyncio.wait_for()`` on the log iterator.
+    aiodocker uses a multiplexed stream format (8-byte header + payload)
+    with ``readexactly()`` calls.  Cancelling a ``readexactly()`` mid-read
+    corrupts the stream position, causing all subsequent reads to
+    desynchronize and silently drop events.  Instead we keep the read task
+    alive across keepalive intervals using ``asyncio.wait()``.
     """
     keepalive_interval = 15.0
     event_id = 0
     buffer = ""
 
     log_iter = docker.container_logs(container_id, follow=True).__aiter__()
-    while True:
-        try:
-            chunk = await asyncio.wait_for(log_iter.__anext__(), timeout=keepalive_interval)
+    read_task: asyncio.Task[str] | None = None
+    try:
+        while True:
+            if read_task is None:
+                read_task = asyncio.ensure_future(log_iter.__anext__())
+
+            done, _ = await asyncio.wait({read_task}, timeout=keepalive_interval)
+
+            if not done:
+                # Timeout — no data arrived, but keep the read task alive.
+                yield (0, "")
+                continue
+
+            try:
+                chunk = read_task.result()
+            except StopAsyncIteration:
+                read_task = None
+                break
+
+            read_task = None
             buffer += chunk
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
@@ -325,10 +349,11 @@ async def stream_events(
                     continue
                 event_id += 1
                 yield (event_id, line)
-        except TimeoutError:
-            yield (0, "")
-        except StopAsyncIteration:
-            break
+    finally:
+        if read_task is not None:
+            read_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await read_task
 
     # Flush any remaining content in the buffer (e.g. the final result
     # event if Docker closed the stream before flushing the trailing \n).

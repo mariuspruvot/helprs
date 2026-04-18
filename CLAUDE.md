@@ -95,11 +95,15 @@ Required `.env` at repo root (see docker-compose.yml):
 
 - Always run `make lint` before pushing — ruff + eslint must pass
 - **Shiki in tests**: any test rendering session components must mock `./shiki` (highlighter, SHIKI_THEME, SUPPORTED_LANGS) to avoid loading real TextMate grammars in jsdom
+- **Test DB**: `docker compose` only creates `helprs` DB. Tests need `helprs_test` — create it once: `docker exec helprs-db-1 psql -U helprs -c "CREATE DATABASE helprs_test;"`
+- **aiodocker + asyncio.wait_for = stream corruption**: NEVER use `asyncio.wait_for()` on aiodocker's `container.log(follow=True)` iterator. aiodocker uses a multiplexed stream format (8-byte header + payload) with `readexactly()`. Cancelling mid-read desynchronizes the stream, silently dropping all subsequent events. Use `asyncio.wait()` with timeout instead (keeps the read task alive across keepalive intervals). See `stream_events()` docstring.
+- **docker compose must run from project root**: `SKILLS_HOST_PATH=${PWD}/skills` in docker-compose.yml resolves to the wrong path if docker compose is invoked from a subdirectory
 - **Debug SSE pipeline**: `claude -p "prompt" --output-format stream-json --verbose 2>/dev/null` captures raw stream-json to validate event parsing
 - DB migrations: `make migrate` inside Docker, or `cd apps/api && uv run alembic upgrade head` locally
 - Test conftest **must** set env vars before importing from `helprs.*`
 - **Agent-readiness**: This repo must be fully understandable by a fresh Claude Code instance with no prior context. Keep docs and CLAUDE.md accurate.
 - **Worktree merges**: Always `git stash --include-untracked` before merging worktree branches into main — uncommitted local changes cause modify/delete conflicts
+- **Worktrees and node_modules**: `npm install` must be run in each worktree separately — `node_modules` aren't shared from the main tree
 
 ## Key Decisions
 
