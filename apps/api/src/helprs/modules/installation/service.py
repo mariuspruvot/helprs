@@ -547,3 +547,30 @@ async def update_suppression_labels(
         label_count=len(labels),
     )
     return installation
+
+
+# --- Post Results Setting ---
+
+
+async def update_post_results_setting(session: AsyncSession, installation_id: uuid.UUID, enabled: bool) -> Installation:
+    """Enable or disable automatic posting of session results to PRs."""
+    result = await session.execute(
+        select(Installation).where(
+            Installation.id == installation_id,
+            Installation.deleted_at.is_(None),
+        )
+    )
+    installation = result.scalar_one_or_none()
+    if not installation:
+        from helprs.core.exceptions import NotFoundError
+
+        raise NotFoundError("Installation not found")
+
+    installation.post_results_to_pr = enabled
+    await session.flush()
+    await logger.ainfo(
+        "post_results_setting_updated",
+        installation_id=str(installation_id),
+        enabled=enabled,
+    )
+    return installation

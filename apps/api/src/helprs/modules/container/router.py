@@ -3,14 +3,19 @@
 import json
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
+from helprs.core.config import get_settings
 from helprs.core.database import get_db_context
 from helprs.core.dependencies import DbSession, GetSettings
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
 from helprs.core.security import fernet_decrypt
+from helprs.modules.container.models import ContainerSession
+from helprs.modules.container.pr_comment import build_session_url, extract_score_card, format_pr_comment
 from helprs.modules.container.schemas import (
     ContainerSessionResponse,
     CreateSessionRequest,
@@ -32,7 +37,13 @@ from helprs.modules.container.service import (
     stop_container,
     stream_and_persist,
 )
-from helprs.modules.installation.service import get_byok_config, mint_installation_token
+from helprs.modules.installation.service import (
+    get_byok_config,
+    mint_installation_token,
+    post_pr_comment_with_retry,
+)
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/containers", tags=["containers"])
 
@@ -165,6 +176,8 @@ async def stream_container_output(
                     status = completed.status.value
                     if completed.status == ContainerStatus.FAILED:
                         msg = "Session failed."
+                    elif completed.status == ContainerStatus.COMPLETED:
+                        await _post_results_comment(session_id, cs)
             except Exception:
                 pass  # Best effort; cleanup task handles stragglers
 
@@ -248,3 +261,61 @@ async def stop_container_session(
         status=cs.status.value,
         message=f"Session {cs.status.value}",
     )
+
+
+async def _post_results_comment(session_id: UUID, cs: ContainerSession) -> None:
+    """Post challenge-me results to the PR as a GitHub comment (best-effort).
+
+    Only fires for challenge-me sessions on installations with
+    ``post_results_to_pr`` enabled. Mints a fresh installation token
+    to handle sessions that outlive the original token's 1-hour TTL.
+    """
+    from helprs.modules.installation.models import Installation
+
+    if cs.skill_name != "challenge-me":
+        return
+
+    try:
+        async with get_db_context() as db:
+            result = await db.execute(select(Installation).where(Installation.id == cs.installation_id))
+            installation = result.scalar_one_or_none()
+            if not installation or not installation.post_results_to_pr:
+                return
+
+            score_card = await extract_score_card(session_id, db)
+            if not score_card:
+                await logger.ainfo(
+                    "post_results_no_score_card",
+                    session_id=str(session_id),
+                )
+                return
+
+            settings = get_settings()
+            session_url = build_session_url(
+                app_base_url=settings.APP_BASE_URL,
+                installation_id=cs.installation_id,
+                repo_full_name=cs.repo_full_name,
+                pr_number=cs.pr_number,
+            )
+            comment_body = format_pr_comment(score_card, session_url)
+
+            owner, repo = cs.repo_full_name.split("/", 1)
+            token = await mint_installation_token(installation.github_installation_id, settings)
+            await post_pr_comment_with_retry(
+                owner=owner,
+                repo=repo,
+                pr_number=cs.pr_number,
+                body=comment_body,
+                installation_token=token,
+            )
+            await logger.ainfo(
+                "post_results_comment_posted",
+                session_id=str(session_id),
+                pr_number=cs.pr_number,
+                repo=cs.repo_full_name,
+            )
+    except Exception:
+        await logger.aexception(
+            "post_results_comment_failed",
+            session_id=str(session_id),
+        )

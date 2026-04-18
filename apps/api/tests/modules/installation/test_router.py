@@ -141,3 +141,58 @@ class TestGetInstallation:
         data = response.json()
         assert data["github_installation_id"] == installation.github_installation_id
         assert data["account_login"] == "test-org"
+
+    async def test_includes_post_results_flag(self, authed_client_with_installation):
+        client, installation = authed_client_with_installation
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"role": "admin", "state": "active"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            response = await client.get(f"/api/v1/installations/{installation.github_installation_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["post_results_to_pr"] is False
+
+
+class TestPutPostResultsSetting:
+    async def test_updates_flag(self, authed_client_with_installation):
+        client, installation = authed_client_with_installation
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"role": "admin", "state": "active"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            response = await client.put(
+                f"/api/v1/installations/{installation.github_installation_id}/post-results",
+                json={"post_results_to_pr": True},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["post_results_to_pr"] is True
+
+    async def test_requires_auth(self, app_with_db):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_db),
+            base_url="http://test",
+        ) as client:
+            response = await client.put(
+                "/api/v1/installations/99999999/post-results",
+                json={"post_results_to_pr": True},
+            )
+        assert response.status_code == 401
