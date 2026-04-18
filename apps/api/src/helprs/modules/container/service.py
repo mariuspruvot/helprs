@@ -330,6 +330,14 @@ async def stream_events(
         except StopAsyncIteration:
             break
 
+    # Flush any remaining content in the buffer (e.g. the final result
+    # event if Docker closed the stream before flushing the trailing \n).
+    if buffer:
+        line = buffer.strip()
+        if line:
+            event_id += 1
+            yield (event_id, line)
+
 
 async def stream_output(
     docker: DockerClient,
