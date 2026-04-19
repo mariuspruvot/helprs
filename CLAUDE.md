@@ -112,10 +112,12 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 - **Worktree merges**: Always `git stash --include-untracked` before merging worktree branches into main — uncommitted local changes cause modify/delete conflicts
 - **Worktrees and node_modules**: `npm install` must be run in each worktree separately — `node_modules` aren't shared from the main tree
 - **Shallow clone + `gh pr checkout --detach`**: `gh pr checkout` (without `--detach`) fails on `--depth=1` clones because git can't set up tracking branches from shallow refs. Always use `--detach` — containers don't need tracking branches, just files on disk.
-- **Installation IDs in URLs**: frontend routes (`/installations/:id`) use `github_installation_id` (integer, e.g. `123093268`), NOT the internal UUID. The API installation endpoints also expect the GitHub integer ID.
+- **Installation IDs in URLs**: frontend routes (`/installations/:id`) use `github_installation_id` (integer, e.g. `123093268`), NOT the internal UUID. All API endpoints (installation AND container session creation) expect the GitHub integer ID. The service layer resolves to internal UUID via `get_installation_by_github_id()`.
 - **Fast-failing container race**: if a container exits before the SSE stream fully drains, the client may disconnect before `mark_completed()` runs, leaving the session stuck as RUNNING with 0 persisted events. The 5-minute cleanup task marks these as TIMEOUT. Root cause: generator cancellation on client disconnect skips the post-stream `mark_completed` call in `_event_stream()`.
 - **Flaky dispatcher tests**: `test_issues_opened_is_ignored_and_logged` and `test_pull_request_closed_is_ignored` fail when run as part of the full suite due to structlog `configure_logging()` state contamination from `create_app()` in earlier tests. They pass in isolation.
 - **Multi-worker background tasks**: with `--workers N`, each uvicorn worker runs its own lifespan (webhook reaper + container cleanup). Both are idempotent: reaper uses atomic row-level claim (`mark_processing`), cleanup suppresses double-stop exceptions.
+- **Run migrations after checkout**: `docker exec helprs-api-1 uv run alembic current` vs `alembic heads` — if they differ, run `make migrate`. Missing columns cause 500s that surface as browser CORS errors (response lacks CORS headers on unhandled exceptions).
+- **API rebuild invalidates tokens**: `docker compose up --build api` may regenerate SECRET_KEY, invalidating all JWTs and refresh cookies. Re-authenticate after API restarts.
 
 ## Key Decisions
 
