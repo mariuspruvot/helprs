@@ -97,6 +97,7 @@ async def seeded_app(app_with_db):
         "app": app_with_db,
         "user_id": user.id,
         "installation_id": installation.id,
+        "github_installation_id": installation.github_installation_id,
         "access_token": access_token,
     }
 
@@ -139,7 +140,7 @@ class TestCreateSession:
     async def test_create_session_returns_201(self, seeded_app, tmp_path: Path):
         app = seeded_app["app"]
         token = seeded_app["access_token"]
-        installation_id = seeded_app["installation_id"]
+        github_installation_id = seeded_app["github_installation_id"]
 
         # Create a temporary skills directory
         (tmp_path / "challenge-me").mkdir()
@@ -165,7 +166,7 @@ class TestCreateSession:
                 resp = await client.post(
                     "/api/v1/containers/sessions",
                     json={
-                        "installation_id": str(installation_id),
+                        "installation_id": github_installation_id,
                         "pr_number": 42,
                         "repo_full_name": "org/repo",
                         "skill_name": "challenge-me",
@@ -189,7 +190,7 @@ class TestCreateSession:
             resp = await client.post(
                 "/api/v1/containers/sessions",
                 json={
-                    "installation_id": str(uuid.uuid4()),
+                    "installation_id": 999999999,
                     "pr_number": 1,
                     "repo_full_name": "org/repo",
                     "skill_name": "challenge-me",

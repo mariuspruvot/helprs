@@ -7,7 +7,6 @@ They use AsyncClient + ASGITransport against the real FastAPI app.
 import hashlib
 import hmac
 import os
-import uuid
 
 # Set env vars BEFORE any app imports -- order matters for pydantic-settings.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test")
@@ -310,7 +309,7 @@ class TestSchemaValidation:
 
         with pytest.raises(ValidationError, match="skill_name"):
             CreateSessionRequest(
-                installation_id=uuid.uuid4(),
+                installation_id=123456789,
                 pr_number=1,
                 repo_full_name="owner/repo",
                 skill_name="invalid skill name with spaces!",
@@ -324,7 +323,7 @@ class TestSchemaValidation:
 
         with pytest.raises(ValidationError, match="repo_full_name"):
             CreateSessionRequest(
-                installation_id=uuid.uuid4(),
+                installation_id=123456789,
                 pr_number=1,
                 repo_full_name="not-a-valid-repo-format",
                 skill_name="challenge-me",
@@ -335,7 +334,7 @@ class TestSchemaValidation:
         from helprs.modules.container.schemas import CreateSessionRequest
 
         req = CreateSessionRequest(
-            installation_id=uuid.uuid4(),
+            installation_id=123456789,
             pr_number=10,
             repo_full_name="owner/repo",
             skill_name="challenge-me",
@@ -351,7 +350,7 @@ class TestSchemaValidation:
 
         with pytest.raises(ValidationError, match="pr_number"):
             CreateSessionRequest(
-                installation_id=uuid.uuid4(),
+                installation_id=123456789,
                 pr_number=-1,
                 repo_full_name="owner/repo",
                 skill_name="challenge-me",
@@ -365,7 +364,7 @@ class TestSchemaValidation:
 
         with pytest.raises(ValidationError, match="repo_full_name"):
             CreateSessionRequest(
-                installation_id=uuid.uuid4(),
+                installation_id=123456789,
                 pr_number=1,
                 repo_full_name="/repo",
                 skill_name="challenge-me",
