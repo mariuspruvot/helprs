@@ -1,4 +1,5 @@
 import InstallCTA from './InstallCTA'
+import SignInButton from './SignInButton'
 
 /*
  * Dark theme — Raycast-inspired with amber accent and real terminal blocks.
@@ -60,19 +61,19 @@ const STEPS = [
   {
     number: '01',
     title: 'PR opened',
-    description: 'helPRs automatically creates a comprehension session for every pull request.',
+    description: 'helPRs comments on every pull request with a link to start a comprehension session.',
     terminal: (
       <>
         <span style={{ color: TERM.green }}>$</span>{' git push origin feature/auth\n'}
         <span style={{ color: TERM.muted }}>{'  \u2192 PR #42 opened\n'}</span>
-        <span style={{ color: TERM.green }}>{'  \u2192 helPRs session created'}</span>
+        <span style={{ color: TERM.green }}>{'  \u2192 helPRs: Ready to challenge you'}</span>
       </>
     ),
   },
   {
     number: '02',
     title: 'Answer Socratic questions',
-    description: 'AI asks targeted questions about your code decisions \u2014 both author and reviewer.',
+    description: 'AI asks targeted questions about your code decisions, trade-offs, and edge cases.',
     terminal: (
       <>
         <span style={{ color: TERM.amber }}>?</span>{' Why did you choose a\n  recursive approach here\n  instead of iterative?'}
@@ -102,12 +103,12 @@ const BYOK_ITEMS = [
   {
     label: 'BYOK',
     title: 'Bring Your Own Key',
-    description: 'You provide your Anthropic API key. We never touch it beyond forwarding requests.',
+    description: 'You provide your own Claude credentials. They stay on your infrastructure \u2014 encrypted at rest, injected at runtime.',
   },
   {
-    label: 'ZERO',
-    title: 'Zero data retention',
-    description: 'No question or answer text stored. Metadata only \u2014 hashes, scores, timestamps.',
+    label: 'EPHEM',
+    title: 'Ephemeral containers',
+    description: 'Each session runs in an isolated Docker container that is destroyed after completion. Nothing persists between sessions.',
   },
   {
     label: 'PRIV',
@@ -139,8 +140,18 @@ export default function LandingPage() {
       className="min-h-screen bg-primary text-text-primary"
       style={{ fontFamily: 'var(--font-family-sans)', letterSpacing: '0.2px' }}
     >
+      {/* Nav */}
+      <header className="w-full px-6 py-5">
+        <div className="max-w-[960px] mx-auto flex items-center justify-between">
+          <span className="text-text-secondary font-semibold font-mono text-[15px]" style={{ letterSpacing: '-0.01em' }}>
+            <span style={{ color: '#E2A039' }}>helPRs</span>
+          </span>
+          <SignInButton />
+        </div>
+      </header>
+
       {/* Hero */}
-      <Section className="pt-28 pb-24 md:pt-44 md:pb-36">
+      <Section className="pt-16 pb-24 md:pt-32 md:pb-36">
         <div className="mb-8">
           <span
             className="inline-block text-text-secondary text-[13px] font-medium px-3.5 py-1.5"
@@ -172,7 +183,7 @@ export default function LandingPage() {
           {' '}the code you ship?
         </h1>
         <p className="text-text-secondary text-[17px] leading-[1.65] mb-12 max-w-[540px]">
-          helPRs creates Socratic comprehension sessions for every pull request — challenging both author and reviewer to prove they understand the code before it merges.
+          helPRs creates Socratic comprehension sessions for every pull request — challenging the author to prove they understand the code before it merges.
         </p>
         <div className="flex flex-col sm:flex-row items-start gap-5">
           <InstallCTA className="w-full sm:w-auto" />
@@ -259,8 +270,8 @@ export default function LandingPage() {
                 <p className="text-text-secondary text-[14px] leading-[1.55] mt-1">faster code generation than comprehension</p>
               </div>
               <div className="py-5" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-                <p className="text-text-primary text-[28px] font-bold font-mono" style={{ letterSpacing: '-0.02em' }}>2 roles</p>
-                <p className="text-text-secondary text-[14px] leading-[1.55] mt-1">both author and reviewer are challenged</p>
+                <p className="text-text-primary text-[28px] font-bold font-mono" style={{ letterSpacing: '-0.02em' }}>Self-hosted</p>
+                <p className="text-text-secondary text-[14px] leading-[1.55] mt-1">your infrastructure, your data, your Claude credentials</p>
               </div>
               <div className="pt-5" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
                 <p className="text-success text-[28px] font-bold font-mono" style={{ letterSpacing: '-0.02em' }}>Private</p>
