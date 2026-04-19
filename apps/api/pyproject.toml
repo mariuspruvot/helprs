@@ -27,7 +27,9 @@ dev = [
     "ruff>=0.8.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
     "httpx>=0.28.0",
+    "mypy>=1.11.0",
 ]
 
 [build-system]
@@ -43,6 +45,33 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+
+# Per-module overrides for third-party lib typing issues (aiodocker, SQLAlchemy, Starlette)
+[[tool.mypy.overrides]]
+module = ["helprs.modules.container.*", "helprs.main"]
+disable_error_code = ["arg-type", "call-overload", "attr-defined"]
+
+[[tool.mypy.overrides]]
+module = ["helprs.core.middleware"]
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = ["helprs.modules.webhook.repository", "helprs.modules.webhook.verification"]
+disable_error_code = ["attr-defined", "arg-type"]
+
+[[tool.mypy.overrides]]
+module = ["helprs.modules.installation.service"]
+disable_error_code = ["arg-type"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
