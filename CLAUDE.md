@@ -2,9 +2,10 @@
 
 ```bash
 docker compose up --build        # Start all services (API :8000, Web :5173, Postgres :5432)
-make lint                        # Ruff check + format (API), ESLint (Web)
+make lint                        # Ruff check + format + mypy (API), ESLint (Web)
 make test                        # pytest (API), vitest (Web)
 make migrate                     # Alembic upgrade head
+make typecheck                   # mypy (API only)
 ```
 
 ## Architecture
@@ -73,6 +74,7 @@ Skills are pluggable Claude Code agent definitions in `skills/`. See `skills/SKI
 
 - Python: ruff with `line-length = 120`, target Python 3.12
 - Lint rules: E, F, I, N, UP, B, A, SIM, TCH
+- mypy: non-strict with pydantic plugin, per-module overrides for third-party lib typing issues (see `pyproject.toml`)
 - `asyncio_mode = "auto"` in pytest — no need for `@pytest.mark.asyncio`
 
 ## Testing
@@ -97,6 +99,7 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 
 ## Gotchas
 
+- **CI coverage threshold**: `--cov-fail-under=70` (current coverage ~75%). Raising to 80% requires covering `admin/views.py`, `main.py` lifespan, and more router branches.
 - **Entrypoint parallel I/O**: clone, metadata (`gh pr view --json`), and diff (`gh pr diff`) run as background jobs with `wait`. The `-R` flag lets `gh` hit the API without a local `.git` dir. `set -e` does NOT propagate from background jobs — each `wait $pid` needs explicit `|| exit 1`. The claude-runner image includes `jq` for parsing the combined metadata JSON.
 - Always run `make lint` before pushing — ruff + eslint must pass
 - **Shiki in tests**: any test rendering session components must mock `./shiki` (highlighter, SHIKI_THEME, SUPPORTED_LANGS) to avoid loading real TextMate grammars in jsdom
