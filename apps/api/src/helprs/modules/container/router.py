@@ -39,6 +39,7 @@ from helprs.modules.container.service import (
 )
 from helprs.modules.installation.service import (
     get_byok_config,
+    get_installation_by_github_id,
     mint_installation_token,
     post_pr_comment_with_retry,
     verify_installation_access,
@@ -69,18 +70,8 @@ async def create_container_session(
     Looks up the installation's BYOK credentials, mints a GitHub token,
     and provisions an ephemeral Docker container running the requested skill.
     """
-    from sqlalchemy import select
-
-    from helprs.modules.installation.models import Installation
-
-    # Validate installation exists
-    result = await db.execute(
-        select(Installation).where(
-            Installation.id == body.installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
+    # Validate installation exists (look up by github_installation_id)
+    installation = await get_installation_by_github_id(db, body.installation_id)
     if not installation:
         raise NotFoundError("Installation not found")
 
@@ -100,7 +91,7 @@ async def create_container_session(
     # Create session record
     cs = await create_session(
         db=db,
-        installation_id=body.installation_id,
+        installation_id=installation.id,
         pr_number=body.pr_number,
         repo_full_name=body.repo_full_name,
         skill_name=body.skill_name,
