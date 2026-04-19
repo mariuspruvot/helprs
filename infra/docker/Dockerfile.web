@@ -10,7 +10,9 @@ CMD ["npx", "vite", "--host", "0.0.0.0"]
 FROM node:22-slim AS build
 WORKDIR /app
 ARG VITE_API_URL
+ARG VITE_GITHUB_APP_SLUG
 ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_GITHUB_APP_SLUG=${VITE_GITHUB_APP_SLUG}
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
