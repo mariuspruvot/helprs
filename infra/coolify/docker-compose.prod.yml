@@ -9,12 +9,22 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../../skills:/app/skills:ro
-    env_file: ../../.env
     environment:
       - ENVIRONMENT=production
       - SKILLS_HOST_PATH=${SKILLS_HOST_PATH}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - APP_BASE_URL=${APP_BASE_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - FERNET_KEY=${FERNET_KEY}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
+      - CONTAINER_TTL_SECONDS=${CONTAINER_TTL_SECONDS}
+      - UVICORN_WORKERS=${UVICORN_WORKERS}
     depends_on:
       db:
         condition: service_healthy
@@ -36,6 +46,8 @@ services:
       context: ../../apps/web
       dockerfile: ../../infra/docker/Dockerfile.web
       target: production
+      args:
+        VITE_API_URL: ${VITE_API_URL}
     ports:
       - "80:80"
     deploy:
