@@ -133,3 +133,4 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 - **Coolify deployment**: TLS terminates at the Coolify reverse proxy, not in nginx. Nginx serves the SPA with security headers but no HTTPS config. SSE `X-Accel-Buffering: no` header is set by the API, not nginx.
 - **Non-root API container**: production Dockerfile uses `appuser`. Port 8000 > 1024 so no privilege needed. Docker socket mount still grants Docker access regardless of USER.
 - **Human-facing docs**: `README.md`, `CONTRIBUTING.md`, `docs/self-hosting.md`, `docs/architecture.md`, `docs/creating-skills.md` -- keep in sync with CLAUDE.md when architecture changes. CLAUDE.md is for AI agents; those docs are for human self-hosters and contributors.
+- **Doc archival**: internal/debug docs go to `docs/.archive/`, not deleted. `PROJECT-STATUS.md` was removed (stale, duplicated by README + CLAUDE.md).

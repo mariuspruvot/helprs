@@ -15,7 +15,7 @@ helPRs is a Socratic comprehension tool for pull requests. The current architect
 1. **Cost risk**: Proxying API calls means helPRs infrastructure bears the latency and error-handling burden, even though users provide their own keys. At scale, the operational complexity grows linearly with users.
 2. **Maintenance burden**: The comprehension module uses a custom DDD layout with pydantic-ai agents, SSE streaming, and complex orchestration code -- all of which must be maintained, tested, and evolved.
 3. **Limited capabilities**: The API-based approach limits what agents can do. Claude Code CLI has access to tools (file reading, grep, git operations, shell commands) that API calls cannot replicate without building each capability by hand.
-4. **Open-source ambition**: The project aims to become an open-source tool that teams (starting with papernest) can self-host using their own Claude licenses. A heavy backend with AI orchestration code is harder to maintain as OSS.
+4. **Open-source ambition**: The project aims to become an open-source tool that teams can self-host using their own Claude licenses. A heavy backend with AI orchestration code is harder to maintain as OSS.
 
 ## Decision
 
@@ -157,5 +157,5 @@ Community can contribute additional skills via the open-source repository.
 
 ## Notes
 
-- The project targets open-source release. papernest is the first intended adopter (internal dogfooding with existing Claude licenses).
+- The project targets open-source release, designed for self-hosting with existing Claude licenses.
 - The skill-as-agent model means the repository itself must be "agent-ready" -- CLAUDE.md and docs must be precise enough for a fresh Claude Code instance to understand the project without prior context.

@@ -3,7 +3,7 @@ site_description: Pluggable AI skill runner for pull requests
 site_url: https://helprs.dev/docs
 
 repo_name: helprs
-repo_url: https://github.com/marius-pruvot/helprs
+repo_url: https://github.com/mariuspruvot/helprs
 
 theme:
   name: material
@@ -104,5 +104,5 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/marius-pruvot/helprs
+      link: https://github.com/mariuspruvot/helprs
   generator: false
