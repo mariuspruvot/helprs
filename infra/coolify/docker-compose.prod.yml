@@ -1,14 +1,14 @@
 services:
   api:
     build:
-      context: ../../apps/api
+      context: ./apps/api
       dockerfile: ../../infra/docker/Dockerfile.api
       target: production
     expose:
       - "8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ../../skills:/app/skills:ro
+      - ./skills:/app/skills:ro
     environment:
       - ENVIRONMENT=production
       - SKILLS_HOST_PATH=${SKILLS_HOST_PATH}
@@ -43,7 +43,7 @@ services:
 
   web:
     build:
-      context: ../../apps/web
+      context: ./apps/web
       dockerfile: ../../infra/docker/Dockerfile.web
       target: production
       args:
