@@ -43,7 +43,7 @@ describe('LandingPage', () => {
   test('renders terminal-like visuals for each step', () => {
     const { container } = render(<LandingPage />)
     const text = container.textContent ?? ''
-    expect(text).toContain('PR #42 opened')
+    expect(text).toContain('PR #42')
     expect(text).toContain('recursive approach here')
     expect(text).toContain('strong')
   })
@@ -52,7 +52,7 @@ describe('LandingPage', () => {
     render(<LandingPage />)
     expect(screen.getByText('Your keys, your data, your control')).toBeTruthy()
     expect(screen.getByText('Bring Your Own Key')).toBeTruthy()
-    expect(screen.getByText('Zero data retention')).toBeTruthy()
+    expect(screen.getByText('Ephemeral containers')).toBeTruthy()
     expect(screen.getByText('Private by default')).toBeTruthy()
   })
 
@@ -71,7 +71,13 @@ describe('LandingPage', () => {
     render(<LandingPage />)
     expect(screen.getByText(/Comprehension debt/)).toBeTruthy()
     expect(screen.getByText('5-7x')).toBeTruthy()
-    expect(screen.getByText('2 roles')).toBeTruthy()
+    expect(screen.getByText('Self-hosted')).toBeTruthy()
+  })
+
+  test('renders sign-in link in header', () => {
+    render(<LandingPage />)
+    const signIn = screen.getByRole('link', { name: /sign in/i })
+    expect(signIn.getAttribute('href')).toContain('/api/v1/auth/github')
   })
 
   test('renders footer with GitHub link', () => {
