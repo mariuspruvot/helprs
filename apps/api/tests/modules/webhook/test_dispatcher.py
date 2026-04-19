@@ -2,10 +2,23 @@
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import structlog
 
 from helprs.modules.webhook import dispatcher
 from helprs.modules.webhook.dispatcher import DispatchResult
+
+
+@pytest.fixture(autouse=True)
+def _reset_dispatcher_logger():
+    """Clear cached bound logger so structlog.testing.capture_logs() works.
+
+    create_app() calls configure_logging() with cache_logger_on_first_use=True.
+    Once the module-level logger proxy in dispatcher.py resolves and caches its
+    bound logger, capture_logs() can no longer intercept it.  Replacing the proxy
+    with a fresh one before each test fixes this.
+    """
+    dispatcher.logger = structlog.get_logger()
 
 
 class TestDispatchWebhook:
