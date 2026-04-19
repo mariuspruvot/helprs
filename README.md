@@ -1,5 +1,7 @@
 # helPRs
 
+[![CI](https://github.com/mariuspruvot/helprs/actions/workflows/ci.yml/badge.svg)](https://github.com/mariuspruvot/helprs/actions/workflows/ci.yml)
+
 **Pluggable AI skill runner for pull requests.**
 
 helPRs spins up ephemeral Docker containers running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to execute skills against your PRs -- comprehension quizzes, code reviews, security audits -- and streams results back in real time.
