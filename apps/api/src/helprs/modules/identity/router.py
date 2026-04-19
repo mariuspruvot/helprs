@@ -59,17 +59,31 @@ async def github_login(request: Request, settings: GetSettings):
 async def github_callback(
     request: Request,
     code: str,
-    state: str,
     session: DbSession,
     settings: GetSettings,
+    state: str | None = None,
+    installation_id: int | None = None,
+    setup_action: str | None = None,
 ):
-    """Handle GitHub OAuth callback: exchange code, create user, issue tokens."""
-    # Validate CSRF state
-    stored_state = request.cookies.get("oauth_state")
-    if not stored_state or not secrets.compare_digest(stored_state, state):
+    """Handle GitHub OAuth callback: exchange code, create user, issue tokens.
+
+    Two flows land here:
+    - OAuth login: has ``state`` (CSRF-validated against cookie).
+    - GitHub App install: has ``installation_id`` + ``setup_action`` but no ``state``
+      (user authorized the app during installation on github.com).
+    """
+    if state is not None:
+        # Normal OAuth login — validate CSRF state
+        stored_state = request.cookies.get("oauth_state")
+        if not stored_state or not secrets.compare_digest(stored_state, state):
+            from helprs.core.exceptions import UnauthorizedError
+
+            raise UnauthorizedError("Invalid OAuth state parameter")
+    elif installation_id is None:
+        # Neither state nor installation_id — reject
         from helprs.core.exceptions import UnauthorizedError
 
-        raise UnauthorizedError("Invalid OAuth state parameter")
+        raise UnauthorizedError("Missing OAuth state parameter")
 
     # Exchange code for GitHub access token
     token_data = await exchange_code_for_token(code, settings)
