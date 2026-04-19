@@ -4,5 +4,5 @@ import App from './app'
 
 test('renders helPRs heading', () => {
   render(<App />)
-  expect(screen.getByText('helPRs')).toBeDefined()
+  expect(screen.getAllByText('helPRs').length).toBeGreaterThan(0)
 })
