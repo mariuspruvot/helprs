@@ -9,7 +9,7 @@ from pydantic import BaseModel, field_validator
 class CreateSessionRequest(BaseModel):
     """Request body for creating a new container session."""
 
-    installation_id: uuid.UUID
+    installation_id: int
     pr_number: int
     repo_full_name: str
     skill_name: str
