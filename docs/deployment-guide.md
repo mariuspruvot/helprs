@@ -1,103 +1,103 @@
 # Deployment Guide
 
-> Auto-generated on 2026-04-17 (post-pivot rewrite)
+helPRs runs as a set of Docker containers: an API server, a static frontend, a PostgreSQL database, and ephemeral Claude Runner containers spawned on demand.
 
-## Architecture Overview
+## Architecture
 
 ```
-+--------------+     +--------------+     +--------------+
-|   Coolify    |---->|   Nginx      |     |   API        |
-|  (Reverse    |     |   (Web)      |     |  (FastAPI)   |
-|   Proxy)     |---->|   :80        |     |   :8000      |
-+--------------+     +--------------+     +--------------+
-                                               |       |
-                                         +-----v------+ |
-                                         | PostgreSQL | |
-                                         |   :5432    | |
-                                         +------------+ |
-                                                        |
-                                         +--------------v-+
-                                         | claude-runner   |
-                                         | (ephemeral,     |
-                                         |  spawned on     |
-                                         |  demand)        |
-                                         +-----------------+
+                         +------------------+
+                         |  Reverse Proxy   |
+                         |  (Traefik/Caddy) |
+                         |  TLS termination |
+                         +--------+---------+
+                                  |
+                    +-------------+-------------+
+                    |                           |
+          yourdomain.com              api.yourdomain.com
+                    |                           |
+            +-------v-------+          +--------v--------+
+            |     Web       |          |      API        |
+            |  (nginx :80)  |          |  (FastAPI :8000)|
+            |  Static React |          |  Uvicorn        |
+            +---------------+          +---+-------+-----+
+                                           |       |
+                                     +-----v---+   |
+                                     |Postgres  |   |
+                                     |  :5432   |   |
+                                     +----------+   |
+                                                    |
+                                          +---------v---------+
+                                          |  claude-runner    |
+                                          |  (ephemeral,      |
+                                          |   spawned per     |
+                                          |   session)        |
+                                          +-------------------+
 ```
 
-- **Web container**: Nginx serving static React build, SPA routing via `try_files`
-- **API container**: Uvicorn running FastAPI, auto-runs `alembic upgrade head` on startup. Spawns ephemeral claude-runner containers via Docker SDK.
-- **Database**: PostgreSQL 16 with persistent `pgdata` volume
-- **Claude Runner**: Ephemeral container with Claude Code CLI + gh CLI. Provisioned per skill execution, destroyed after completion.
-- **Reverse proxy**: Coolify handles TLS termination + domain routing
+- **Web**: Nginx serving the built React SPA with `try_files` for client-side routing
+- **API**: Uvicorn running FastAPI. Auto-runs Alembic migrations on startup. Spawns ephemeral claude-runner containers via Docker SDK.
+- **PostgreSQL 16**: Persistent storage with a `pgdata` volume
+- **Claude Runner**: Ephemeral container with Claude Code CLI and `gh` CLI. Created per skill session, destroyed after completion or timeout.
+- **Reverse Proxy**: Handles TLS termination and routes traffic to web and API containers. Can be Traefik (Coolify), Caddy, nginx, or an ALB.
 
-## Container Images
+## Before You Deploy
 
-### API (`infra/docker/Dockerfile.api`)
+Complete the [Self-Hosting Setup](self-hosting.md) first:
 
-| Stage | Base | Purpose |
-|-------|------|---------|
-| `dev` | `python:3.12-slim` + uv | Hot-reload development (source volumes mounted) |
-| `production` | `python:3.12-slim` + uv | Migrations + uvicorn (no dev deps, no reload) |
+1. Create a GitHub App with the required permissions
+2. Generate secrets (JWT key, Fernet key, webhook secret)
+3. Prepare your environment variables
 
-Production entrypoint:
+## Deployment Options
+
+### [Coolify](deploy-coolify.md) -- Recommended
+
+Best for single-VPS deployments. Coolify provides a web UI for managing Docker Compose services with automatic TLS via Traefik, GitHub integration for auto-deploys, and a built-in environment variable editor.
+
+**Good for**: Solo developers, small teams, side projects.
+
+### [Docker Compose on a VPS](self-hosting.md#step-3-deploy)
+
+Manual deployment using the production compose file with your own reverse proxy. Covered in the self-hosting guide under Step 3.
+
+**Good for**: Operators comfortable with Docker and reverse proxy configuration.
+
+### [AWS ECS](deploy-aws-ecs.md)
+
+Managed container orchestration on AWS with RDS for PostgreSQL and ALB for routing. Requires EC2-backed ECS tasks (not Fargate) because the API needs Docker socket access.
+
+**Good for**: Teams with existing AWS infrastructure, production workloads needing auto-scaling.
+
+## Common Requirements
+
+Regardless of deployment method, you need:
+
+| Requirement | Details |
+|-------------|---------|
+| **Docker** | 20.10+ with Compose v2 |
+| **GitHub App** | Created per [self-hosting guide](self-hosting.md#step-1-create-a-github-app) |
+| **Claude credential** | OAuth token via `claude setup-token` or Anthropic API key |
+| **Domain** | With DNS pointing to your server (subdomain setup recommended) |
+| **Docker socket** | The API container must access `/var/run/docker.sock` to spawn claude-runner containers |
+
+## Health Checks
+
+All deployment methods should verify these endpoints after deploy:
+
+| Service | Check | Expected |
+|---------|-------|----------|
+| **API** | `GET /health` | `{"status": "ok"}` |
+| **Database** | `pg_isready -U helprs` | exit code 0 |
+| **Web** | `GET /` | HTTP 200 (serves `index.html`) |
+| **TLS** | `curl -I https://yourdomain.com` | valid certificate |
+
 ```bash
-sh -c "uv run alembic upgrade head && uv run uvicorn helprs.main:app --host 0.0.0.0 --port 8000"
+# Quick verification after deploy
+curl -s https://api.yourdomain.com/health | jq .
+curl -s -o /dev/null -w "%{http_code}" https://yourdomain.com
 ```
 
-### Web (`infra/docker/Dockerfile.web`)
-
-| Stage | Base | Purpose |
-|-------|------|---------|
-| `dev` | `node:22-slim` | Vite dev server |
-| `build` | `node:22-slim` | `npm ci && npm run build` -> `/app/dist` |
-| `production` | `nginx:alpine` | Serves built assets from build stage |
-
-### Claude Runner (`infra/docker/Dockerfile.claude-runner`) -- Coming in Phase 2
-
-| Layer | Contents |
-|-------|----------|
-| Base | Minimal Linux (alpine or slim) |
-| Tools | Claude Code CLI (pinned version), gh CLI, git |
-| Entry | Skill-specific entrypoint script |
-
-The claude-runner image will be pre-pulled on production hosts to minimize cold start latency.
-
-## Production Compose (`infra/coolify/docker-compose.prod.yml`)
-
-Key differences from dev:
-
-- No source volume mounts
-- No `--reload` flag
-- Web on port 80 (nginx) instead of 5173 (Vite)
-- DB port not exposed to host
-- All services have `restart: unless-stopped`
-- API container needs Docker socket access for spawning claude-runner containers
-
-## Environment Configuration
-
-### Required Secrets (production)
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Postgres connection string |
-| `SECRET_KEY` | JWT signing secret (strong, unique) |
-| `GITHUB_APP_ID` | GitHub App numeric ID |
-| `GITHUB_APP_PRIVATE_KEY` | GitHub App RSA private key (PEM) |
-| `GITHUB_WEBHOOK_SECRET` | Webhook HMAC secret |
-| `FERNET_KEY` | Encryption key for stored credentials |
-| `FRONTEND_URL` | Frontend origin (e.g., `https://helprs.dev`) |
-| `ADMIN_PASSWORD` | SQLAdmin panel password |
-| `ENVIRONMENT` | `production` |
-
-### GitHub Actions Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `GITHUB_TOKEN` | Auto-provided, for GHCR push |
-| `COOLIFY_WEBHOOK_URL` | Coolify deployment webhook URL |
-| `COOLIFY_TOKEN` | Coolify API bearer token |
-
-## CI/CD Pipeline
+## CI/CD
 
 ### Continuous Integration (`.github/workflows/ci.yml`)
 
@@ -108,52 +108,19 @@ Push to any branch / PR to main
        +-- test-backend  (pytest + Postgres service)
        +-- lint-frontend (eslint)
        +-- test-frontend (vitest)
-              |
-              v
-         build (Docker build both images, no push)
 ```
 
-### Continuous Deployment (`.github/workflows/deploy.yml`)
+### Continuous Deployment
 
-```
-Push to main
-       |
-       v
-  build-and-push
-       |  Login to ghcr.io
-       |  Build + push api:latest + api:{sha}
-       |  Build + push web:latest + web:{sha}
-       |
-       v
-     deploy (conditional: COOLIFY_WEBHOOK_URL secret exists)
-       |  POST to Coolify webhook URL
-```
+Images are built locally on the deployment host (not pushed to a registry). Each deployment platform handles this differently:
 
-### Image Registry
-
-- Registry: `ghcr.io`
-- Dual-tag: `latest` + commit SHA
-- *claude-runner image will be added to registry when implemented*
-
-## Health Checks
-
-- **API**: `GET /health` -> `{"status": "ok"}`
-- **Database**: `pg_isready -U helprs` (5s interval, 3s timeout, 5 retries)
-- **Web**: Nginx serves index.html (standard HTTP 200)
-
-## Container Runner Considerations (Phase 2)
-
-| Concern | Mitigation |
-|---------|------------|
-| Cold start latency | Pre-pull claude-runner image on all hosts |
-| Resource consumption | CPU/memory limits per container, TTL enforcement |
-| Concurrent containers | Queue system to limit simultaneous executions |
-| Credential security | Ephemeral env vars only, container destroyed after use |
-| Docker socket security | API container needs socket access -- evaluate alternatives (Docker-in-Docker, remote Docker host) |
+- **Coolify**: auto-deploys on push via GitHub App integration
+- **VPS**: `git pull && docker compose up -d --build`
+- **AWS ECS**: push to ECR, update ECS service (see [AWS guide](deploy-aws-ecs.md))
 
 ## Rollback
 
-1. Identify last working commit SHA
-2. Re-tag images: `docker tag ghcr.io/.../api:{good-sha} ghcr.io/.../api:latest`
-3. Push and trigger Coolify redeploy
-4. If DB migration needs rollback: `uv run alembic downgrade -1`
+1. Identify the last working commit SHA
+2. Check out that commit on the deployment host
+3. Rebuild and restart: `docker compose -f infra/coolify/docker-compose.prod.yml up -d --build`
+4. If a database migration needs rollback: `docker compose exec api uv run alembic downgrade -1`
