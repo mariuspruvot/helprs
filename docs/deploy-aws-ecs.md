@@ -3,7 +3,9 @@
 Guide to deploy helPRs on AWS using ECS, RDS, and an Application Load Balancer.
 
 !!! warning "Docker socket constraint"
-    helPRs spawns ephemeral containers via the Docker socket. **ECS Fargate does not support Docker socket mounting.** You must use **ECS on EC2** for the API task, or run the API on a standalone EC2 instance. The Web and DB services can run on Fargate.
+    helPRs spawns ephemeral containers via the Docker socket. **ECS Fargate does not support Docker socket mounting.** You must use **ECS on EC2** for the API task, or run the API on a standalone EC2 instance. The Web service can run on Fargate.
+
+This guide assumes you have completed the [Self-Hosting Setup](self-hosting.md) (GitHub App created, secrets generated).
 
 ---
 
@@ -20,7 +22,8 @@ Guide to deploy helPRs on AWS using ECS, RDS, and an Application Load Balancer.
                     |  (TLS via ACM)     |
                     +----+----------+----+
                          |          |
-              /api/*     |          |  /*
+        api.yourdomain   |          |  yourdomain.com
+        .com             |          |
               +----------v--+  +----v-----------+
               | ECS Service |  | ECS Service    |
               | API (EC2)   |  | Web (Fargate)  |
@@ -32,7 +35,7 @@ Guide to deploy helPRs on AWS using ECS, RDS, and an Application Load Balancer.
     +------v------+   +--------v--------+
     |    RDS      |   | claude-runner   |
     | PostgreSQL  |   | (spawned on     |
-    |             |   |  EC2 host via   |
+    | 16          |   |  EC2 host via   |
     |             |   |  Docker socket) |
     +-------------+   +-----------------+
 ```
@@ -62,6 +65,21 @@ aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query 'Vpc.VpcId' --output text
 
 You need at least 2 subnets in different AZs for the ALB and RDS.
 
+### Security Groups
+
+Create security groups for each component:
+
+```bash
+# ALB security group: allow inbound 80/443 from anywhere
+aws ec2 create-security-group --group-name helprs-alb-sg --description "helPRs ALB"
+
+# API security group: allow inbound 8000 from ALB only
+aws ec2 create-security-group --group-name helprs-api-sg --description "helPRs API"
+
+# DB security group: allow inbound 5432 from API only
+aws ec2 create-security-group --group-name helprs-db-sg --description "helPRs DB"
+```
+
 ### RDS PostgreSQL
 
 ```bash
@@ -74,17 +92,23 @@ aws rds create-db-instance \
   --master-user-password '<strong-password>' \
   --allocated-storage 20 \
   --db-name helprs \
-  --vpc-security-group-ids <sg-id> \
+  --vpc-security-group-ids <db-sg-id> \
   --no-publicly-accessible
 ```
 
 !!! tip "Security group"
     The RDS security group should only allow inbound PostgreSQL (port 5432) from the ECS API task security group.
 
+Note the RDS endpoint after creation:
+
+```bash
+aws rds describe-db-instances --db-instance-identifier helprs-db \
+  --query 'DBInstances[0].Endpoint.Address' --output text
+```
+
 ### ECR Repositories
 
 ```bash
-# Create repositories for each image
 aws ecr create-repository --repository-name helprs/api
 aws ecr create-repository --repository-name helprs/web
 aws ecr create-repository --repository-name helprs/claude-runner
@@ -99,7 +123,7 @@ aws acm request-certificate \
   --validation-method DNS
 ```
 
-Complete DNS validation as prompted.
+Complete DNS validation as prompted. Wait for the certificate status to become `ISSUED`.
 
 ---
 
@@ -107,10 +131,12 @@ Complete DNS validation as prompted.
 
 ```bash
 # Login to ECR
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
+aws ecr get-login-password --region <region> | \
+  docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
 
 # Build and push API
-docker build -f infra/docker/Dockerfile.api --target production -t <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/api:latest apps/api
+docker build -f infra/docker/Dockerfile.api --target production \
+  -t <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/api:latest apps/api
 docker push <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/api:latest
 
 # Build and push Web (with build args)
@@ -122,7 +148,8 @@ docker push <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/web:latest
 
 # Build and push claude-runner
 docker build -f infra/docker/claude-runner/Dockerfile \
-  -t <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest infra/docker/claude-runner
+  -t <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest \
+  infra/docker/claude-runner
 docker push <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest
 ```
 
@@ -141,33 +168,68 @@ aws secretsmanager create-secret \
     "ADMIN_PASSWORD": "<generated>",
     "GITHUB_WEBHOOK_SECRET": "<generated>",
     "GITHUB_CLIENT_SECRET": "<from-github>",
-    "GITHUB_APP_PRIVATE_KEY": "<raw-pem-content>",
+    "GITHUB_APP_PRIVATE_KEY": "<base64-encoded-pem>",
     "DATABASE_URL": "postgresql+asyncpg://helprs:<password>@<rds-endpoint>:5432/helprs"
   }'
 ```
 
+!!! note "PEM key in Secrets Manager"
+    Use the base64-encoded PEM for Secrets Manager (JSON does not support multi-line values cleanly).
+    The application auto-detects base64 and decodes it.
+
 ---
 
-## 4. ECS Cluster
+## 4. ECS Cluster and EC2 Instance
 
 ```bash
 aws ecs create-cluster --cluster-name helprs
-
-# For the API task, you need an EC2 capacity provider (Docker socket requirement)
-# Register an EC2 instance with the ECS agent installed
 ```
 
-!!! warning "EC2 instance for API"
-    The API task must run on an EC2 instance (not Fargate) to access the Docker socket. Install the ECS agent on an EC2 instance and register it with your cluster. The instance also needs the claude-runner image pre-pulled.
+### EC2 Instance for API
+
+The API task must run on EC2 (not Fargate) to access the Docker socket. Launch an ECS-optimized Amazon Linux 2 instance:
+
+```bash
+aws ec2 run-instances \
+  --image-id <ecs-optimized-ami> \
+  --instance-type t3.medium \
+  --iam-instance-profile Name=ecsInstanceRole \
+  --security-group-ids <api-sg-id> \
+  --user-data '#!/bin/bash
+echo ECS_CLUSTER=helprs >> /etc/ecs/ecs.config'
+```
+
+!!! tip "Find the ECS-optimized AMI"
+    ```bash
+    aws ssm get-parameters --names /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id \
+      --query 'Parameters[0].Value' --output text
+    ```
 
 ### Pre-pull claude-runner on EC2
 
-SSH into the EC2 instance:
+SSH into the EC2 instance and pull the claude-runner image:
 
 ```bash
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
+aws ecr get-login-password --region <region> | \
+  docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
+
 docker pull <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest
 docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest claude-runner:latest
+```
+
+The API spawns containers using the local image name `claude-runner:latest`, so the tag is required.
+
+### Set Up Skills Directory
+
+```bash
+# On the EC2 instance
+sudo mkdir -p /opt/helprs/skills
+sudo chown ec2-user:ec2-user /opt/helprs/skills
+
+# Clone skills from the repo
+git clone --depth 1 https://github.com/your-org/helprs.git /tmp/helprs
+cp -r /tmp/helprs/skills/* /opt/helprs/skills/
+rm -rf /tmp/helprs
 ```
 
 ---
@@ -176,11 +238,14 @@ docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:late
 
 ### API Task Definition
 
+Create `helprs-api-task.json`:
+
 ```json
 {
   "family": "helprs-api",
   "requiresCompatibilities": ["EC2"],
   "networkMode": "bridge",
+  "executionRoleArn": "arn:aws:iam::<account>:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "api",
@@ -226,7 +291,15 @@ docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:late
         "startPeriod": 30
       },
       "memory": 1024,
-      "cpu": 512
+      "cpu": 512,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/helprs-api",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "api"
+        }
+      }
     }
   ],
   "volumes": [
@@ -242,7 +315,13 @@ docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:late
 }
 ```
 
+```bash
+aws ecs register-task-definition --cli-input-json file://helprs-api-task.json
+```
+
 ### Web Task Definition
+
+Create `helprs-web-task.json`:
 
 ```json
 {
@@ -251,6 +330,7 @@ docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:late
   "networkMode": "awsvpc",
   "cpu": "256",
   "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<account>:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "web",
@@ -263,47 +343,60 @@ docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:late
         "interval": 15,
         "timeout": 5,
         "retries": 3
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/helprs-web",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "web"
+        }
       }
     }
   ]
 }
 ```
 
+```bash
+aws ecs register-task-definition --cli-input-json file://helprs-web-task.json
+```
+
 ---
 
 ## 6. Application Load Balancer
 
-Create an ALB with two target groups:
-
-| Target Group | Port | Health Check | Routing Rule |
-|-------------|------|-------------|--------------|
-| `helprs-api` | 8000 | `/health` | `api.yourdomain.com` |
-| `helprs-web` | 80 | `/` | `yourdomain.com` |
+Create an ALB with host-based routing:
 
 ```bash
 # Create ALB
 aws elbv2 create-load-balancer \
   --name helprs-alb \
   --subnets <subnet-1> <subnet-2> \
-  --security-groups <sg-id>
+  --security-groups <alb-sg-id>
 
 # Create target groups
 aws elbv2 create-target-group --name helprs-api --protocol HTTP --port 8000 \
-  --vpc-id <vpc-id> --health-check-path /health
+  --vpc-id <vpc-id> --health-check-path /health --target-type instance
 
 aws elbv2 create-target-group --name helprs-web --protocol HTTP --port 80 \
-  --vpc-id <vpc-id> --target-type ip --health-check-path /
+  --vpc-id <vpc-id> --health-check-path / --target-type ip
 
-# HTTPS listener with host-based routing
+# HTTPS listener (default -> web)
 aws elbv2 create-listener \
   --load-balancer-arn <alb-arn> \
   --protocol HTTPS --port 443 \
   --certificates CertificateArn=<acm-cert-arn> \
   --default-actions Type=forward,TargetGroupArn=<web-tg-arn>
 
-# Add rule for API subdomain
+# HTTP -> HTTPS redirect
+aws elbv2 create-listener \
+  --load-balancer-arn <alb-arn> \
+  --protocol HTTP --port 80 \
+  --default-actions Type=redirect,RedirectConfig='{Protocol=HTTPS,Port=443,StatusCode=HTTP_301}'
+
+# Routing rule for API subdomain
 aws elbv2 create-rule \
-  --listener-arn <listener-arn> \
+  --listener-arn <https-listener-arn> \
   --conditions Field=host-header,Values=api.yourdomain.com \
   --actions Type=forward,TargetGroupArn=<api-tg-arn> \
   --priority 10
@@ -330,18 +423,17 @@ aws ecs create-service \
   --task-definition helprs-web \
   --desired-count 2 \
   --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[<subnet-1>,<subnet-2>],securityGroups=[<sg-id>],assignPublicIp=ENABLED}" \
+  --network-configuration "awsvpcConfiguration={subnets=[<subnet-1>,<subnet-2>],securityGroups=[<web-sg-id>],assignPublicIp=ENABLED}" \
   --load-balancers targetGroupArn=<web-tg-arn>,containerName=web,containerPort=80
 ```
 
 ---
 
-## 8. DNS
+## 8. DNS Configuration
 
 ### Route 53
 
 ```bash
-# Create A record aliases to the ALB
 aws route53 change-resource-record-sets --hosted-zone-id <zone-id> --change-batch '{
   "Changes": [
     {
@@ -372,38 +464,33 @@ aws route53 change-resource-record-sets --hosted-zone-id <zone-id> --change-batc
 }'
 ```
 
-### External DNS
+### External DNS Provider
 
-If your domain is not on Route 53, create CNAME records pointing to the ALB DNS name:
+If your domain is not on Route 53, create CNAME records:
 
 | Type | Host | Value |
 |------|------|-------|
-| CNAME | `@` or `yourdomain.com` | `helprs-alb-<id>.<region>.elb.amazonaws.com` |
-| CNAME | `api` | `helprs-alb-<id>.<region>.elb.amazonaws.com` |
+| CNAME | `yourdomain.com` | `helprs-alb-<id>.<region>.elb.amazonaws.com` |
+| CNAME | `api.yourdomain.com` | `helprs-alb-<id>.<region>.elb.amazonaws.com` |
+
+!!! note "Root domain CNAME"
+    Some DNS providers don't allow CNAME on the root domain. Use ALIAS/ANAME records if available, or transfer the domain to Route 53.
 
 ---
 
-## 9. Skills and claude-runner on EC2
-
-The EC2 instance running the API task needs the skills directory and the claude-runner image. Set up a deploy script:
+## 9. Verify
 
 ```bash
-#!/bin/bash
-# /opt/helprs/update-skills.sh
-# Run this after each deploy to sync skills from the repo
+# Health check
+curl -s https://api.yourdomain.com/health
+# Expected: {"status":"ok"}
 
-cd /opt/helprs
-if [ -d "repo" ]; then
-  cd repo && git pull
-else
-  git clone https://github.com/your-org/helprs.git repo
-fi
-
-rm -rf /opt/helprs/skills
-cp -r repo/skills /opt/helprs/skills
+# Frontend
+curl -s -o /dev/null -w "%{http_code}" https://yourdomain.com
+# Expected: 200
 ```
 
-Add this to your CI/CD pipeline or run it via SSM Run Command.
+Then follow steps 4-6 of the [Self-Hosting Guide](self-hosting.md#step-4-install-the-github-app) to install the GitHub App, configure Claude credentials, and test end-to-end.
 
 ---
 
@@ -419,63 +506,141 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: arn:aws:iam::<account>:role/github-actions-deploy
+          aws-region: <region>
 
-      - uses: aws-actions/amazon-ecr-login@v2
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push images
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          SHA: ${{ github.sha }}
         run: |
           # API
           docker build -f infra/docker/Dockerfile.api --target production \
-            -t $ECR_REGISTRY/helprs/api:latest -t $ECR_REGISTRY/helprs/api:${{ github.sha }} apps/api
+            -t $ECR_REGISTRY/helprs/api:latest \
+            -t $ECR_REGISTRY/helprs/api:$SHA \
+            apps/api
           docker push $ECR_REGISTRY/helprs/api --all-tags
 
           # Web
           docker build -f infra/docker/Dockerfile.web --target production \
             --build-arg VITE_API_URL=https://api.yourdomain.com \
             --build-arg VITE_GITHUB_APP_SLUG=your-app-slug \
-            -t $ECR_REGISTRY/helprs/web:latest -t $ECR_REGISTRY/helprs/web:${{ github.sha }} apps/web
+            -t $ECR_REGISTRY/helprs/web:latest \
+            -t $ECR_REGISTRY/helprs/web:$SHA \
+            apps/web
           docker push $ECR_REGISTRY/helprs/web --all-tags
 
           # claude-runner
           docker build -f infra/docker/claude-runner/Dockerfile \
-            -t $ECR_REGISTRY/helprs/claude-runner:latest infra/docker/claude-runner
+            -t $ECR_REGISTRY/helprs/claude-runner:latest \
+            infra/docker/claude-runner
           docker push $ECR_REGISTRY/helprs/claude-runner --all-tags
 
       - name: Update ECS services
         run: |
           aws ecs update-service --cluster helprs --service helprs-api --force-new-deployment
           aws ecs update-service --cluster helprs --service helprs-web --force-new-deployment
+
+      - name: Update claude-runner on EC2
+        run: |
+          # Pull the new image on the EC2 instance via SSM
+          aws ssm send-command \
+            --instance-ids <ec2-instance-id> \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com",
+              "docker pull <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest",
+              "docker tag <account-id>.dkr.ecr.<region>.amazonaws.com/helprs/claude-runner:latest claude-runner:latest"
+            ]'
 ```
+
+!!! tip "Skills sync"
+    Add a step to sync the `skills/` directory to the EC2 instance after deploy:
+    ```yaml
+    - name: Sync skills to EC2
+      run: |
+        aws ssm send-command \
+          --instance-ids <ec2-instance-id> \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "cd /opt/helprs/repo && git pull",
+            "cp -r skills/* /opt/helprs/skills/"
+          ]'
+    ```
 
 ---
 
 ## Cost Estimation
 
-| Resource | Estimated Monthly Cost |
-|----------|----------------------|
-| EC2 t3.medium (API) | ~$30 |
-| Fargate (Web, 2 tasks) | ~$15 |
-| RDS db.t3.micro (PostgreSQL) | ~$15 |
-| ALB | ~$20 |
-| ECR storage | ~$1 |
-| Route 53 hosted zone | $0.50 |
-| **Total** | **~$80/month** |
+Baseline costs for a minimal deployment (us-east-1 pricing):
+
+| Resource | Spec | Estimated Monthly Cost |
+|----------|------|----------------------|
+| EC2 t3.medium (API + claude-runner) | 2 vCPU, 4 GB RAM | ~$30 |
+| Fargate (Web, 2 tasks) | 0.25 vCPU, 0.5 GB each | ~$15 |
+| RDS db.t3.micro (PostgreSQL 16) | 1 vCPU, 1 GB RAM, 20 GB | ~$15 |
+| ALB | Fixed + LCU charges | ~$20 |
+| ECR storage | ~2 GB images | ~$1 |
+| Route 53 hosted zone | 1 zone | $0.50 |
+| CloudWatch Logs | Minimal | ~$2 |
+| **Total** | | **~$85/month** |
+
+Costs scale primarily with EC2 instance size (concurrent claude-runner containers consume CPU/memory on the host) and ALB traffic.
 
 ---
 
 ## Scaling Considerations
 
-- **Web**: Scale horizontally with Fargate auto-scaling (CPU/memory target tracking)
-- **API**: Limited to one EC2 instance due to Docker socket requirement. For higher throughput, use a larger instance type or separate the container orchestration to a dedicated host
-- **Database**: Scale RDS vertically or add read replicas
-- **claude-runner**: Each session spawns one container. The EC2 instance limits concurrent sessions by available CPU/memory. Set `CONTAINER_TTL_SECONDS` to prevent runaway containers
+### Web (Fargate)
+
+Scale horizontally with ECS Service Auto Scaling:
+
+```bash
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/helprs/helprs-web \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 --max-capacity 10
+
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/helprs/helprs-web \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name cpu-tracking \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration \
+    'TargetValue=70,PredefinedMetricSpecification={PredefinedMetricType=ECSServiceAverageCPUUtilization}'
+```
+
+### API (EC2)
+
+The API task is constrained to a single EC2 instance due to the Docker socket requirement. For higher throughput:
+
+- Use a larger instance type (t3.large, t3.xlarge)
+- Increase `UVICORN_WORKERS` to match available CPUs
+- Each concurrent session spawns one claude-runner container -- size the instance accordingly
+
+### Database (RDS)
+
+- Scale vertically by changing the instance class
+- Add read replicas for read-heavy workloads
+- Enable Multi-AZ for high availability
+
+### claude-runner Containers
+
+Each session spawns one ephemeral container. Limits:
+
+- `CONTAINER_TTL_SECONDS` prevents runaway containers (default: 900s / 15 min)
+- The EC2 instance's CPU and memory limit concurrent sessions
+- A t3.medium (4 GB RAM) comfortably runs 2-3 concurrent sessions

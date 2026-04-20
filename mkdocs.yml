@@ -86,6 +86,7 @@ nav:
   - Home: index.md
   - Overview: project-overview.md
   - Architecture:
+      - System Overview: architecture.md
       - Backend (API): architecture-api.md
       - Frontend (Web): architecture-web.md
       - Infrastructure: architecture-infra.md
@@ -95,14 +96,12 @@ nav:
       - Data Models: data-models-api.md
       - Component Inventory: component-inventory-web.md
       - Source Tree: source-tree-analysis.md
-  - Guides:
-      - Development: development-guide.md
-      - Self-Hosting Setup: self-hosting.md
-      - Creating Skills: creating-skills.md
   - Deployment:
       - Overview: deployment-guide.md
+      - Self-Hosting Setup: self-hosting.md
       - Coolify: deploy-coolify.md
       - AWS ECS: deploy-aws-ecs.md
+      - Creating Skills: creating-skills.md
   - ADRs:
       - "001: Claude Code Container Pivot": adr-001-claude-code-container-pivot.md
 
