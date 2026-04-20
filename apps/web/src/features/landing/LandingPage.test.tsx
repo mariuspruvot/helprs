@@ -8,70 +8,72 @@ describe('LandingPage', () => {
   test('renders hero heading', () => {
     render(<LandingPage />)
     const heading = screen.getByRole('heading', { level: 1 })
-    expect(heading.textContent).toMatch(/Do you\s+understand/)
-    expect(heading.textContent).toMatch(/the code you ship\?/)
+    expect(heading.textContent).toMatch(/AI skills for every/)
+    expect(heading.textContent).toMatch(/pull request/)
   })
 
-  test('renders hero tagline badge', () => {
+  test('renders hero subtitle with Claude Code link', () => {
     render(<LandingPage />)
-    expect(screen.getByText(/For teams shipping AI-generated code/)).toBeTruthy()
+    const claudeLink = screen.getByRole('link', { name: /Claude Code/ })
+    expect(claudeLink.getAttribute('href')).toContain('anthropic.com')
   })
 
-  test('renders two Install GitHub App CTA links (hero + bottom)', () => {
+  test('renders View on GitHub CTA links', () => {
     render(<LandingPage />)
-    const links = screen.getAllByRole('link', { name: /install github app/i })
+    const links = screen.getAllByRole('link', { name: /view on github/i })
     expect(links.length).toBe(2)
+    for (const link of links) {
+      expect(link.getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
+    }
   })
 
-  test('all CTA links point to GitHub App install URL', () => {
+  test('renders Self-hosting guide CTA links', () => {
     render(<LandingPage />)
-    const links = screen.getAllByRole('link', { name: /install github app/i })
+    const links = screen.getAllByRole('link', { name: /self-hosting guide/i })
+    expect(links.length).toBe(2)
     for (const link of links) {
-      expect(link.getAttribute('href')).toContain('github.com/apps/')
-      expect(link.getAttribute('href')).toContain('/installations/new')
+      expect(link.getAttribute('href')).toContain('docs/self-hosting.md')
     }
   })
 
   test('renders "How it works" section with 3 steps', () => {
     render(<LandingPage />)
-    expect(screen.getByText('Three steps to comprehension')).toBeTruthy()
-    expect(screen.getByText('PR opened')).toBeTruthy()
-    expect(screen.getByText('Answer Socratic questions')).toBeTruthy()
-    expect(screen.getByText('Get your score')).toBeTruthy()
+    expect(screen.getByText('From webhook to results')).toBeTruthy()
+    expect(screen.getByText('Webhook received')).toBeTruthy()
+    expect(screen.getByText('Container runs skill')).toBeTruthy()
+    expect(screen.getByText('Live results, then cleanup')).toBeTruthy()
   })
 
   test('renders terminal-like visuals for each step', () => {
     const { container } = render(<LandingPage />)
     const text = container.textContent ?? ''
     expect(text).toContain('PR #42')
-    expect(text).toContain('recursive approach here')
-    expect(text).toContain('strong')
+    expect(text).toContain('claude-runner')
+    expect(text).toContain('container destroyed')
   })
 
-  test('renders BYOK / privacy section', () => {
+  test('renders self-hosted features section', () => {
     render(<LandingPage />)
-    expect(screen.getByText('Your keys, your data, your control')).toBeTruthy()
+    expect(screen.getByText('Your infrastructure, your data')).toBeTruthy()
     expect(screen.getByText('Bring Your Own Key')).toBeTruthy()
     expect(screen.getByText('Ephemeral containers')).toBeTruthy()
-    expect(screen.getByText('Private by default')).toBeTruthy()
+    expect(screen.getByText('Open source')).toBeTruthy()
   })
 
-  test('does not mention free or open-source', () => {
+  test('renders get started section with docker compose terminal', () => {
     const { container } = render(<LandingPage />)
-    const text = container.textContent?.toLowerCase() ?? ''
-    expect(text).not.toContain('open-source')
-    expect(text).not.toContain('open source')
-    expect(text).not.toContain('mit licensed')
-    // "free" can appear in "free" standalone but not as a selling point
-    expect(text).not.toContain('free &')
-    expect(text).not.toContain('free and')
+    const text = container.textContent ?? ''
+    expect(screen.getByText('Deploy in minutes')).toBeTruthy()
+    expect(text).toContain('docker compose up --build')
+    expect(text).toContain('localhost:8000')
+    expect(text).toContain('localhost:5173')
   })
 
-  test('renders social proof section with stats', () => {
+  test('renders Install GitHub App link in get started section', () => {
     render(<LandingPage />)
-    expect(screen.getByText(/Comprehension debt/)).toBeTruthy()
-    expect(screen.getByText('5-7x')).toBeTruthy()
-    expect(screen.getByText('Self-hosted')).toBeTruthy()
+    const link = screen.getByRole('link', { name: /install the github app/i })
+    expect(link.getAttribute('href')).toContain('github.com/apps/')
+    expect(link.getAttribute('href')).toContain('/installations/new')
   })
 
   test('renders sign-in link in header', () => {
@@ -80,11 +82,19 @@ describe('LandingPage', () => {
     expect(signIn.getAttribute('href')).toContain('/api/v1/auth/github')
   })
 
+  test('renders GitHub link in header', () => {
+    render(<LandingPage />)
+    const ghLinks = screen.getAllByRole('link', { name: /^GitHub$/ })
+    expect(ghLinks.length).toBeGreaterThanOrEqual(2)
+    expect(ghLinks[0].getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
+  })
+
   test('renders footer with GitHub link', () => {
     render(<LandingPage />)
-    const ghLink = screen.getByRole('link', { name: /^GitHub$/ })
-    expect(ghLink.getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
-    expect(ghLink.getAttribute('target')).toBe('_blank')
+    const ghLinks = screen.getAllByRole('link', { name: /^GitHub$/ })
+    const footerLink = ghLinks[ghLinks.length - 1]
+    expect(footerLink.getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
+    expect(footerLink.getAttribute('target')).toBe('_blank')
   })
 
   test('hero heading uses responsive text size classes', () => {
@@ -95,9 +105,11 @@ describe('LandingPage', () => {
     expect(heading.className).toContain('lg:text-[52px]')
   })
 
-  test('CTA in hero is full-width on small screens', () => {
-    render(<LandingPage />)
-    const links = screen.getAllByRole('link', { name: /install github app/i })
-    expect(links[0].className).toContain('w-full')
+  test('mentions open-source and self-hosted nature', () => {
+    const { container } = render(<LandingPage />)
+    const text = container.textContent?.toLowerCase() ?? ''
+    expect(text).toContain('open-source')
+    expect(text).toContain('self-hosted')
+    expect(text).toContain('mit licensed')
   })
 })
