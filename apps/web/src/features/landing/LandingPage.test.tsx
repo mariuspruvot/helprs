@@ -76,10 +76,13 @@ describe('LandingPage', () => {
     expect(link.getAttribute('href')).toContain('/installations/new')
   })
 
-  test('renders sign-in link in header', () => {
+  test('renders sign-in links', () => {
     render(<LandingPage />)
-    const signIn = screen.getByRole('link', { name: /sign in/i })
-    expect(signIn.getAttribute('href')).toContain('/api/v1/auth/github')
+    const signInLinks = screen.getAllByRole('link', { name: /sign in/i })
+    expect(signInLinks.length).toBeGreaterThanOrEqual(2)
+    for (const link of signInLinks) {
+      expect(link.getAttribute('href')).toContain('/api/v1/auth/github')
+    }
   })
 
   test('renders GitHub link in header', () => {
