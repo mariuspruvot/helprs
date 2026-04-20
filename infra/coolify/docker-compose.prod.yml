@@ -6,6 +6,8 @@ services:
       target: production
     expose:
       - "8000"
+    group_add:
+      - "${DOCKER_GID:-994}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./skills:/app/skills:ro
