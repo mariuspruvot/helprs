@@ -62,8 +62,8 @@ services:
     build:
       context: ./infra/docker/claude-runner
     image: claude-runner
-    command: ["echo", "claude-runner image built"]
-    restart: "no"
+    profiles:
+      - build-only
 
   db:
     image: postgres:16-alpine
