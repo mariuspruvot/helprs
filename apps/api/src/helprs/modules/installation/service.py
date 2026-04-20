@@ -475,8 +475,22 @@ async def verify_session_access(
 # --- BYOK Services ---
 
 
-async def validate_anthropic_api_key(api_key: str) -> bool:
-    """Validate an Anthropic API key by calling the models list endpoint."""
+def is_oauth_token(key: str) -> bool:
+    """Check if the key is a Claude OAuth token (sk-ant-oat...)."""
+    return key.startswith("sk-ant-oat")
+
+
+async def validate_claude_key(api_key: str) -> bool:
+    """Validate a Claude credential (API key or OAuth token).
+
+    OAuth tokens (sk-ant-oat...) are accepted without server-side validation
+    because the Anthropic REST API does not accept them — they are validated
+    when the Claude Code CLI uses them inside the container.
+    API keys (sk-ant-api...) are validated against the Anthropic models endpoint.
+    """
+    if is_oauth_token(api_key):
+        return True
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
@@ -507,7 +521,7 @@ async def configure_byok(
     fernet_key: str,
 ) -> BYOKConfig:
     """Configure BYOK key for an installation. Validates, encrypts, and upserts."""
-    is_valid = await validate_anthropic_api_key(api_key)
+    is_valid = await validate_claude_key(api_key)
     if not is_valid:
         raise BYOKKeyInvalidError("API key validation failed -- check your key and try again")
 
