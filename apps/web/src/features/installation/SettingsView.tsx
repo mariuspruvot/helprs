@@ -224,8 +224,8 @@ export default function SettingsView() {
               <input
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-ant-api03-..."
+                onChange={(e) => setApiKey(e.target.value.replace(/\s/g, ''))}
+                placeholder="sk-ant-oat01-..."
                 className="w-full px-4 py-3 rounded-lg bg-primary border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
               />
               {keyError && <p className="text-[var(--warning)] text-[14px]">{keyError}</p>}

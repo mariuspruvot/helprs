@@ -121,16 +121,25 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 - **Multi-worker background tasks**: with `--workers N`, each uvicorn worker runs its own lifespan (webhook reaper + container cleanup). Both are idempotent: reaper uses atomic row-level claim (`mark_processing`), cleanup suppresses double-stop exceptions.
 - **Run migrations after checkout**: `docker exec helprs-api-1 uv run alembic current` vs `alembic heads` — if they differ, run `make migrate`. Missing columns cause 500s that surface as browser CORS errors (response lacks CORS headers on unhandled exceptions).
 - **API rebuild invalidates tokens**: `docker compose up --build api` may regenerate SECRET_KEY, invalidating all JWTs and refresh cookies. Re-authenticate after API restarts.
+- **Coolify `--project-directory`**: Coolify sets `--project-directory` to the repo root, not the compose file location. Relative paths in the compose (`context`, `volumes`) must be relative to the repo root (`./apps/api`, not `../../apps/api`).
+- **Coolify domain persistence**: Domains set in the Coolify UI may be cleared on redeploy/reload. Verify after each deploy. If persistent issues, add Traefik labels directly in the compose.
+- **`.dockerignore` vs `pyproject.toml`**: `apps/api/.dockerignore` excludes `*.md` but `pyproject.toml` references `readme = "README.md"` — `!README.md` exception is required in `.dockerignore` or `uv sync` fails.
+- **OAuth callback dual flow**: `GET /api/v1/auth/github/callback` accepts both OAuth login (with `state` CSRF param) and GitHub App installation redirect (with `installation_id`, no `state`). The `state` parameter is optional.
+- **GitHub App PEM key**: must be stored as raw PEM (multi-line) in Coolify env vars, NOT base64-encoded. The code passes it directly to `jwt.encode()`.
+- **OAuth tokens must be single-line**: Claude OAuth tokens pasted with line breaks cause `Invalid bearer token` errors. Frontend should strip whitespace/newlines from token input.
 
 ## Key Decisions
 
 - **Pre-pivot code**: preserved on branch `pre-pivot/v1`
 - **No pydantic-ai**: AI orchestration handled by Claude Code CLI in containers, not Python agent code
-- **BYOK via admin**: credentials stored once per user, injected as ephemeral env vars into containers
+- **BYOK via dashboard**: Claude OAuth tokens (from `claude setup-token`) stored per installation, encrypted with Fernet, injected as `CLAUDE_CODE_OAUTH_TOKEN` env var into containers. Zero API cost (uses user's Claude subscription).
 - **Dashboard over SQLAdmin**: user-facing operations (installation list, session history, token config) go through the dashboard UI; SQLAdmin is the superadmin escape hatch
 - **Open source target**: designed for self-hosting with own Claude licenses
 - **Post-results to PR**: after session completion, the API can post score card as a PR comment — opt-in per installation via `post_results_to_pr` boolean; extraction and formatting in `container/pr_comment.py`, triggered in `_event_stream()` after `mark_completed()`
-- **Coolify deployment**: TLS terminates at the Coolify reverse proxy, not in nginx. Nginx serves the SPA with security headers but no HTTPS config. SSE `X-Accel-Buffering: no` header is set by the API, not nginx.
-- **Non-root API container**: production Dockerfile uses `appuser`. Port 8000 > 1024 so no privilege needed. Docker socket mount still grants Docker access regardless of USER.
+- **Coolify deployment**: Two-domain setup via Traefik: `helprs.tech` (web) and `api.helprs.tech` (API). TLS via Let's Encrypt, managed by Coolify. Domains are set in Coolify UI (General > Domains for api / Domains for web) — they may get cleared on redeploy, re-check after each deploy. "Preserve Repository During Deployment" must be enabled so skills are available on the host. The prod compose uses `./` paths (repo-root-relative) because Coolify sets `--project-directory` to the repo root.
+- **claude-runner image**: built via a `profiles: [build-only]` service in the prod compose — Coolify builds the image but never starts the container. The API spawns it dynamically. Image name is `claude-runner:latest` (no namespace prefix).
+- **Non-root API container**: production Dockerfile uses `appuser` with `chown -R appuser:appuser /app` for uv cache writes. Docker socket access requires `group_add: ["${DOCKER_GID:-994}"]` in the compose to match the host's docker group GID.
+- **BYOK supports OAuth tokens**: `validate_claude_key()` accepts both API keys (`sk-ant-api03-...`) and OAuth tokens (`sk-ant-oat...`). OAuth tokens skip server-side validation (validated at runtime by Claude Code CLI). Frontend setup page guides users to `claude setup-token`.
+- **VITE_* build args**: `VITE_API_URL` and `VITE_GITHUB_APP_SLUG` are build-time variables — must be passed as `args` in the compose and declared as `ARG`/`ENV` in `Dockerfile.web`. They cannot be set at runtime.
 - **Human-facing docs**: `README.md`, `CONTRIBUTING.md`, `docs/self-hosting.md`, `docs/architecture.md`, `docs/creating-skills.md` -- keep in sync with CLAUDE.md when architecture changes. CLAUDE.md is for AI agents; those docs are for human self-hosters and contributors.
 - **Doc archival**: internal/debug docs go to `docs/.archive/`, not deleted. `PROJECT-STATUS.md` was removed (stale, duplicated by README + CLAUDE.md).
