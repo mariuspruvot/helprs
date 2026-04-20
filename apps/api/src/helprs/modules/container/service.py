@@ -38,7 +38,7 @@ logger = structlog.get_logger()
 _DEFAULT_CONTAINER_TTL_SECONDS = 15 * 60
 
 # Base image for the claude-runner container
-CLAUDE_RUNNER_IMAGE = "helprs/claude-runner:latest"
+CLAUDE_RUNNER_IMAGE = "claude-runner:latest"
 
 # Path where skills are located inside THIS container (for validation).
 # In Docker: /app/skills. Locally: repo root relative to this file.
