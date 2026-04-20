@@ -241,6 +241,16 @@ export default function LandingPage() {
             Self-hosting guide
           </LinkButton>
         </div>
+        <p className="text-text-muted text-[14px] mt-5">
+          Or{' '}
+          <a
+            href={`${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/api/v1/auth/github`}
+            className="text-accent hover:underline"
+          >
+            sign in
+          </a>{' '}
+          to use this instance.
+        </p>
       </Section>
 
       {/* How it works */}
