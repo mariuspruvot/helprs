@@ -107,15 +107,19 @@ export default function SetupView() {
 
         {step === 'api-key' && (
           <div className="space-y-4">
-            <h2 className="text-[20px] font-semibold">1. Anthropic API Key</h2>
+            <h2 className="text-[20px] font-semibold">1. Claude Token</h2>
             <p className="text-text-secondary text-[14px]">
-              Paste your Anthropic API key. It will be encrypted at rest.
+              Paste your Claude OAuth token. It will be encrypted at rest.
+              <br />
+              <span className="text-text-secondary/70">
+                Generate one with: <code className="bg-[var(--color-surface)] px-1 rounded">claude setup-token</code>
+              </span>
             </p>
             <input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-ant-api03-..."
+              placeholder="sk-ant-oat01-..."
               className="w-full px-4 py-3 rounded-lg bg-[var(--color-surface)] border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
             />
             {error && (
@@ -126,7 +130,7 @@ export default function SetupView() {
               disabled={loading || !apiKey.startsWith('sk-ant-')}
               className="w-full py-3 rounded-lg bg-[var(--accent)] text-white font-semibold disabled:opacity-50 hover:opacity-90 transition-opacity"
             >
-              {loading ? 'Validating...' : 'Save API Key'}
+              {loading ? 'Validating...' : 'Save Token'}
             </button>
           </div>
         )}
