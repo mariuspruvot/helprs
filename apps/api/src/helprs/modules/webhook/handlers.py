@@ -126,10 +126,11 @@ async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> No
 
     try:
         token = await mint_installation_token(installation.github_installation_id, settings)
+        session_path = f"/session/{installation.github_installation_id}/{repo_full_name}/{pr_number}"
         comment_body = (
             f"**helPRs** session created for this PR.\n\n"
             f"Skill: `challenge-me` | "
-            f"[Open session]({settings.APP_BASE_URL}/session/{installation.id}/{repo_full_name}/{pr_number})"
+            f"[Open session]({settings.APP_BASE_URL}{session_path})"
         )
         await post_pr_comment_with_retry(
             owner=owner,
