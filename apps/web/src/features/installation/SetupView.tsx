@@ -118,7 +118,7 @@ export default function SetupView() {
             <input
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={(e) => setApiKey(e.target.value.replace(/\s/g, ''))}
               placeholder="sk-ant-oat01-..."
               className="w-full px-4 py-3 rounded-lg bg-[var(--color-surface)] border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
             />
