@@ -1,6 +1,12 @@
 @import "tailwindcss";
 
-/* Berkeley Mono — commercial font, falls back to IBM Plex Mono */
+/* JetBrains Mono — primary monospace font */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* Inter — body text */
+@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&display=swap');
+
+/* Berkeley Mono — commercial font, optional local override */
 @font-face {
   font-family: 'Berkeley Mono';
   src: url('/fonts/BerkeleyMono-Regular.woff2') format('woff2');
@@ -23,48 +29,49 @@
   font-display: swap;
 }
 
-/* IBM Plex Mono fallback from Google Fonts CDN */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap');
-
-/* Inter — premium sans-serif for body text readability */
-@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&display=swap');
-
 @theme {
-  /* Primary */
-  --color-primary: #201d1d;
-  --color-primary-light: #fdfcfc;
-  --color-surface: #302c2c;
+  /* === Direction E: Warm Dark + Amber === */
 
-  /* Surfaces */
-  --color-light-surface: #f1eeee;
-  --color-input-bg: #f8f7f7;
-
-  /* Semantic — Amber identity: insight, illumination, comprehension */
-  --color-accent: #E2A039;
-  --color-accent-hover: #C8891F;
-  --color-accent-active: #A87018;
-  --color-danger: #ff3b30;
-  --color-danger-hover: #d70015;
-  --color-danger-active: #a50011;
-  --color-success: #30d158;
-  --color-warning: #ff9f0a;
-  --color-warning-hover: #cc7f08;
-  --color-warning-active: #995f06;
+  /* Canvas */
+  --color-bg: #14110e;
+  --color-bg2: #1a1612;
+  --color-card: #1f1b16;
+  --color-card-hi: #261f19;
 
   /* Text */
-  --color-text-primary: #fdfcfc;
-  --color-text-secondary: #9a9898;
-  --color-text-secondary-light: #424245;
-  --color-text-muted: #6e6e73;
+  --color-ink: #f2ede4;
+  --color-ink2: #c9c2b5;
+  --color-dim: #8a8275;
+  --color-dim2: #5a5348;
 
-  /* Border */
-  --color-border: rgba(15, 0, 0, 0.12);
-  --color-border-strong: #646262;
-  --color-border-tab: #9a9898;
+  /* Structure */
+  --color-rule: #2a241d;
+  --color-rule-str: #3a322a;
+
+  /* Accent — amber */
+  --color-accent: #e2a039;
+  --color-accent-soft: #f3c989;
+  --color-accent-dim: #7a5620;
+
+  /* Semantic */
+  --color-ok: #7fb37a;
+  --color-warn: #e8a347;
+  --color-danger: #d66b5e;
 
   /* Typography */
-  --font-family-mono: 'Berkeley Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-family-mono: 'Berkeley Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --font-family-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  /* Typography Scale */
+  --font-size-heading: 38px;
+  --font-size-body: 16px;
+  --font-size-caption: 14px;
+  --font-size-small: 12px;
+  --font-size-overline: 10px;
+  --font-weight-bold: 700;
+  --font-weight-semibold: 600;
+  --font-weight-medium: 500;
+  --font-weight-regular: 400;
 
   /* Spacing (8px grid) */
   --spacing-1: 4px;
@@ -80,25 +87,67 @@
   --spacing-20: 80px;
   --spacing-24: 96px;
 
-  /* Typography Scale */
-  --font-size-heading: 38px;
-  --font-size-body: 16px;
-  --font-size-caption: 14px;
-  --font-weight-bold: 700;
-  --font-weight-medium: 500;
-  --font-weight-regular: 400;
-
   /* Border Radius */
   --radius-default: 4px;
   --radius-input: 6px;
-  --radius-card: 10px;
   --radius-button: 8px;
+  --radius-card: 10px;
   --radius-pill: 9999px;
 
-  /* Shadows — ring-based depth system inspired by Vercel/Raycast */
-  --shadow-ring: 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --shadow-ring-strong: 0 0 0 1px rgba(255, 255, 255, 0.10);
-  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 4px rgba(0, 0, 0, 0.2), 0 8px 24px -8px rgba(0, 0, 0, 0.3);
-  --shadow-elevated: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 12px rgba(0, 0, 0, 0.3), 0 16px 48px -12px rgba(0, 0, 0, 0.4);
-  --shadow-glow-accent: 0 0 24px -4px rgba(226, 160, 57, 0.15);
+  /* Shadows */
+  --shadow-ring: 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-ring-strong: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 0 0 1px var(--color-rule), 0 2px 4px rgba(0, 0, 0, 0.3), 0 8px 24px -8px rgba(0, 0, 0, 0.4);
+  --shadow-elevated: 0 0 0 1px var(--color-rule-str), 0 4px 12px rgba(0, 0, 0, 0.4), 0 16px 48px -12px rgba(0, 0, 0, 0.5);
+  --shadow-glow-accent: 0 0 24px -4px rgba(226, 160, 57, 0.2);
+
+  /* === Deprecated aliases (remove after page rebuilds) === */
+  --color-primary: #14110e;
+  --color-primary-light: #f2ede4;
+  --color-surface: #1f1b16;
+  --color-light-surface: #f2ede4;
+  --color-input-bg: #1a1612;
+  --color-accent-hover: #c8891f;
+  --color-accent-active: #a87018;
+  --color-success: #7fb37a;
+  --color-warning: #e8a347;
+  --color-warning-hover: #c8891f;
+  --color-warning-active: #a87018;
+  --color-danger-hover: #b85a4e;
+  --color-danger-active: #9a4a40;
+  --color-text-primary: #f2ede4;
+  --color-text-secondary: #c9c2b5;
+  --color-text-secondary-light: #8a8275;
+  --color-text-muted: #5a5348;
+  --color-border: var(--color-rule);
+  --color-border-strong: var(--color-rule-str);
+  --color-border-tab: #8a8275;
+}
+
+/* Grain overlay — warm ambient glow on canvas */
+.grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.4;
+  background:
+    radial-gradient(ellipse at 15% 0%, rgba(232, 163, 71, 0.05), transparent 60%),
+    radial-gradient(ellipse at 85% 100%, rgba(232, 163, 71, 0.03), transparent 55%);
+}
+
+/* Pulsing dot animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Overline letter-spacing */
+.overline {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-overline);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-dim);
 }
