@@ -97,7 +97,12 @@ nav:
       - Source Tree: source-tree-analysis.md
   - Guides:
       - Development: development-guide.md
-      - Deployment: deployment-guide.md
+      - Self-Hosting Setup: self-hosting.md
+      - Creating Skills: creating-skills.md
+  - Deployment:
+      - Overview: deployment-guide.md
+      - Coolify: deploy-coolify.md
+      - AWS ECS: deploy-aws-ecs.md
   - ADRs:
       - "001: Claude Code Container Pivot": adr-001-claude-code-container-pivot.md
 
