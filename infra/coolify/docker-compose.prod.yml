@@ -58,6 +58,13 @@ services:
           memory: 128M
     restart: unless-stopped
 
+  claude-runner:
+    build:
+      context: ./infra/docker/claude-runner
+    image: claude-runner
+    command: ["echo", "claude-runner image built"]
+    restart: "no"
+
   db:
     image: postgres:16-alpine
     environment:
