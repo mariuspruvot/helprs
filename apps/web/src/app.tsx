@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 import { useAuthStore } from './features/auth/store'
 import OAuthCallback from './features/auth/OAuthCallback'
 import ProtectedRoute from './features/auth/ProtectedRoute'
+import { AppShell } from './shared/components'
 import InstallationList from './features/dashboard/InstallationList'
 import InstallationDetail from './features/dashboard/InstallationDetail'
 import SessionReplay from './features/dashboard/SessionReplay'
@@ -20,14 +21,17 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Public routes — no shell */}
         <Route path="/" element={<AuthRedirect />} />
         <Route path="/auth/callback" element={<OAuthCallback />} />
-        <Route path="/installations" element={<ProtectedRoute><InstallationList /></ProtectedRoute>} />
-        <Route path="/installations/:installationId" element={<ProtectedRoute><InstallationDetail /></ProtectedRoute>} />
-        <Route path="/installations/:installationId/sessions/:sessionId" element={<ProtectedRoute><SessionReplay /></ProtectedRoute>} />
-        <Route path="/installations/:installationId/setup" element={<ProtectedRoute><SetupView /></ProtectedRoute>} />
-        <Route path="/installations/:installationId/settings" element={<ProtectedRoute><SettingsView /></ProtectedRoute>} />
-        <Route path="/session/:installationId/*" element={<ProtectedRoute><SessionView /></ProtectedRoute>} />
+
+        {/* Protected routes — wrapped in AppShell */}
+        <Route path="/installations" element={<ProtectedRoute><AppShell><InstallationList /></AppShell></ProtectedRoute>} />
+        <Route path="/installations/:installationId" element={<ProtectedRoute><AppShell><InstallationDetail /></AppShell></ProtectedRoute>} />
+        <Route path="/installations/:installationId/sessions/:sessionId" element={<ProtectedRoute><AppShell><SessionReplay /></AppShell></ProtectedRoute>} />
+        <Route path="/installations/:installationId/setup" element={<ProtectedRoute><AppShell><SetupView /></AppShell></ProtectedRoute>} />
+        <Route path="/installations/:installationId/settings" element={<ProtectedRoute><AppShell><SettingsView /></AppShell></ProtectedRoute>} />
+        <Route path="/session/:installationId/*" element={<ProtectedRoute><AppShell><SessionView /></AppShell></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   )
