@@ -13,11 +13,11 @@ from helprs.modules.installation.service import (
     decrypt_byok_key,
     delete_byok_config,
     get_byok_config,
-    validate_anthropic_api_key,
+    validate_claude_key,
 )
 
 
-class TestValidateAnthropicApiKey:
+class TestValidateClaudeKey:
     async def test_valid_key(self):
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -29,7 +29,7 @@ class TestValidateAnthropicApiKey:
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = mock_client
 
-            result = await validate_anthropic_api_key("sk-ant-valid-key")
+            result = await validate_claude_key("sk-ant-valid-key")
         assert result is True
 
     async def test_invalid_key_401(self):
@@ -43,8 +43,12 @@ class TestValidateAnthropicApiKey:
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = mock_client
 
-            result = await validate_anthropic_api_key("sk-ant-invalid")
+            result = await validate_claude_key("sk-ant-invalid")
         assert result is False
+
+    async def test_oauth_token_accepted_without_api_call(self):
+        result = await validate_claude_key("sk-ant-oat01-fakeoauthtoken")
+        assert result is True
 
     async def test_timeout_raises_external_service_error(self):
         with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_cls:
@@ -55,13 +59,13 @@ class TestValidateAnthropicApiKey:
             mock_cls.return_value = mock_client
 
             with pytest.raises(ExternalServiceError, match="temporarily unavailable"):
-                await validate_anthropic_api_key("sk-ant-test")
+                await validate_claude_key("sk-ant-test")
 
 
 class TestConfigureByok:
     async def test_success(self, db_session, test_installation, settings):
         with patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
+            "helprs.modules.installation.service.validate_claude_key",
             return_value=True,
         ):
             config = await configure_byok(
@@ -79,7 +83,7 @@ class TestConfigureByok:
     async def test_invalid_key_raises(self, db_session, test_installation, settings):
         with (
             patch(
-                "helprs.modules.installation.service.validate_anthropic_api_key",
+                "helprs.modules.installation.service.validate_claude_key",
                 return_value=False,
             ),
             pytest.raises(BYOKKeyInvalidError, match="validation failed"),
@@ -93,7 +97,7 @@ class TestConfigureByok:
 
     async def test_upsert_updates_existing(self, db_session, test_installation, settings):
         with patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
+            "helprs.modules.installation.service.validate_claude_key",
             return_value=True,
         ):
             config1 = await configure_byok(
@@ -138,7 +142,7 @@ class TestDecryptByokKey:
 class TestDeleteByokConfig:
     async def test_deletes_existing(self, db_session, test_installation, settings):
         with patch(
-            "helprs.modules.installation.service.validate_anthropic_api_key",
+            "helprs.modules.installation.service.validate_claude_key",
             return_value=True,
         ):
             await configure_byok(
