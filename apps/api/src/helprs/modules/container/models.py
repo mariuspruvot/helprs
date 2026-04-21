@@ -48,6 +48,8 @@ class ContainerSession(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scorecard: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    xp_earned: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class SessionEvent(Base):
