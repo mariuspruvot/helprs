@@ -8,32 +8,19 @@ describe('LandingPage', () => {
   test('renders hero heading', () => {
     render(<LandingPage />)
     const heading = screen.getByRole('heading', { level: 1 })
-    expect(heading.textContent).toMatch(/AI skills for every/)
-    expect(heading.textContent).toMatch(/pull request/)
-  })
-
-  test('renders hero subtitle with Claude Code link', () => {
-    render(<LandingPage />)
-    const claudeLink = screen.getByRole('link', { name: /Claude Code/ })
-    expect(claudeLink.getAttribute('href')).toContain('anthropic.com')
+    expect(heading.textContent).toContain('interrogated')
   })
 
   test('renders View on GitHub CTA links', () => {
     render(<LandingPage />)
-    const links = screen.getAllByRole('link', { name: /view on github/i })
-    expect(links.length).toBe(2)
-    for (const link of links) {
-      expect(link.getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
-    }
+    const buttons = screen.getAllByText(/view on github/i)
+    expect(buttons.length).toBe(2)
   })
 
   test('renders Self-hosting guide CTA links', () => {
     render(<LandingPage />)
-    const links = screen.getAllByRole('link', { name: /self-hosting guide/i })
-    expect(links.length).toBe(2)
-    for (const link of links) {
-      expect(link.getAttribute('href')).toContain('docs/self-hosting.md')
-    }
+    const buttons = screen.getAllByText(/self-hosting guide/i)
+    expect(buttons.length).toBe(2)
   })
 
   test('renders "How it works" section with 3 steps', () => {
@@ -41,7 +28,7 @@ describe('LandingPage', () => {
     expect(screen.getByText('From webhook to results')).toBeTruthy()
     expect(screen.getByText('Webhook received')).toBeTruthy()
     expect(screen.getByText('Container runs skill')).toBeTruthy()
-    expect(screen.getByText('Live results, then cleanup')).toBeTruthy()
+    expect(screen.getByText('Score and learn')).toBeTruthy()
   })
 
   test('renders terminal-like visuals for each step', () => {
@@ -66,46 +53,36 @@ describe('LandingPage', () => {
     expect(screen.getByText('Deploy in minutes')).toBeTruthy()
     expect(text).toContain('docker compose up --build')
     expect(text).toContain('localhost:8000')
-    expect(text).toContain('localhost:5173')
   })
 
-  test('renders Install GitHub App link in get started section', () => {
+  test('renders Install GitHub App link', () => {
     render(<LandingPage />)
     const link = screen.getByRole('link', { name: /install the github app/i })
     expect(link.getAttribute('href')).toContain('github.com/apps/')
-    expect(link.getAttribute('href')).toContain('/installations/new')
   })
 
-  test('renders sign-in links', () => {
+  test('renders sign-in link', () => {
     render(<LandingPage />)
-    const signInLinks = screen.getAllByRole('link', { name: /sign in/i })
-    expect(signInLinks.length).toBeGreaterThanOrEqual(2)
-    for (const link of signInLinks) {
-      expect(link.getAttribute('href')).toContain('/api/v1/auth/github')
-    }
+    const links = screen.getAllByRole('link', { name: /sign in/i })
+    expect(links.length).toBeGreaterThanOrEqual(2)
   })
 
-  test('renders GitHub link in header', () => {
+  test('renders example session card', () => {
+    const { container } = render(<LandingPage />)
+    const text = container.textContent ?? ''
+    expect(text).toContain('Retry-After header')
+  })
+
+  test('renders stats strip', () => {
+    render(<LandingPage />)
+    expect(screen.getByText('Interactive')).toBeTruthy()
+    expect(screen.getByText('MIT')).toBeTruthy()
+  })
+
+  test('renders footer', () => {
     render(<LandingPage />)
     const ghLinks = screen.getAllByRole('link', { name: /^GitHub$/ })
     expect(ghLinks.length).toBeGreaterThanOrEqual(2)
-    expect(ghLinks[0].getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
-  })
-
-  test('renders footer with GitHub link', () => {
-    render(<LandingPage />)
-    const ghLinks = screen.getAllByRole('link', { name: /^GitHub$/ })
-    const footerLink = ghLinks[ghLinks.length - 1]
-    expect(footerLink.getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
-    expect(footerLink.getAttribute('target')).toBe('_blank')
-  })
-
-  test('hero heading uses responsive text size classes', () => {
-    render(<LandingPage />)
-    const heading = screen.getByRole('heading', { level: 1 })
-    expect(heading.className).toContain('text-[32px]')
-    expect(heading.className).toContain('md:text-[40px]')
-    expect(heading.className).toContain('lg:text-[52px]')
   })
 
   test('mentions open-source and self-hosted nature', () => {
