@@ -8,6 +8,7 @@ import { fetchInstallationSessions } from './dashboardApi'
 import type { SessionSummary, PaginatedSessionsResponse } from './dashboardApi'
 import StatusBadge from './StatusBadge'
 import { formatDuration, formatRelativeTime } from './formatters'
+import { Button, Card, Chip, Dot, Overline } from '../../shared/components'
 
 const STATUS_OPTIONS = ['all', 'completed', 'failed', 'running', 'pending', 'timeout'] as const
 
@@ -51,182 +52,128 @@ export default function InstallationDetail() {
   }
 
   return (
-    <div className="min-h-screen bg-primary text-text-primary">
-      {/* Header */}
-      <div
-        className="h-14 flex items-center px-6 gap-4 border-b"
-        style={{ borderColor: 'rgba(255, 255, 255, 0.06)' }}
-      >
-        <Link
-          to="/installations"
-          className="text-text-secondary text-[13px] hover:text-text-primary transition-colors"
-        >
+    <div>
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 mb-6 text-sm">
+        <Link to="/installations" className="text-dim hover:text-ink2 transition-colors font-mono">
           &larr; Installations
         </Link>
-        <span className="text-text-muted text-[12px]">|</span>
-        <span className="text-text-primary text-[14px] font-sans font-medium">
+        <span className="text-dim2">|</span>
+        <span className="text-ink font-mono font-medium">
           Installation #{installationId}
         </span>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto">
           <Link
             to={`/installations/${installationId}/settings`}
-            className="text-text-secondary text-[12px] font-sans hover:text-text-primary transition-colors"
+            className="text-dim text-xs font-mono hover:text-ink2 transition-colors"
           >
             Settings
           </Link>
         </div>
       </div>
 
-      {/* Content */}
-      <div className="max-w-5xl mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-[20px] font-sans font-semibold">
+      {/* Title + filter */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="font-mono text-lg font-bold">
             Session History
             {!loading && (
-              <span className="text-text-muted text-[14px] font-normal ml-2">
-                ({total})
-              </span>
+              <span className="text-dim text-sm font-normal ml-2">({total})</span>
             )}
           </h1>
-
-          {/* Status filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => handleStatusChange(e.target.value)}
-            className="text-[13px] font-sans px-3 py-1.5 rounded-lg cursor-pointer outline-none"
-            style={{
-              background: 'rgba(255, 255, 255, 0.04)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              color: '#fdfcfc',
-            }}
-          >
-            {STATUS_OPTIONS.map((opt) => (
-              <option key={opt} value={opt} style={{ background: '#302c2c' }}>
-                {opt.charAt(0).toUpperCase() + opt.slice(1)}
-              </option>
-            ))}
-          </select>
+          <Overline className="mt-1">// every time Claude ran against one of your PRs</Overline>
         </div>
 
-        {error && (
-          <div
-            className="text-[13px] px-4 py-3 rounded-lg mb-6"
-            style={{ background: 'rgba(255, 59, 48, 0.08)', color: '#ff6961' }}
-          >
-            {error}
-          </div>
-        )}
-
-        {loading && (
-          <div className="text-text-muted text-[14px] font-sans py-12 text-center">
-            Loading...
-          </div>
-        )}
-
-        {!loading && !error && sessions.length === 0 && (
-          <div
-            className="rounded-xl px-6 py-12 text-center"
-            style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.06)' }}
-          >
-            <p className="text-text-secondary text-[14px] font-sans">
-              {statusFilter === 'all' ? 'No sessions yet.' : `No ${statusFilter} sessions.`}
-            </p>
-          </div>
-        )}
-
-        {!loading && sessions.length > 0 && (
-          <>
-            {/* Session list */}
-            <div
-              className="rounded-xl overflow-hidden"
-              style={{ border: '1px solid rgba(255, 255, 255, 0.06)' }}
-            >
-              {sessions.map((session, idx) => (
-                <button
-                  key={session.id}
-                  onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
-                  className="w-full text-left px-5 py-3.5 flex items-center gap-4 transition-colors cursor-pointer"
-                  style={{
-                    background: idx % 2 === 0 ? 'rgba(255, 255, 255, 0.02)' : 'transparent',
-                    borderBottom: idx < sessions.length - 1 ? '1px solid rgba(255, 255, 255, 0.04)' : undefined,
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)' }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = idx % 2 === 0 ? 'rgba(255, 255, 255, 0.02)' : 'transparent'
-                  }}
-                >
-                  {/* Repo + PR */}
-                  <div className="flex-1 min-w-0">
-                    <span className="text-text-primary text-[13px] font-sans">
-                      {session.repo_full_name}
-                    </span>
-                    <span className="text-text-muted text-[12px] ml-1.5">
-                      #{session.pr_number}
-                    </span>
-                  </div>
-
-                  {/* Skill */}
-                  <span
-                    className="text-[11px] px-2 py-0.5 rounded-full font-mono shrink-0"
-                    style={{
-                      color: '#E2A039',
-                      background: 'rgba(226, 160, 57, 0.1)',
-                    }}
-                  >
-                    {session.skill_name}
-                  </span>
-
-                  {/* Status */}
-                  <div className="shrink-0 w-20 text-center">
-                    <StatusBadge status={session.status} />
-                  </div>
-
-                  {/* Duration */}
-                  <span className="text-text-muted text-[12px] font-mono shrink-0 w-16 text-right">
-                    {formatDuration(session.started_at, session.completed_at)}
-                  </span>
-
-                  {/* Time ago */}
-                  <span className="text-text-muted text-[12px] font-sans shrink-0 w-16 text-right">
-                    {formatRelativeTime(session.created_at)}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-4 mt-6">
-                <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                  className="text-[13px] font-sans px-3 py-1.5 rounded-lg transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
-                  style={{
-                    background: 'rgba(255, 255, 255, 0.04)',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                  }}
-                >
-                  Previous
-                </button>
-                <span className="text-text-muted text-[13px] font-sans">
-                  Page {page} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page >= totalPages}
-                  className="text-[13px] font-sans px-3 py-1.5 rounded-lg transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
-                  style={{
-                    background: 'rgba(255, 255, 255, 0.04)',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                  }}
-                >
-                  Next
-                </button>
-              </div>
-            )}
-          </>
-        )}
+        <select
+          value={statusFilter}
+          onChange={(e) => handleStatusChange(e.target.value)}
+          className="font-mono text-xs px-3 py-1.5 rounded-button bg-card border border-rule text-ink cursor-pointer outline-none"
+        >
+          {STATUS_OPTIONS.map((opt) => (
+            <option key={opt} value={opt} className="bg-card">
+              {opt.charAt(0).toUpperCase() + opt.slice(1)}
+            </option>
+          ))}
+        </select>
       </div>
+
+      {/* Error */}
+      {error && (
+        <Card className="mb-6 border-danger/30">
+          <p className="text-danger text-sm">{error}</p>
+        </Card>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div className="text-dim text-sm py-12 text-center font-mono">
+          <Dot pulse className="mr-2" /> Loading sessions...
+        </div>
+      )}
+
+      {/* Empty */}
+      {!loading && !error && sessions.length === 0 && (
+        <Card className="text-center py-12">
+          <p className="text-ink2 text-sm">
+            {statusFilter === 'all' ? 'No sessions yet.' : `No ${statusFilter} sessions.`}
+          </p>
+        </Card>
+      )}
+
+      {/* Session table */}
+      {!loading && sessions.length > 0 && (
+        <>
+          <div className="rounded-card border border-rule overflow-hidden">
+            {sessions.map((session, idx) => (
+              <button
+                key={session.id}
+                onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
+                className={`w-full text-left px-5 py-3.5 flex items-center gap-4 transition-colors cursor-pointer hover:bg-card-hi ${idx % 2 === 0 ? 'bg-card/50' : 'bg-transparent'} ${idx < sessions.length - 1 ? 'border-b border-rule/50' : ''}`}
+              >
+                <div className="flex-1 min-w-0">
+                  <span className="text-ink text-[13px]">{session.repo_full_name}</span>
+                  <span className="text-dim text-xs ml-1.5">#{session.pr_number}</span>
+                </div>
+                <Chip variant="accent">{session.skill_name}</Chip>
+                <div className="shrink-0 w-20 text-center">
+                  <StatusBadge status={session.status} />
+                </div>
+                <span className="text-dim text-xs font-mono shrink-0 w-16 text-right">
+                  {formatDuration(session.started_at, session.completed_at)}
+                </span>
+                <span className="text-dim text-xs shrink-0 w-16 text-right">
+                  {formatRelativeTime(session.created_at)}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-4 mt-6">
+              <Button
+                variant="secondary"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="text-xs"
+              >
+                Previous
+              </Button>
+              <span className="text-dim text-xs font-mono">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="secondary"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="text-xs"
+              >
+                Next
+              </Button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
