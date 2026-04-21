@@ -9,6 +9,26 @@
 import { useCallback, useState } from 'react'
 import { highlighter, SHIKI_THEME, SUPPORTED_LANGS } from './shiki'
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// If shiki throws (unknown lang, grammar mismatch, …), a single fenced block
+// would crash the whole conversation renderer. Fall back to escaped plain
+// <pre><code> so the rest of the conversation keeps rendering.
+function safeHighlight(code: string, lang: string): string {
+  try {
+    return highlighter.codeToHtml(code, { lang, theme: SHIKI_THEME })
+  } catch {
+    return `<pre><code>${escapeHtml(code)}</code></pre>`
+  }
+}
+
 interface CodeBlockProps {
   code: string
   language?: string
@@ -87,7 +107,7 @@ export default function CodeBlock({ code, language }: CodeBlockProps) {
           <div
             className="text-[13px] leading-relaxed [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-3 [&_code]:!bg-transparent"
             dangerouslySetInnerHTML={{
-              __html: highlighter.codeToHtml(code, { lang, theme: SHIKI_THEME }),
+              __html: safeHighlight(code, lang),
             }}
           />
         ) : (
