@@ -13,10 +13,12 @@ import langCss from '@shikijs/langs/css'
 import langDiff from '@shikijs/langs/diff'
 import langHtml from '@shikijs/langs/html'
 import langJavascript from '@shikijs/langs/javascript'
+import langJsx from '@shikijs/langs/jsx'
 import langJson from '@shikijs/langs/json'
 import langMarkdown from '@shikijs/langs/markdown'
 import langPython from '@shikijs/langs/python'
 import langTypescript from '@shikijs/langs/typescript'
+import langTsx from '@shikijs/langs/tsx'
 import langYaml from '@shikijs/langs/yaml'
 
 export const highlighter = createHighlighterCoreSync({
@@ -27,10 +29,12 @@ export const highlighter = createHighlighterCoreSync({
     langDiff,
     langHtml,
     langJavascript,
+    langJsx,
     langJson,
     langMarkdown,
     langPython,
     langTypescript,
+    langTsx,
     langYaml,
   ],
   engine: createJavaScriptRegexEngine(),
