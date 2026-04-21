@@ -18,9 +18,15 @@ test:
 
 build:
 	docker compose -f infra/coolify/docker-compose.prod.yml build
+	$(MAKE) build-runner
 
+# Builds the claude-runner image used by the API to spawn per-session
+# containers. This is a one-time setup per Docker host — the image is not a
+# service, it's a runtime dependency referenced by tag in
+# helprs/modules/container/service.py (CLAUDE_RUNNER_IMAGE). Re-run this
+# target whenever infra/docker/claude-runner/ changes.
 build-runner:
-	docker build -t helprs/claude-runner:latest infra/docker/claude-runner/
+	docker build -t claude-runner:latest infra/docker/claude-runner/
 
 migrate:
 	cd apps/api && uv run alembic upgrade head

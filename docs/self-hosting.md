@@ -169,17 +169,26 @@ POSTGRES_PASSWORD=    # Strong password for production DB
 ### Option A: Docker Compose (simplest)
 
 ```bash
-# Build and start all services (including claude-runner image)
+# 1. Build the claude-runner image (one-time per host; re-run if infra/docker/claude-runner/ changes)
+make build-runner
+
+# 2. Build and start services (api, web, db)
 docker compose -f infra/coolify/docker-compose.prod.yml up -d --build
 
-# Verify services are healthy
+# 3. Verify services are healthy
 docker compose -f infra/coolify/docker-compose.prod.yml ps
 ```
 
-!!! note "claude-runner image"
-    The `claude-runner` service in the compose file uses `profiles: [build-only]`.
-    It is built during `docker compose up --build` but does not run as a long-lived
-    service. The API spawns claude-runner containers on demand.
+!!! important "Why `claude-runner` is not in the compose file"
+    The `claude-runner` image is a **runtime dependency**, not a service. The API
+    spawns a new container from it for each session (via the mounted Docker socket)
+    — it is never run as a long-lived process. Putting it in the compose file would
+    either cause Compose to try to start it (and crash), or require a `profiles:`
+    flag that silently excludes it from automated builds. A plain `docker build` is
+    explicit and works on every Docker host.
+
+    Re-run `make build-runner` after editing anything under `infra/docker/claude-runner/`
+    or after a `docker image prune -a`.
 
 The API runs on port 8000, the frontend on port 80. You need a reverse proxy (nginx, Caddy, Traefik) in front to handle TLS and route traffic.
 
@@ -210,6 +219,9 @@ cd helprs
 # Configure environment
 cp .env.example .env
 # Edit .env with your values...
+
+# Build the claude-runner image (one-time per host)
+make build-runner
 
 # Start services
 docker compose -f infra/coolify/docker-compose.prod.yml up -d --build
@@ -318,7 +330,7 @@ If you enabled **Post results to PR** in installation settings, the score card i
 ### Container won't start
 
 - Verify Docker socket is mounted: check that `/var/run/docker.sock` is accessible to the API container
-- Verify the claude-runner image exists: `docker images | grep claude-runner`
+- Verify the claude-runner image exists: `docker images | grep claude-runner` — if missing, run `make build-runner` (the image is a per-host one-time build, not a Compose service)
 - Check `SKILLS_HOST_PATH` is an absolute path and the directory exists on the Docker host
 - Verify the `DOCKER_GID` matches the host's Docker group: `getent group docker | cut -d: -f3`
 - Check API logs for container creation errors: `docker compose logs api | grep container`

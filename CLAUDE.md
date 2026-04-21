@@ -1,6 +1,7 @@
 ## Quick Start
 
 ```bash
+make build-runner                # One-time per Docker host: build the claude-runner image
 docker compose up --build        # Start all services (API :8000, Web :5173, Postgres :5432)
 make lint                        # Ruff check + format + mypy (API), ESLint (Web)
 make test                        # pytest (API), vitest (Web)
@@ -137,7 +138,7 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 - **Open source target**: designed for self-hosting with own Claude licenses
 - **Post-results to PR**: after session completion, the API can post score card as a PR comment — opt-in per installation via `post_results_to_pr` boolean; extraction and formatting in `container/pr_comment.py`, triggered in `_event_stream()` after `mark_completed()`
 - **Coolify deployment**: Two-domain setup via Traefik: `helprs.tech` (web) and `api.helprs.tech` (API). TLS via Let's Encrypt, managed by Coolify. Domains are set in Coolify UI (General > Domains for api / Domains for web) — they may get cleared on redeploy, re-check after each deploy. "Preserve Repository During Deployment" must be enabled so skills are available on the host. The prod compose uses `./` paths (repo-root-relative) because Coolify sets `--project-directory` to the repo root.
-- **claude-runner image**: built via a `profiles: [build-only]` service in the prod compose — Coolify builds the image but never starts the container. The API spawns it dynamically. Image name is `claude-runner:latest` (no namespace prefix).
+- **claude-runner image**: NOT a Compose service — it is a runtime dependency built once per Docker host with `make build-runner` (or a pre-deploy command on managed platforms). The API spawns containers from it dynamically via the mounted Docker socket. Image name is `claude-runner:latest` (no namespace prefix — hard-coded in `container/service.py:CLAUDE_RUNNER_IMAGE`). Previous attempt to include it as a `profiles: [build-only]` compose service was removed because `profiles:` excludes the service from both build and run unless the profile is explicitly activated — which Coolify does not do, causing `404 No such image` failures on spawn.
 - **Non-root API container**: production Dockerfile uses `appuser` with `chown -R appuser:appuser /app` for uv cache writes. Docker socket access requires `group_add: ["${DOCKER_GID:-994}"]` in the compose to match the host's docker group GID.
 - **BYOK supports OAuth tokens**: `validate_claude_key()` accepts both API keys (`sk-ant-api03-...`) and OAuth tokens (`sk-ant-oat...`). OAuth tokens skip server-side validation (validated at runtime by Claude Code CLI). Frontend setup page guides users to `claude setup-token`.
 - **VITE_* build args**: `VITE_API_URL` and `VITE_GITHUB_APP_SLUG` are build-time variables — must be passed as `args` in the compose and declared as `ARG`/`ENV` in `Dockerfile.web`. They cannot be set at runtime.

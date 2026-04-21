@@ -133,6 +133,21 @@ Click **Save**. Coolify generates Traefik routing rules and provisions Let's Enc
 
 - **Preserve Repository During Deployment**: **Enable this**. Without it, Coolify removes the cloned repo after building images. The `skills/` directory must remain on the host because the API mounts it into claude-runner containers at runtime.
 
+### Pre-deployment Command (required)
+
+The API spawns ephemeral containers from the `claude-runner` image. This image is **not** a Compose service — it is a runtime dependency that must exist on the Docker host before the API can start a session.
+
+Set Coolify's **Pre-deployment Command** to:
+
+```bash
+docker build -t claude-runner:latest /data/coolify/applications/<uuid>/infra/docker/claude-runner/
+```
+
+Replace `<uuid>` with your Coolify application directory (same one you use for `SKILLS_HOST_PATH` in step 7). The image is tagged `claude-runner:latest` with no namespace prefix — this is the exact tag the API references (`CLAUDE_RUNNER_IMAGE` in `apps/api/src/helprs/modules/container/service.py`).
+
+!!! tip "Why a pre-deploy command?"
+    Coolify runs `docker compose up --build`, which only builds services listed in the compose file. Keeping `claude-runner` out of the compose avoids two footguns: Compose trying to start a container that has no long-lived process, and `profiles:` silently excluding the service from the build. A one-line pre-deploy command is explicit and portable to any host. Re-runs are cheap (Docker caches the layers).
+
 ### Advanced > General
 
 - **Auto Deploy**: Enable for automatic redeployment on push to `main`.
@@ -144,9 +159,10 @@ Click **Save**. Coolify generates Traefik routing rules and provisions Let's Enc
 Click **Deploy**. Coolify will:
 
 1. Clone the repo
-2. Build the API, Web, and claude-runner images
-3. Start the API, Web, and DB containers (claude-runner is `profiles: [build-only]`, not started)
-4. Run Alembic migrations automatically (API entrypoint runs `alembic upgrade head`)
+2. Run the pre-deploy command to build `claude-runner:latest` on the host
+3. Build the API and Web images
+4. Start the API, Web, and DB containers (claude-runner is not a service — it is spawned per session by the API)
+5. Run Alembic migrations automatically (API entrypoint runs `alembic upgrade head`)
 
 ### Verify
 
@@ -223,16 +239,13 @@ docker ps | grep claude-runner
 # Should be empty (it's only spawned on demand, not a long-lived service)
 ```
 
-If the image is missing, the `claude-runner` service may have been excluded from the build. Verify the compose file includes:
+If the image is missing, the pre-deployment command did not run or failed. Build it manually:
 
-```yaml
-claude-runner:
-  build:
-    context: ./infra/docker/claude-runner
-  image: claude-runner
-  profiles:
-    - build-only
+```bash
+docker build -t claude-runner:latest /data/coolify/applications/<uuid>/infra/docker/claude-runner/
 ```
+
+Then re-check the pre-deployment command in Coolify (step 5) so future deploys rebuild it automatically. An image pruning operation (`docker image prune -a`) will also remove it — the pre-deploy command will rebuild it on the next deploy.
 
 ---
 
@@ -295,7 +308,13 @@ The `DOCKER_GID` does not match your server's Docker group. See [step 8](#8-dock
 No such image: claude-runner:latest
 ```
 
-Verify the compose includes the claude-runner service with `profiles: [build-only]`. Redeploy to rebuild the image.
+This happens when the pre-deployment command (step 5) did not run or the image was pruned. Build it manually on the host:
+
+```bash
+docker build -t claude-runner:latest /data/coolify/applications/<uuid>/infra/docker/claude-runner/
+```
+
+Then verify the pre-deployment command is configured in Coolify so it rebuilds on every deploy. The image name must be exactly `claude-runner:latest` (no namespace prefix) — the API references this tag in `apps/api/src/helprs/modules/container/service.py`.
 
 ### Skills directory is empty
 

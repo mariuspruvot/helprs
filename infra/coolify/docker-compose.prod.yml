@@ -60,12 +60,10 @@ services:
           memory: 128M
     restart: unless-stopped
 
-  claude-runner:
-    build:
-      context: ./infra/docker/claude-runner
-    image: claude-runner
-    profiles:
-      - build-only
+  # Note: the `claude-runner` image is NOT a service — it is a runtime
+  # dependency built once per Docker host with `make build-runner` (or via a
+  # Coolify pre-deploy command). The API spawns containers from it dynamically
+  # via the Docker socket. See docs/deploy-coolify.md and docs/self-hosting.md.
 
   db:
     image: postgres:16-alpine
