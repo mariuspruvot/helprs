@@ -169,26 +169,24 @@ POSTGRES_PASSWORD=    # Strong password for production DB
 ### Option A: Docker Compose (simplest)
 
 ```bash
-# 1. Build the claude-runner image (one-time per host; re-run if infra/docker/claude-runner/ changes)
-make build-runner
-
-# 2. Build and start services (api, web, db)
+# Build and start all services. The claude-runner image is built as a side-
+# effect and left available on the host for the API to spawn containers from.
 docker compose -f infra/coolify/docker-compose.prod.yml up -d --build
 
-# 3. Verify services are healthy
+# Verify services are healthy
 docker compose -f infra/coolify/docker-compose.prod.yml ps
 ```
 
-!!! important "Why `claude-runner` is not in the compose file"
-    The `claude-runner` image is a **runtime dependency**, not a service. The API
-    spawns a new container from it for each session (via the mounted Docker socket)
-    — it is never run as a long-lived process. Putting it in the compose file would
-    either cause Compose to try to start it (and crash), or require a `profiles:`
-    flag that silently excludes it from automated builds. A plain `docker build` is
-    explicit and works on every Docker host.
+!!! note "About the `claude-runner` "Exited" container"
+    The `claude-runner` service is a **build-only service**: `docker compose up`
+    builds the image, starts the container, which exits immediately (its entrypoint
+    is overridden to `/bin/true`) with `restart: "no"`. The container stays in
+    `Exited (0)` state and is not restarted — but the image `claude-runner:latest`
+    remains available on the host. The API spawns new containers from this image
+    per session via the Docker socket.
 
-    Re-run `make build-runner` after editing anything under `infra/docker/claude-runner/`
-    or after a `docker image prune -a`.
+    This pattern keeps `docker compose up --build` as the single source of truth
+    for the whole stack, including the runner image.
 
 The API runs on port 8000, the frontend on port 80. You need a reverse proxy (nginx, Caddy, Traefik) in front to handle TLS and route traffic.
 
@@ -220,10 +218,7 @@ cd helprs
 cp .env.example .env
 # Edit .env with your values...
 
-# Build the claude-runner image (one-time per host)
-make build-runner
-
-# Start services
+# Start services (the claude-runner image is built as a build-only service)
 docker compose -f infra/coolify/docker-compose.prod.yml up -d --build
 
 # Set up your preferred reverse proxy (Caddy example)
@@ -330,7 +325,7 @@ If you enabled **Post results to PR** in installation settings, the score card i
 ### Container won't start
 
 - Verify Docker socket is mounted: check that `/var/run/docker.sock` is accessible to the API container
-- Verify the claude-runner image exists: `docker images | grep claude-runner` — if missing, run `make build-runner` (the image is a per-host one-time build, not a Compose service)
+- Verify the claude-runner image exists: `docker images | grep claude-runner` — if missing, run `docker compose up --build` (the image is built as part of the normal compose up)
 - Check `SKILLS_HOST_PATH` is an absolute path and the directory exists on the Docker host
 - Verify the `DOCKER_GID` matches the host's Docker group: `getent group docker | cut -d: -f3`
 - Check API logs for container creation errors: `docker compose logs api | grep container`

@@ -60,10 +60,18 @@ services:
           memory: 128M
     restart: unless-stopped
 
-  # Note: the `claude-runner` image is NOT a service — it is a runtime
-  # dependency built once per Docker host with `make build-runner` (or via a
-  # Coolify pre-deploy command). The API spawns containers from it dynamically
-  # via the Docker socket. See docs/deploy-coolify.md and docs/self-hosting.md.
+  # Build-only service: the API spawns containers from this image dynamically
+  # via the Docker socket. We still declare it here so `docker compose up --build`
+  # produces the image; `entrypoint: /bin/true` + `restart: "no"` make the
+  # container exit immediately without becoming a long-lived service. The image
+  # `claude-runner:latest` then stays available on the host for the API to use.
+  # Image tag is hard-coded in helprs/modules/container/service.py.
+  claude-runner:
+    build:
+      context: ./infra/docker/claude-runner
+    image: claude-runner:latest
+    entrypoint: ["/bin/true"]
+    restart: "no"
 
   db:
     image: postgres:16-alpine
