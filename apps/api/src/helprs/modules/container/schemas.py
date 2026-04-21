@@ -54,6 +54,8 @@ class ContainerSessionResponse(BaseModel):
     status: str
     started_at: datetime | None
     completed_at: datetime | None
+    scorecard: dict | None = None
+    xp_earned: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -103,3 +105,11 @@ class SessionEventsListResponse(BaseModel):
     session_id: uuid.UUID
     events: list[SessionEventResponse]
     total: int
+
+
+class ScorecardResponse(BaseModel):
+    """Parsed scorecard for a completed session."""
+
+    session_id: uuid.UUID
+    scorecard: dict | None
+    xp_earned: int | None
