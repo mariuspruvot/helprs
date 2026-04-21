@@ -1,5 +1,6 @@
 /**
- * InstallationList — dashboard landing page showing all installations.
+ * InstallationList — dashboard landing page.
+ * Shows stat strip, installation cards, and placeholder for new installs.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -7,6 +8,9 @@ import { useNavigate } from 'react-router'
 import { useAuthStore } from '../auth/store'
 import { fetchInstallations } from './dashboardApi'
 import type { InstallationSummary } from './dashboardApi'
+import { Card, Chip, Dot, Overline, StatCard } from '../../shared/components'
+
+const INSTALL_URL = `https://github.com/apps/${import.meta.env.VITE_GITHUB_APP_SLUG ?? 'helprs'}/installations/new`
 
 export default function InstallationList() {
   const navigate = useNavigate()
@@ -29,136 +33,100 @@ export default function InstallationList() {
 
   useEffect(() => { load() }, [load])
 
-  return (
-    <div className="min-h-screen bg-primary text-text-primary">
-      {/* Header */}
-      <div
-        className="h-14 flex items-center px-6 gap-4 border-b"
-        style={{ borderColor: 'rgba(255, 255, 255, 0.06)' }}
-      >
-        <span
-          className="text-[15px] font-mono font-bold tracking-tight"
-          style={{ color: '#E2A039' }}
-        >
-          helPRs
-        </span>
-        <span className="text-text-muted text-[12px]">|</span>
-        <span className="text-text-secondary text-[13px] font-sans">Dashboard</span>
+  const totalSessions = installations.reduce((sum, i) => sum + i.session_count, 0)
+  const configured = installations.filter((i) => i.byok_configured).length
 
-        <div className="ml-auto flex items-center gap-3">
-          {user?.avatar_url && (
-            <img
-              src={user.avatar_url}
-              alt={user.github_login}
-              className="w-6 h-6 rounded-full"
-            />
-          )}
-          <span className="text-text-secondary text-[13px] font-sans">
-            {user?.github_login}
-          </span>
-        </div>
+  function greeting(): string {
+    const hour = new Date().getHours()
+    if (hour < 12) return 'Good morning'
+    if (hour < 18) return 'Good afternoon'
+    return 'Good evening'
+  }
+
+  return (
+    <div>
+      {/* Greeting */}
+      <div className="mb-8">
+        <h1 className="font-mono text-xl font-bold mb-1">
+          {greeting()}, <span className="text-accent">{user?.github_login}</span>
+        </h1>
+        <Overline>// your installations and recent activity</Overline>
       </div>
 
-      {/* Content */}
-      <div className="max-w-4xl mx-auto px-6 py-8">
-        <h1 className="text-[20px] font-sans font-semibold mb-6">
-          Your Installations
-        </h1>
+      {/* Stat strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        <StatCard label="Installations" value={installations.length} />
+        <StatCard label="Configured" value={configured} color={configured > 0 ? 'ok' : 'warn'} sub={`of ${installations.length}`} />
+        <StatCard label="Total sessions" value={totalSessions} color="accent" />
+        <StatCard label="Status" value={error ? 'Error' : 'Live'} color={error ? 'danger' : 'ok'} />
+      </div>
 
-        {loading && (
-          <div className="text-text-muted text-[14px] font-sans py-12 text-center">
-            Loading...
-          </div>
-        )}
+      {/* Error */}
+      {error && (
+        <Card className="mb-6 border-danger/30">
+          <p className="text-danger text-sm">{error}</p>
+        </Card>
+      )}
 
-        {error && (
-          <div
-            className="text-[13px] px-4 py-3 rounded-lg mb-6"
-            style={{ background: 'rgba(255, 59, 48, 0.08)', color: '#ff6961' }}
-          >
-            {error}
-          </div>
-        )}
+      {/* Loading */}
+      {loading && (
+        <div className="text-dim text-sm py-12 text-center font-mono">
+          <Dot pulse className="mr-2" /> Loading installations...
+        </div>
+      )}
 
-        {!loading && !error && installations.length === 0 && (
-          <div
-            className="rounded-xl px-6 py-12 text-center"
-            style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.06)' }}
-          >
-            <p className="text-text-secondary text-[14px] font-sans mb-4">
-              No installations found.
-            </p>
-            <p className="text-text-muted text-[13px] font-sans">
-              Install the GitHub App on your organization or account to get started.
-            </p>
-          </div>
-        )}
+      {/* Empty state */}
+      {!loading && !error && installations.length === 0 && (
+        <Card className="text-center py-12">
+          <p className="text-ink2 text-sm mb-2">No installations found.</p>
+          <p className="text-dim text-xs font-mono">
+            // <a href={INSTALL_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">install the GitHub App</a> to get started
+          </p>
+        </Card>
+      )}
 
-        {!loading && installations.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {installations.map((inst) => (
+      {/* Installation cards */}
+      {!loading && installations.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {installations.map((inst) => (
+            <Card
+              key={inst.id}
+              hover
+              className="cursor-pointer"
+            >
               <button
-                key={inst.id}
+                className="w-full text-left cursor-pointer"
                 onClick={() => navigate(`/installations/${inst.github_installation_id}`)}
-                className="text-left rounded-xl p-5 transition-all cursor-pointer group"
-                style={{
-                  background: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid rgba(255, 255, 255, 0.06)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(226, 160, 57, 0.3)'
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)'
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)'
-                }}
               >
                 {/* Account header */}
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="text-[15px] font-sans font-medium text-text-primary">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="font-mono text-sm font-semibold text-ink">
                     {inst.account_login}
                   </span>
-                  <span
-                    className="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase"
-                    style={{
-                      color: '#9a9898',
-                      background: 'rgba(154, 152, 152, 0.1)',
-                    }}
-                  >
-                    {inst.account_type}
-                  </span>
+                  <Chip>{inst.account_type}</Chip>
                 </div>
 
-                {/* Stats row */}
+                {/* Status row */}
                 <div className="flex items-center gap-4 mb-3">
                   <div className="flex items-center gap-1.5">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full"
-                      style={{
-                        background: inst.byok_configured ? '#30d158' : '#ff9f0a',
-                      }}
-                    />
-                    <span className="text-text-muted text-[12px] font-sans">
+                    <Dot color={inst.byok_configured ? 'ok' : 'warn'} />
+                    <span className="text-dim text-xs">
                       {inst.byok_configured ? 'Token configured' : 'No token'}
                     </span>
                   </div>
-                  <span className="text-text-muted text-[12px] font-sans">
+                  <span className="text-dim text-xs font-mono">
                     {inst.session_count} session{inst.session_count !== 1 ? 's' : ''}
                   </span>
                 </div>
 
-                {/* Actions row */}
-                <div className="flex items-center gap-3">
-                  <span
-                    className="text-[12px] font-sans group-hover:underline"
-                    style={{ color: '#E2A039' }}
-                  >
+                {/* Actions */}
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-accent font-mono font-medium">
                     View sessions
                   </span>
-                  <span className="text-text-muted text-[11px]">|</span>
+                  <span className="text-dim2">|</span>
                   <span
-                    className="text-[12px] text-text-secondary font-sans hover:text-text-primary"
+                    className="text-dim hover:text-ink2 transition-colors"
                     onClick={(e) => {
                       e.stopPropagation()
                       navigate(`/installations/${inst.github_installation_id}/settings`)
@@ -168,10 +136,9 @@ export default function InstallationList() {
                   </span>
                   {!inst.byok_configured && (
                     <>
-                      <span className="text-text-muted text-[11px]">|</span>
+                      <span className="text-dim2">|</span>
                       <span
-                        className="text-[12px] font-sans"
-                        style={{ color: '#ff9f0a' }}
+                        className="text-warn"
                         onClick={(e) => {
                           e.stopPropagation()
                           navigate(`/installations/${inst.github_installation_id}/setup`)
@@ -183,10 +150,21 @@ export default function InstallationList() {
                   )}
                 </div>
               </button>
-            ))}
-          </div>
-        )}
-      </div>
+            </Card>
+          ))}
+
+          {/* Add installation placeholder */}
+          <a
+            href={INSTALL_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="border border-dashed border-rule-str rounded-card p-5 flex flex-col items-center justify-center gap-2 hover:border-accent/30 transition-colors min-h-[140px]"
+          >
+            <span className="text-accent text-2xl font-mono">+</span>
+            <span className="text-dim text-xs font-mono">Connect another account</span>
+          </a>
+        </div>
+      )}
     </div>
   )
 }
