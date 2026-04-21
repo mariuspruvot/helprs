@@ -42,8 +42,7 @@ cd helprs
 cp .env.example .env
 # Fill in .env (see docs/self-hosting.md for details)
 
-docker compose up --build        # API :8000, Web :5173, Postgres :5432
-make build-runner                # Build the Claude Code container image
+docker compose up --build        # API :8000, Web :5173, Postgres :5432 (+ builds the claude-runner image)
 ```
 
 Open [http://localhost:5173](http://localhost:5173), authenticate with GitHub, and you're ready to go.
