@@ -20,7 +20,6 @@ describe('SkillSelector', () => {
       expect(screen.getByTestId(`skill-card-${skill.name}`)).toBeTruthy()
       expect(screen.getByText(skill.label)).toBeTruthy()
       expect(screen.getByText(skill.description)).toBeTruthy()
-      expect(screen.getByText(skill.duration)).toBeTruthy()
     }
   })
 
@@ -28,14 +27,13 @@ describe('SkillSelector', () => {
     render(<SkillSelector {...defaultProps} />)
 
     expect(screen.getByTestId('skill-selector')).toBeTruthy()
-    // Use getAllByText since repo name may appear in multiple places
     const repoElements = screen.getAllByText('acme/helprs')
     expect(repoElements.length).toBeGreaterThan(0)
     const prElements = screen.getAllByText('#42')
     expect(prElements.length).toBeGreaterThan(0)
   })
 
-  test('calls onSelectSkill when an available skill card is clicked', () => {
+  test('calls onSelectSkill when challenge-me card is clicked', () => {
     const onSelectSkill = vi.fn()
     render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
 
@@ -47,16 +45,23 @@ describe('SkillSelector', () => {
     const onSelectSkill = vi.fn()
     render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
 
-    fireEvent.click(screen.getByTestId('skill-card-code-review'))
-    fireEvent.click(screen.getByTestId('skill-card-security-audit'))
+    fireEvent.click(screen.getByTestId('skill-card-eli5'))
+    fireEvent.click(screen.getByTestId('skill-card-pair-debug'))
+    fireEvent.click(screen.getByTestId('skill-card-hot-seat'))
+    fireEvent.click(screen.getByTestId('skill-card-test-me'))
     expect(onSelectSkill).not.toHaveBeenCalled()
   })
 
-  test('shows Coming soon badge for unreleased skills', () => {
+  test('shows "soon" badge for unreleased skills', () => {
     render(<SkillSelector {...defaultProps} />)
 
-    const badges = screen.getAllByText('Coming soon')
-    expect(badges.length).toBe(2)
+    const badges = screen.getAllByText('soon')
+    expect(badges.length).toBe(4)
+  })
+
+  test('shows DEFAULT badge for challenge-me', () => {
+    render(<SkillSelector {...defaultProps} />)
+    expect(screen.getByText('DEFAULT')).toBeTruthy()
   })
 
   test('disables cards when disabled prop is true', () => {
@@ -82,10 +87,9 @@ describe('SkillSelector', () => {
     expect(brandElements.length).toBeGreaterThan(0)
   })
 
-  test('renders disclaimer text', () => {
-    render(<SkillSelector {...defaultProps} />)
-    expect(
-      screen.getByText(/AI-generated content may be inaccurate/),
-    ).toBeTruthy()
+  test('renders 5 skills total (1 active + 4 coming soon)', () => {
+    expect(SKILLS.length).toBe(5)
+    expect(SKILLS.filter(s => !s.comingSoon).length).toBe(1)
+    expect(SKILLS.filter(s => s.comingSoon).length).toBe(4)
   })
 })
