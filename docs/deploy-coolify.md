@@ -144,8 +144,8 @@ Click **Save**. Coolify generates Traefik routing rules and provisions Let's Enc
 Click **Deploy**. Coolify will:
 
 1. Clone the repo
-2. Build the API, Web, and claude-runner images
-3. Start the API, Web, and DB containers (claude-runner is `profiles: [build-only]`, not started)
+2. Build the API, Web, and claude-runner images (claude-runner is a **build-only service** — the container exits immediately with `/bin/true`, leaving the image available on the host for the API to spawn session containers from)
+3. Start the API, Web, and DB containers
 4. Run Alembic migrations automatically (API entrypoint runs `alembic upgrade head`)
 
 ### Verify
@@ -219,20 +219,13 @@ The `docker-compose.prod.yml` has `group_add: ["${DOCKER_GID:-994}"]`. If your s
 docker images | grep claude-runner
 # Should show: claude-runner   latest   <id>   <date>   <size>
 
-docker ps | grep claude-runner
-# Should be empty (it's only spawned on demand, not a long-lived service)
+docker ps -a | grep claude-runner
+# Expected: an "Exited (0)" container from the last compose up — this is
+# normal, the service is declared as build-only (entrypoint /bin/true).
+# The API does NOT use this container — it spawns fresh ones per session.
 ```
 
-If the image is missing, the `claude-runner` service may have been excluded from the build. Verify the compose file includes:
-
-```yaml
-claude-runner:
-  build:
-    context: ./infra/docker/claude-runner
-  image: claude-runner
-  profiles:
-    - build-only
-```
+If the image is missing, the compose build step failed. Check Coolify's **Logs** tab for build errors (usually a Dockerfile issue in `infra/docker/claude-runner/`) and redeploy.
 
 ---
 
@@ -295,7 +288,20 @@ The `DOCKER_GID` does not match your server's Docker group. See [step 8](#8-dock
 No such image: claude-runner:latest
 ```
 
-Verify the compose includes the claude-runner service with `profiles: [build-only]`. Redeploy to rebuild the image.
+The claude-runner service did not build. Verify `infra/coolify/docker-compose.prod.yml` includes the service block:
+
+```yaml
+claude-runner:
+  build:
+    context: ./infra/docker/claude-runner
+  image: claude-runner:latest
+  entrypoint: ["/bin/true"]
+  restart: "no"
+```
+
+Redeploy via Coolify. Check the deploy logs for errors in the `claude-runner` build step. The image name must be exactly `claude-runner:latest` (no namespace prefix) — the API references this tag in `apps/api/src/helprs/modules/container/service.py`.
+
+If the image was pruned manually (`docker image prune -a`), just redeploy — Compose rebuilds it as part of the stack.
 
 ### Skills directory is empty
 

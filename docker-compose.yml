@@ -34,6 +34,16 @@ services:
       - CHOKIDAR_USEPOLLING=true
     command: npx vite --host 0.0.0.0 --port 5173
 
+  # Build-only service: the API spawns containers from this image dynamically
+  # via the Docker socket. `entrypoint: /bin/true` + `restart: "no"` make the
+  # container exit immediately — the image stays available on the host.
+  claude-runner:
+    build:
+      context: ./infra/docker/claude-runner
+    image: claude-runner:latest
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
   db:
     image: postgres:16-alpine
     ports:
