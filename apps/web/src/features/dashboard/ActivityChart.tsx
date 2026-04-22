@@ -3,6 +3,8 @@
  * 30 bars with 3px gap, 120px height, accent color with active highlight.
  */
 
+import { useState } from 'react'
+
 interface DailyCount {
   date: string
   count: number
@@ -26,22 +28,31 @@ function fillToThirtyDays(data: DailyCount[]): DailyCount[] {
   return result
 }
 
+function formatDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`)
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export default function ActivityChart({ data }: ActivityChartProps) {
   const days = fillToThirtyDays(data)
   const maxCount = Math.max(...days.map((d) => d.count), 1)
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
 
   return (
     <div>
-      <div className="flex items-end gap-[3px]" style={{ height: 120 }}>
+      <div className="relative flex items-end gap-[3px]" style={{ height: 120 }}>
         {days.map((d, i) => {
           const heightPx = d.count === 0 ? 2 : Math.max(4, (d.count / maxCount) * 110)
           const isRecent = i >= 23
           const isEmpty = d.count === 0
+          const isHovered = hoverIdx === i
 
           return (
             <div
               key={d.date}
-              className="flex-1 rounded-[2px] transition-opacity hover:opacity-100"
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx((prev) => (prev === i ? null : prev))}
+              className="relative flex-1 rounded-[2px] transition-all"
               style={{
                 height: heightPx,
                 backgroundColor: isEmpty
@@ -49,10 +60,25 @@ export default function ActivityChart({ data }: ActivityChartProps) {
                   : isRecent
                     ? 'var(--color-accent)'
                     : 'rgba(226,160,57,0.35)',
-                opacity: isEmpty ? 0.5 : isRecent ? 1 : 0.85,
+                opacity: isHovered ? 1 : isEmpty ? 0.5 : isRecent ? 1 : 0.85,
+                outline: isHovered ? '1px solid var(--color-accent)' : 'none',
+                outlineOffset: 1,
               }}
-              title={`${d.date}: ${d.count} session${d.count !== 1 ? 's' : ''}`}
-            />
+            >
+              {isHovered && (
+                <div
+                  className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 rounded-default bg-bg2 border border-rule-str shadow-card whitespace-nowrap pointer-events-none z-10"
+                  role="tooltip"
+                >
+                  <div className="font-mono text-[11px] text-ink font-semibold leading-tight">
+                    {d.count} session{d.count !== 1 ? 's' : ''}
+                  </div>
+                  <div className="font-mono text-[10px] text-dim leading-tight">
+                    {formatDate(d.date)}
+                  </div>
+                </div>
+              )}
+            </div>
           )
         })}
       </div>

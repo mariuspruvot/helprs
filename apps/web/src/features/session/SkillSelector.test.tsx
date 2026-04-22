@@ -1,6 +1,11 @@
 import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import { MemoryRouter } from 'react-router'
 import SkillSelector, { SKILLS } from './SkillSelector'
+
+function renderWithRouter(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>)
+}
 
 afterEach(() => {
   cleanup()
@@ -14,7 +19,7 @@ describe('SkillSelector', () => {
   }
 
   test('renders all skill cards', () => {
-    render(<SkillSelector {...defaultProps} />)
+    renderWithRouter(<SkillSelector {...defaultProps} />)
 
     for (const skill of SKILLS) {
       expect(screen.getByTestId(`skill-card-${skill.name}`)).toBeTruthy()
@@ -24,7 +29,7 @@ describe('SkillSelector', () => {
   })
 
   test('renders repo and PR info in header', () => {
-    render(<SkillSelector {...defaultProps} />)
+    renderWithRouter(<SkillSelector {...defaultProps} />)
 
     expect(screen.getByTestId('skill-selector')).toBeTruthy()
     const repoElements = screen.getAllByText('acme/helprs')
@@ -35,7 +40,7 @@ describe('SkillSelector', () => {
 
   test('calls onSelectSkill when challenge-me card is clicked', () => {
     const onSelectSkill = vi.fn()
-    render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
+    renderWithRouter(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
 
     fireEvent.click(screen.getByTestId('skill-card-challenge-me'))
     expect(onSelectSkill).toHaveBeenCalledWith('challenge-me')
@@ -43,7 +48,7 @@ describe('SkillSelector', () => {
 
   test('does not call onSelectSkill for coming-soon skills', () => {
     const onSelectSkill = vi.fn()
-    render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
+    renderWithRouter(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} />)
 
     fireEvent.click(screen.getByTestId('skill-card-eli5'))
     fireEvent.click(screen.getByTestId('skill-card-pair-debug'))
@@ -53,19 +58,19 @@ describe('SkillSelector', () => {
   })
 
   test('shows "soon" badge for unreleased skills', () => {
-    render(<SkillSelector {...defaultProps} />)
+    renderWithRouter(<SkillSelector {...defaultProps} />)
 
     const badges = screen.getAllByText('soon')
     expect(badges.length).toBe(4)
   })
 
   test('shows DEFAULT badge for challenge-me', () => {
-    render(<SkillSelector {...defaultProps} />)
+    renderWithRouter(<SkillSelector {...defaultProps} />)
     expect(screen.getByText('DEFAULT')).toBeTruthy()
   })
 
   test('disables cards when disabled prop is true', () => {
-    render(<SkillSelector {...defaultProps} disabled={true} />)
+    renderWithRouter(<SkillSelector {...defaultProps} disabled={true} />)
 
     for (const skill of SKILLS) {
       const card = screen.getByTestId(`skill-card-${skill.name}`) as HTMLButtonElement
@@ -75,14 +80,14 @@ describe('SkillSelector', () => {
 
   test('does not call onSelectSkill when disabled', () => {
     const onSelectSkill = vi.fn()
-    render(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} disabled={true} />)
+    renderWithRouter(<SkillSelector {...defaultProps} onSelectSkill={onSelectSkill} disabled={true} />)
 
     fireEvent.click(screen.getByTestId('skill-card-challenge-me'))
     expect(onSelectSkill).not.toHaveBeenCalled()
   })
 
   test('renders helPRs branding', () => {
-    render(<SkillSelector {...defaultProps} />)
+    renderWithRouter(<SkillSelector {...defaultProps} />)
     const brandElements = screen.getAllByText('helPRs')
     expect(brandElements.length).toBeGreaterThan(0)
   })
