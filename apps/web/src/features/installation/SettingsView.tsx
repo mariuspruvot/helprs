@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router'
 import { apiFetch } from '../../shared/api/client'
+import { Button, Card, Chip, Dot, Overline } from '../../shared/components'
 
 interface InstallationDetail {
   id: string
@@ -15,26 +16,25 @@ interface InstallationDetail {
   suppression_labels: string[]
 }
 
+const GITHUB_APP_SLUG = import.meta.env.VITE_GITHUB_APP_SLUG ?? 'helprs'
+
 export default function SettingsView() {
   const { installationId } = useParams<{ installationId: string }>()
   const [installation, setInstallation] = useState<InstallationDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // BYOK update state
   const [showKeyInput, setShowKeyInput] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [keyLoading, setKeyLoading] = useState(false)
   const [keyError, setKeyError] = useState<string | null>(null)
   const [keySuccess, setKeySuccess] = useState<string | null>(null)
 
-  // Suppression labels state
   const [labels, setLabels] = useState<string[]>([])
   const [newLabel, setNewLabel] = useState('')
   const [labelsLoading, setLabelsLoading] = useState(false)
   const [labelsError, setLabelsError] = useState<string | null>(null)
 
-  // Delete confirmation
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const fetchInstallation = useCallback(async () => {
@@ -72,7 +72,7 @@ export default function SettingsView() {
         setKeyError(data.message ?? 'API key validation failed -- check your key and try again')
         return
       }
-      setKeySuccess('API key updated and encrypted at rest')
+      setKeySuccess('Token updated and encrypted at rest')
       setApiKey('')
       setShowKeyInput(false)
       await fetchInstallation()
@@ -150,176 +150,206 @@ export default function SettingsView() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-primary text-text-primary font-mono flex items-center justify-center">
-        <p className="text-text-secondary">Loading settings...</p>
+      <div className="flex items-center justify-center py-20">
+        <div className="text-dim text-sm font-mono">
+          <Dot pulse className="mr-2" /> Loading settings...
+        </div>
       </div>
     )
   }
 
   if (error || !installation) {
     return (
-      <div className="min-h-screen bg-primary text-text-primary font-mono flex items-center justify-center">
-        <p className="text-[var(--warning)]">{error ?? 'Installation not found'}</p>
+      <div className="flex items-center justify-center py-20">
+        <Card className="border-danger/30">
+          <p className="text-danger text-sm">{error ?? 'Installation not found'}</p>
+        </Card>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-primary text-text-primary font-mono p-6">
-      <div className="max-w-2xl mx-auto space-y-8">
-        <div>
-          <h1 className="text-[28px] font-bold">Installation Settings</h1>
-          <p className="text-text-secondary mt-1">
-            {installation.account_login} ({installation.account_type})
-          </p>
-        </div>
+    <div className="max-w-2xl mx-auto py-8">
+      {/* Header */}
+      <div className="mb-8">
+        <Overline className="mb-2">{'\u25b8'} SETTINGS</Overline>
+        <h1 className="font-mono text-2xl font-bold text-ink">Installation Settings</h1>
+        <p className="text-dim text-sm mt-1 font-sans">
+          {installation.account_login} {'\u00b7'} {installation.account_type}
+        </p>
+      </div>
 
-        {/* BYOK Section */}
-        <section className="bg-[var(--color-surface)] rounded-lg p-6 space-y-4">
-          <h2 className="text-[18px] font-semibold">Anthropic API Key</h2>
+      {/* Claude Token Section */}
+      <Card className="mb-6">
+        <Overline className="mb-4">Claude Token</Overline>
 
-          {installation.byok_configured ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between text-[14px]">
-                <span className="text-text-secondary">Key</span>
-                <span className="text-[var(--success)]">
+        {installation.byok_configured ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-dim font-mono">Status</span>
+              <div className="flex items-center gap-2">
+                <Dot color="ok" />
+                <span className="text-ok font-mono">
                   {installation.byok_key_status} ({installation.byok_key_hint})
                 </span>
               </div>
-              {installation.byok_validated_at && (
-                <div className="flex items-center justify-between text-[14px]">
-                  <span className="text-text-secondary">Last validated</span>
-                  <span>{new Date(installation.byok_validated_at).toLocaleDateString()}</span>
-                </div>
-              )}
-              <div className="flex gap-2 pt-2">
-                <button
-                  onClick={() => setShowKeyInput(!showKeyInput)}
-                  className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white text-[14px] hover:opacity-90"
-                >
-                  Update API Key
-                </button>
-                <button
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="px-4 py-2 rounded-lg bg-transparent border border-[var(--warning)] text-[var(--warning)] text-[14px] hover:opacity-80"
-                >
-                  Remove Key
-                </button>
+            </div>
+            {installation.byok_validated_at && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-dim font-mono">Validated</span>
+                <span className="text-ink2 font-mono">
+                  {new Date(installation.byok_validated_at).toLocaleDateString()}
+                </span>
               </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-text-secondary text-[14px]">No API key configured.</p>
-              <button
-                onClick={() => setShowKeyInput(true)}
-                className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white text-[14px] hover:opacity-90"
-              >
-                Add API Key
-              </button>
-            </div>
-          )}
-
-          {showKeyInput && (
-            <div className="space-y-3 pt-2">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value.replace(/\s/g, ''))}
-                placeholder="sk-ant-oat01-..."
-                className="w-full px-4 py-3 rounded-lg bg-primary border border-[var(--color-surface)] text-text-primary focus:outline-none focus:border-[var(--accent)]"
-              />
-              {keyError && <p className="text-[var(--warning)] text-[14px]">{keyError}</p>}
-              {keySuccess && <p className="text-[var(--success)] text-[14px]">{keySuccess}</p>}
-              <div className="flex gap-2">
-                <button
-                  onClick={updateApiKey}
-                  disabled={keyLoading || !apiKey.startsWith('sk-ant-')}
-                  className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white text-[14px] disabled:opacity-50 hover:opacity-90"
-                >
-                  {keyLoading ? 'Validating...' : 'Save'}
-                </button>
-                <button
-                  onClick={() => { setShowKeyInput(false); setApiKey(''); setKeyError(null) }}
-                  className="px-4 py-2 rounded-lg bg-primary text-text-secondary text-[14px] hover:opacity-80"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {showDeleteConfirm && (
-            <div className="bg-primary rounded-lg p-4 space-y-3">
-              <p className="text-[14px] text-[var(--warning)]">
-                Are you sure? helPRs won't work without an API key.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={deleteApiKey}
-                  disabled={keyLoading}
-                  className="px-4 py-2 rounded-lg bg-[var(--warning)] text-white text-[14px] disabled:opacity-50"
-                >
-                  {keyLoading ? 'Removing...' : 'Confirm Remove'}
-                </button>
-                <button
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="px-4 py-2 rounded-lg bg-[var(--color-surface)] text-text-secondary text-[14px]"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* Suppression Labels Section */}
-        <section className="bg-[var(--color-surface)] rounded-lg p-6 space-y-4">
-          <h2 className="text-[18px] font-semibold">Suppression Labels</h2>
-          <p className="text-text-secondary text-[14px]">
-            PRs with these labels will skip helPRs sessions.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {labels.map((label) => (
-              <span
-                key={label}
-                className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-primary text-[14px]"
-              >
-                {label}
-                <button
-                  onClick={() => removeLabel(label)}
-                  disabled={labelsLoading}
-                  className="text-text-secondary hover:text-[var(--warning)] ml-1"
-                >
-                  &times;
-                </button>
-              </span>
-            ))}
-            {labels.length === 0 && (
-              <span className="text-text-secondary text-[14px]">No labels configured</span>
             )}
+            <div className="flex gap-2 pt-2">
+              <Button onClick={() => setShowKeyInput(!showKeyInput)}>
+                Update Token
+              </Button>
+              <Button variant="danger" onClick={() => setShowDeleteConfirm(true)}>
+                Remove
+              </Button>
+            </div>
           </div>
-          {labelsError && (
-            <p className="text-[var(--warning)] text-[14px]">{labelsError}</p>
-          )}
-          <div className="flex gap-2">
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Dot color="warn" />
+              <span className="text-warn">No token configured</span>
+            </div>
+            <Button onClick={() => setShowKeyInput(true)}>
+              Add Token
+            </Button>
+          </div>
+        )}
+
+        {showKeyInput && (
+          <div className="mt-4 pt-4 border-t border-rule space-y-3">
             <input
-              type="text"
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addLabel()}
-              placeholder="Add label..."
-              className="flex-1 px-4 py-2 rounded-lg bg-primary border border-primary text-text-primary focus:outline-none focus:border-[var(--accent)]"
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value.replace(/\s/g, ''))}
+              placeholder="sk-ant-oat01-..."
+              className="w-full px-4 py-3 rounded-button bg-bg border border-rule text-ink font-mono text-sm focus:outline-none focus:border-accent"
             />
-            <button
-              onClick={addLabel}
-              disabled={labelsLoading || !newLabel.trim()}
-              className="px-4 py-2 rounded-lg bg-primary text-text-primary hover:opacity-80 disabled:opacity-50"
-            >
-              Add
-            </button>
+            {keyError && <p className="text-danger text-sm">{keyError}</p>}
+            {keySuccess && <p className="text-ok text-sm">{keySuccess}</p>}
+            <div className="flex gap-2">
+              <Button
+                onClick={updateApiKey}
+                disabled={keyLoading || !apiKey.startsWith('sk-ant-')}
+              >
+                {keyLoading ? 'Validating...' : 'Save'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => { setShowKeyInput(false); setApiKey(''); setKeyError(null) }}
+              >
+                Cancel
+              </Button>
+            </div>
           </div>
-        </section>
-      </div>
+        )}
+
+        {showDeleteConfirm && (
+          <div className="mt-4 pt-4 border-t border-rule space-y-3">
+            <p className="text-danger text-sm">
+              Are you sure? helPRs won't work without a token.
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="danger"
+                onClick={deleteApiKey}
+                disabled={keyLoading}
+              >
+                {keyLoading ? 'Removing...' : 'Confirm Remove'}
+              </Button>
+              <Button variant="ghost" onClick={() => setShowDeleteConfirm(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Suppression Labels Section */}
+      <Card className="mb-6">
+        <Overline className="mb-4">Suppression Labels</Overline>
+        <p className="text-ink2 text-sm font-sans mb-4">
+          PRs with these labels will skip helPRs sessions.
+        </p>
+
+        <div className="flex flex-wrap gap-2 mb-4">
+          {labels.map((label) => (
+            <Chip key={label}>
+              {label}
+              <button
+                onClick={() => removeLabel(label)}
+                disabled={labelsLoading}
+                className="text-dim hover:text-danger ml-1 cursor-pointer disabled:opacity-50"
+              >
+                &times;
+              </button>
+            </Chip>
+          ))}
+          {labels.length === 0 && (
+            <span className="text-dim text-xs font-mono">// no labels configured</span>
+          )}
+        </div>
+
+        {labelsError && <p className="text-danger text-sm mb-4">{labelsError}</p>}
+
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newLabel}
+            onChange={(e) => setNewLabel(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addLabel()}
+            placeholder="Add label..."
+            className="flex-1 px-3 py-2 rounded-button bg-bg border border-rule text-ink font-mono text-sm focus:outline-none focus:border-accent"
+          />
+          <Button
+            variant="secondary"
+            onClick={addLabel}
+            disabled={labelsLoading || !newLabel.trim()}
+          >
+            Add
+          </Button>
+        </div>
+      </Card>
+
+      {/* Repository Access */}
+      <Card className="mb-6">
+        <Overline className="mb-4">Repository Access</Overline>
+        <p className="text-ink2 text-sm font-sans mb-4">
+          Manage which repositories helPRs has access to.
+        </p>
+        <a
+          href={`https://github.com/settings/installations/${installationId}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-accent text-sm font-mono hover:underline"
+        >
+          Configure on GitHub {'\u2197'}
+        </a>
+      </Card>
+
+      {/* Danger Zone */}
+      <Card className="border-danger/20">
+        <Overline className="mb-4 text-danger">Danger Zone</Overline>
+        <p className="text-ink2 text-sm font-sans mb-4">
+          Uninstall helPRs from this account. This will remove all configuration.
+        </p>
+        <a
+          href={`https://github.com/apps/${GITHUB_APP_SLUG}/installations/${installationId}`}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Button variant="danger">
+            Uninstall on GitHub {'\u2197'}
+          </Button>
+        </a>
+      </Card>
     </div>
   )
 }
