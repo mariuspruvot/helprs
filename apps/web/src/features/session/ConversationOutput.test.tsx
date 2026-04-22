@@ -30,7 +30,7 @@ describe('ConversationOutput', () => {
     render(<ConversationOutput messages={[]} isRunning={false} />)
 
     expect(screen.getByTestId('conversation-output')).toBeTruthy()
-    expect(screen.getByText('No output yet.')).toBeTruthy()
+    expect(screen.getByText('// no output yet')).toBeTruthy()
   })
 
   test('renders assistant text messages as markdown', () => {
@@ -76,7 +76,7 @@ describe('ConversationOutput', () => {
     ]
     render(<ConversationOutput messages={messages} isRunning={true} />)
 
-    expect(screen.getByText('API retry (attempt 1/3)')).toBeTruthy()
+    expect(screen.getByText('// API retry (attempt 1/3)')).toBeTruthy()
   })
 
   test('renders error result messages', () => {

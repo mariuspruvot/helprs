@@ -108,7 +108,7 @@ class TestPostByok:
         with (
             _mock_admin_permission(),
             patch(
-                "helprs.modules.installation.service.validate_anthropic_api_key",
+                "helprs.modules.installation.service.validate_claude_key",
                 return_value=True,
             ),
         ):
@@ -129,7 +129,7 @@ class TestPostByok:
         with (
             _mock_admin_permission(),
             patch(
-                "helprs.modules.installation.service.validate_anthropic_api_key",
+                "helprs.modules.installation.service.validate_claude_key",
                 return_value=False,
             ),
         ):
@@ -186,7 +186,7 @@ class TestDeleteByok:
         with (
             _mock_admin_permission(),
             patch(
-                "helprs.modules.installation.service.validate_anthropic_api_key",
+                "helprs.modules.installation.service.validate_claude_key",
                 return_value=True,
             ),
         ):
@@ -224,7 +224,7 @@ class TestGetInstallationIncludesByokStatus:
         with (
             _mock_admin_permission(),
             patch(
-                "helprs.modules.installation.service.validate_anthropic_api_key",
+                "helprs.modules.installation.service.validate_claude_key",
                 return_value=True,
             ),
         ):
