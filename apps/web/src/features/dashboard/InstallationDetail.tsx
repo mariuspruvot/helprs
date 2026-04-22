@@ -11,8 +11,19 @@ import { formatDuration, formatRelativeTime } from './formatters'
 import { Button, Card, Chip, Dot, Overline } from '../../shared/components'
 
 const STATUS_OPTIONS = ['all', 'completed', 'failed', 'running', 'pending', 'timeout'] as const
-const PER_PAGE = 10
 const COL_TEMPLATE = 'minmax(24px, 32px) minmax(120px, 1fr) minmax(90px, 130px) minmax(80px, 110px) minmax(56px, 80px) minmax(56px, 80px) 28px'
+
+// Approximate row height (py-2.5 + text) — used to size the page to available height.
+const ROW_HEIGHT_PX = 40
+// Space consumed by header, completion bar, table header, pagination, etc.
+const CHROME_HEIGHT_PX = 320
+const MIN_PER_PAGE = 10
+const MAX_PER_PAGE = 40
+
+function computePerPage(viewportHeight: number): number {
+  const rows = Math.floor((viewportHeight - CHROME_HEIGHT_PX) / ROW_HEIGHT_PX)
+  return Math.max(MIN_PER_PAGE, Math.min(MAX_PER_PAGE, rows))
+}
 
 export default function InstallationDetail() {
   const { installationId } = useParams<{ installationId: string }>()
@@ -26,6 +37,21 @@ export default function InstallationDetail() {
   const [error, setError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [perPage, setPerPage] = useState(() =>
+    typeof window === 'undefined' ? MIN_PER_PAGE : computePerPage(window.innerHeight),
+  )
+
+  useEffect(() => {
+    const update = () => {
+      const next = computePerPage(window.innerHeight)
+      setPerPage((prev) => (prev === next ? prev : next))
+    }
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+
+  // Reset to first page when per-page changes so we don't land on an out-of-range page.
+  useEffect(() => { setPage(1) }, [perPage])
 
   const load = useCallback(async () => {
     if (!installationId) return
@@ -35,7 +61,7 @@ export default function InstallationDetail() {
       const data = await fetchInstallationSessions(
         Number(installationId),
         page,
-        PER_PAGE,
+        perPage,
         statusFilter === 'all' ? undefined : statusFilter,
       )
       setSessions(data.items)
@@ -46,7 +72,7 @@ export default function InstallationDetail() {
     } finally {
       setLoading(false)
     }
-  }, [installationId, page, statusFilter])
+  }, [installationId, page, perPage, statusFilter])
 
   useEffect(() => { load() }, [load])
 
@@ -181,7 +207,7 @@ export default function InstallationDetail() {
                   style={{ gridTemplateColumns: COL_TEMPLATE }}
                 >
                   <span className="font-mono text-[10px] lg:text-[11px] text-dim2">
-                    {String(idx + 1 + (page - 1) * PER_PAGE).padStart(2, '0')}
+                    {String(idx + 1 + (page - 1) * perPage).padStart(2, '0')}
                   </span>
                   <span className="font-mono text-ink truncate">
                     {session.repo_full_name} <span className="text-accent">#{session.pr_number}</span>

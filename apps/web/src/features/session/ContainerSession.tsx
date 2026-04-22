@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../auth/store'
-import { Button, Chip } from '../../shared/components'
+import { Button, Chip, Dot } from '../../shared/components'
 import {
   buildStreamUrl,
   createContainerSession,
@@ -442,11 +442,17 @@ export default function ContainerSession({
   const isRunning = status === 'running' || status === 'starting'
   const isTerminal = status === 'completed' || status === 'failed' || status === 'stopped'
 
-  const statusVariant =
+  const statusDotColor =
     isRunning ? 'ok' as const :
     status === 'completed' ? 'accent' as const :
     status === 'failed' ? 'danger' as const :
-    'default' as const
+    'dim' as const
+
+  const statusTextColor =
+    isRunning ? 'text-ok' :
+    status === 'completed' ? 'text-accent' :
+    status === 'failed' ? 'text-danger' :
+    'text-dim'
 
   return (
     <div
@@ -471,17 +477,26 @@ export default function ContainerSession({
         <Chip variant="accent">{session?.skill_name ?? skillName}</Chip>
 
         {/* Status + controls right-aligned */}
-        <div className="ml-auto flex items-center gap-2">
-          <span data-testid="session-status"><Chip variant={statusVariant}>{status}</Chip></span>
+        <div className="ml-auto flex items-center gap-3">
+          <span
+            data-testid="session-status"
+            className={`inline-flex items-center gap-1.5 font-mono text-[11px] ${statusTextColor}`}
+          >
+            <Dot color={statusDotColor} pulse={isRunning} />
+            <span>{status}</span>
+          </span>
 
           {isRunning && (
-            <span
+            <button
+              type="button"
               onClick={handleStop}
+              disabled={stopping}
               data-testid="stop-button"
-              className={`cursor-pointer hover:brightness-125 transition-all ${stopping ? 'opacity-40 pointer-events-none' : ''}`}
+              className="inline-flex items-center gap-1.5 font-mono text-[11px] font-medium h-7 px-2.5 rounded-default border border-danger/40 text-danger bg-danger/5 hover:bg-danger/15 hover:border-danger/60 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Chip variant="danger">{stopping ? 'stopping...' : 'stop'}</Chip>
-            </span>
+              <span aria-hidden="true" className="inline-block w-2 h-2 rounded-[1px] bg-danger" />
+              <span>{stopping ? 'stopping...' : 'stop'}</span>
+            </button>
           )}
         </div>
       </div>
