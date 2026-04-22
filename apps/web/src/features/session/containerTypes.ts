@@ -181,7 +181,12 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
         // Only extract text blocks — tool_use and thinking are internal
         // activity that we don't display to users.
         if (block.type === 'text' && typeof block.text === 'string') {
-          blocks.push({ type: 'text', text: block.text })
+          // Strip helprs-scorecard JSON blocks from display — they're
+          // parsed separately and shown in the session rail.
+          const cleaned = block.text.replace(/```helprs-scorecard\s*\n[\s\S]*?\n```/g, '').trim()
+          if (cleaned) {
+            blocks.push({ type: 'text', text: cleaned })
+          }
         }
       }
 
@@ -245,4 +250,20 @@ export function parseStreamMessage(raw: string): Omit<StreamMessage, 'id' | 'tim
  */
 export function parseStoredMessage(data: Record<string, unknown>): Omit<StreamMessage, 'id' | 'timestamp'> | null {
   return parseStreamMessage(JSON.stringify(data))
+}
+
+/**
+ * Extract a helprs-scorecard JSON block from assistant text.
+ * Returns the parsed object or null if not found / invalid.
+ */
+export function extractScorecardFromText(raw: string): Record<string, unknown> | null {
+  const match = raw.match(/```helprs-scorecard\s*\n([\s\S]*?)\n```/)
+  if (!match) return null
+  try {
+    const parsed = JSON.parse(match[1]) as Record<string, unknown>
+    if (parsed.dimensions && parsed.skill) return parsed
+    return null
+  } catch {
+    return null
+  }
 }

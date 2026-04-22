@@ -23,6 +23,7 @@ import ConversationOutput from './ConversationOutput'
 import SessionRail from './SessionRail'
 import type { ScorecardResponse } from './containerApi'
 import {
+  extractScorecardFromText,
   parseStoredMessage,
   parseStreamMessage,
 } from './containerTypes'
@@ -116,13 +117,17 @@ export default function ContainerSession({
     })
   }, [appendMessage])
 
-  // Fetch scorecard when session completes
-  const loadScorecard = useCallback(async (sessionId: string) => {
+  // Refresh session data (to get completed_at for the timer) and scorecard
+  const refreshSessionData = useCallback(async (sessionId: string) => {
     try {
-      const data = await fetchScorecard(sessionId)
-      if (data) setScorecard(data)
+      const [fresh, sc] = await Promise.all([
+        getContainerSession(sessionId).catch(() => null),
+        fetchScorecard(sessionId).catch(() => null),
+      ])
+      if (fresh) setSession(fresh)
+      if (sc) setScorecard(sc)
     } catch {
-      // Scorecard is optional — silently ignore
+      // best-effort
     }
   }, [])
 
@@ -138,6 +143,18 @@ export default function ContainerSession({
       try {
         const resp = await getSessionEvents(sessionId)
         for (const evt of resp.events) {
+          // Extract scorecard from stored assistant events
+          if (evt.data.type === 'assistant') {
+            const content = (evt.data.message as { content?: Array<{ type: string; text?: string }> })?.content
+            if (content) {
+              for (const block of content) {
+                if (block.type === 'text' && block.text) {
+                  const sc = extractScorecardFromText(block.text)
+                  if (sc) setScorecard(sc as unknown as ScorecardResponse)
+                }
+              }
+            }
+          }
           const parsed = parseStoredMessage(evt.data)
           if (parsed) {
             appendMessage(parsed)
@@ -159,7 +176,7 @@ export default function ContainerSession({
           const isTerminalStatus = ['completed', 'failed', 'timeout', 'stopped'].includes(existing.status)
           if (isTerminalStatus) {
             await loadStoredEvents(existing.id)
-            await loadScorecard(existing.id)
+            await refreshSessionData(existing.id)
           } else if (existing.status === 'running') {
             connectStream(existing.id)
           }
@@ -219,7 +236,7 @@ export default function ContainerSession({
         if (fresh.status === 'completed') {
           appendStatus('Session completed.')
           await loadStoredEvents(sessionId)
-          await loadScorecard(sessionId)
+          await refreshSessionData(sessionId)
         } else if (fresh.status === 'failed') {
           setError('Container failed')
           appendError('Container failed.')
@@ -266,6 +283,21 @@ export default function ContainerSession({
           // ignore
         }
 
+        // Check for scorecard in raw assistant text before it gets stripped
+        try {
+          const rawEvt = JSON.parse(event.data as string) as { type?: string; message?: { content?: Array<{ type: string; text?: string }> } }
+          if (rawEvt.type === 'assistant' && rawEvt.message?.content) {
+            for (const block of rawEvt.message.content) {
+              if (block.type === 'text' && block.text) {
+                const sc = extractScorecardFromText(block.text)
+                if (sc) setScorecard(sc as unknown as ScorecardResponse)
+              }
+            }
+          }
+        } catch {
+          // ignore — best-effort scorecard extraction
+        }
+
         const parsed = parseStreamMessage(event.data as string)
         if (parsed) {
           appendMessage(parsed)
@@ -306,7 +338,7 @@ export default function ContainerSession({
         }
         // Load scorecard after completion
         if (session?.id) {
-          loadScorecard(session.id)
+          refreshSessionData(session.id)
         }
       })
 
@@ -347,7 +379,7 @@ export default function ContainerSession({
         eventSourceRef.current = null
       }
     }
-  }, [installationId, repoFullName, prNumber, skillName, existingSessionId, appendMessage, appendStatus, appendError, loadScorecard])
+  }, [installationId, repoFullName, prNumber, skillName, existingSessionId, appendMessage, appendStatus, appendError, refreshSessionData])
 
   const handleStop = useCallback(async () => {
     if (!session) return
@@ -439,18 +471,18 @@ export default function ContainerSession({
         <Chip variant="accent">{session?.skill_name ?? skillName}</Chip>
 
         {/* Status + controls right-aligned */}
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2">
           <span data-testid="session-status"><Chip variant={statusVariant}>{status}</Chip></span>
 
           {isRunning && (
-            <Button
-              variant="danger"
+            <button
               onClick={handleStop}
               disabled={stopping}
               data-testid="stop-button"
+              className="font-mono text-[11px] font-medium px-2 py-0.5 rounded-default border border-danger/35 text-danger bg-danger/10 hover:bg-danger/20 transition-colors cursor-pointer disabled:opacity-40"
             >
-              {stopping ? 'Stopping...' : 'Stop'}
-            </Button>
+              {stopping ? 'stopping...' : 'stop'}
+            </button>
           )}
         </div>
       </div>
