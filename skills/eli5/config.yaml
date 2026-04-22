@@ -1,0 +1,10 @@
+name: eli5
+description: "Explain Like I'm 5 -- can you vulgarize your own code?"
+version: "1.0.0"
+fetch_strategy: shallow_clone
+estimated_duration: "5-8 min"
+output_format: sse_stream
+tags:
+  - explanation
+  - teaching
+  - simplification
