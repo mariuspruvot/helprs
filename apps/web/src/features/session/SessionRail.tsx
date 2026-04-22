@@ -85,27 +85,7 @@ export default function SessionRail({
           </section>
         )}
 
-        {/* Progress tracker */}
-        {questionCount > 0 && (
-          <section>
-            <Overline className="mb-3">{'\u25b8'} PROGRESS</Overline>
-            <ProgressTracker
-              totalQuestions={questionCount}
-              currentQuestion={currentQuestion}
-              isComplete={isComplete}
-            />
-          </section>
-        )}
-
-        {/* Scorecard */}
-        {scorecard && (
-          <section>
-            <Overline className="mb-3">{'\u25b8'} SCORECARD</Overline>
-            <ScorecardDisplay scorecard={scorecard} expanded={isTerminal} />
-          </section>
-        )}
-
-        {/* Session meta */}
+        {/* Session meta — always first for context */}
         {session && (
           <section>
             <Overline className="mb-3">{'\u25b8'} META</Overline>
@@ -131,6 +111,26 @@ export default function SessionRail({
                 </span>
               </div>
             </div>
+          </section>
+        )}
+
+        {/* Progress tracker */}
+        {questionCount > 0 && (
+          <section>
+            <Overline className="mb-3">{'\u25b8'} PROGRESS</Overline>
+            <ProgressTracker
+              totalQuestions={questionCount}
+              currentQuestion={currentQuestion}
+              isComplete={isComplete}
+            />
+          </section>
+        )}
+
+        {/* Scorecard */}
+        {scorecard && (
+          <section>
+            <Overline className="mb-3">{'\u25b8'} SCORECARD</Overline>
+            <ScorecardDisplay scorecard={scorecard} expanded={isTerminal} />
           </section>
         )}
 

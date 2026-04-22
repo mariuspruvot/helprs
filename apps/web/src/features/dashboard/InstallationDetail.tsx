@@ -77,7 +77,7 @@ export default function InstallationDetail() {
 
   return (
     <>
-    <div className="flex flex-col h-[calc(100dvh-120px)]">
+    <div className="flex flex-col h-full">
       {/* Header + filters — wraps on small screens */}
       <div className="shrink-0 flex flex-col lg:flex-row lg:justify-between lg:items-end gap-3 mb-4">
         <div className="min-w-0">
