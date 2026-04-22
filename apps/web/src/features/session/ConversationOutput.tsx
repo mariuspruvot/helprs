@@ -1,9 +1,8 @@
 /**
  * ConversationOutput — renders streamed session events as a conversation.
  *
- * Replaces the old TerminalOutput with structured markdown rendering,
- * syntax-highlighted code blocks, and collapsible tool activity.
- * Preserves auto-scroll, running indicator, and accessible log role.
+ * Structured markdown rendering with syntax-highlighted code blocks.
+ * Direction E styling: warm dark bg, amber accents, styled message blocks.
  */
 
 import { useEffect, useRef } from 'react'
@@ -36,21 +35,18 @@ export default function ConversationOutput({ messages, isRunning }: Conversation
   return (
     <div
       data-testid="conversation-output"
-      className="flex flex-col h-full"
-      style={{ background: '#0D0D0D' }}
+      className="flex flex-col h-full bg-bg"
     >
-      {/* Conversation body */}
       <div
         ref={containerRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
-        style={{ color: '#E0E0E0' }}
         role="log"
         aria-live="polite"
         aria-label="Session output"
       >
         {messages.length === 0 && !isRunning && (
-          <p className="text-text-muted text-[13px] font-sans">No output yet.</p>
+          <p className="text-dim text-sm font-mono">// no output yet</p>
         )}
         {messages.map((message) => (
           <MessageBlock key={message.id} message={message} />
@@ -58,8 +54,7 @@ export default function ConversationOutput({ messages, isRunning }: Conversation
         {isRunning && messages.length > 0 && (
           <span
             data-testid="conversation-cursor"
-            className="inline-block w-2 h-4 animate-pulse mt-2"
-            style={{ background: '#E2A039' }}
+            className="inline-block w-2 h-4 bg-accent animate-pulse mt-2"
           />
         )}
       </div>
