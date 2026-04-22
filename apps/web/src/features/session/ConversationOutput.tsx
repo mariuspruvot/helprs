@@ -52,10 +52,14 @@ export default function ConversationOutput({ messages, isRunning }: Conversation
           <MessageBlock key={message.id} message={message} />
         ))}
         {isRunning && messages.length > 0 && (
-          <span
-            data-testid="conversation-cursor"
-            className="inline-block w-2 h-4 bg-accent animate-pulse mt-2"
-          />
+          <div data-testid="conversation-cursor" className="flex items-center gap-2 mt-3 py-2">
+            <div className="flex gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-[pulse-dot_1.4s_ease-in-out_infinite]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-[pulse-dot_1.4s_ease-in-out_0.2s_infinite]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-[pulse-dot_1.4s_ease-in-out_0.4s_infinite]" />
+            </div>
+            <span className="font-mono text-[11px] text-dim">thinking...</span>
+          </div>
         )}
       </div>
     </div>
