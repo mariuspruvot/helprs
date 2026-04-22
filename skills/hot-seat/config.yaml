@@ -1,0 +1,10 @@
+name: hot-seat
+description: "Architecture Hot Seat -- defend your design choices under pressure"
+version: "1.0.0"
+fetch_strategy: shallow_clone
+estimated_duration: "5-10 min"
+output_format: sse_stream
+tags:
+  - architecture
+  - design-review
+  - defense
