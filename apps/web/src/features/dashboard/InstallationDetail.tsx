@@ -1,6 +1,6 @@
 /**
  * InstallationDetail — session history for a single installation.
- * Matches R2 redesign: completion bar, grid table, filter buttons.
+ * Responsive layout: adapts table and header to screen size.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -12,6 +12,7 @@ import { Button, Card, Chip, Dot, Overline } from '../../shared/components'
 
 const STATUS_OPTIONS = ['all', 'completed', 'failed', 'running', 'pending', 'timeout'] as const
 const PER_PAGE = 10
+const COL_TEMPLATE = 'minmax(24px, 32px) minmax(120px, 1fr) minmax(90px, 130px) minmax(80px, 110px) minmax(56px, 80px) minmax(56px, 80px) 28px'
 
 export default function InstallationDetail() {
   const { installationId } = useParams<{ installationId: string }>()
@@ -76,21 +77,20 @@ export default function InstallationDetail() {
 
   return (
     <>
-    {/* 56px topbar + 32px py-8 top + 32px py-8 bottom = 120px */}
-    <div className="flex flex-col" style={{ height: 'calc(100vh - 120px)' }}>
-      {/* Header + filters */}
-      <div className="shrink-0 flex justify-between items-end mb-4">
-        <div>
+    <div className="flex flex-col h-[calc(100dvh-120px)]">
+      {/* Header + filters — wraps on small screens */}
+      <div className="shrink-0 flex flex-col lg:flex-row lg:justify-between lg:items-end gap-3 mb-4">
+        <div className="min-w-0">
           <Overline className="mb-1">{'\u25b8'} SESSIONS {'\u00b7'} {total} TOTAL</Overline>
-          <h1 className="font-mono text-2xl font-bold tracking-[-0.02em]">Session History</h1>
+          <h1 className="font-mono text-xl lg:text-2xl font-bold tracking-[-0.02em]">Session History</h1>
           <p className="font-mono text-[13px] text-dim mt-0.5">// every time Claude ran against one of your PRs</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-1.5">
           {STATUS_OPTIONS.map((opt) => (
             <button
               key={opt}
               onClick={() => handleStatusChange(opt)}
-              className={`font-mono text-[12px] font-medium px-3 py-1.5 rounded-[6px] border transition-colors cursor-pointer ${
+              className={`font-mono text-[11px] lg:text-[12px] font-medium px-2.5 py-1 lg:px-3 lg:py-1.5 rounded-[6px] border transition-colors cursor-pointer ${
                 statusFilter === opt
                   ? 'bg-accent/15 border-accent/30 text-accent'
                   : 'bg-card border-rule-str text-ink hover:bg-card-hi'
@@ -102,10 +102,10 @@ export default function InstallationDetail() {
         </div>
       </div>
 
-      {/* Completion bar */}
+      {/* Completion bar — stacks on small screens */}
       {!loading && sessions.length > 0 && (
-        <div className="shrink-0 flex items-center gap-4 px-4 py-2.5 bg-card border border-rule rounded-[8px] mb-4">
-          <div className="flex items-baseline gap-1.5">
+        <div className="shrink-0 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 py-2.5 bg-card border border-rule rounded-[8px] mb-4">
+          <div className="flex items-baseline gap-1.5 shrink-0">
             <span className="font-mono text-lg font-bold">{completionPct}%</span>
             <span className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">completion</span>
           </div>
@@ -114,7 +114,7 @@ export default function InstallationDetail() {
             {timeout > 0 && <div className="bg-warn" style={{ flex: timeout }} />}
             {failed > 0 && <div className="bg-danger" style={{ flex: failed }} />}
           </div>
-          <div className="flex gap-4 font-mono text-[11px] text-dim">
+          <div className="flex gap-3 sm:gap-4 font-mono text-[10px] sm:text-[11px] text-dim shrink-0">
             <span><Dot color="ok" className="mr-1" />{completed} done</span>
             <span><Dot color="warn" className="mr-1" />{timeout} timeout</span>
             <span><Dot color="danger" className="mr-1" />{failed} failed</span>
@@ -150,8 +150,8 @@ export default function InstallationDetail() {
         <div className="flex-1 min-h-0 flex flex-col border border-rule-str rounded-[8px] overflow-hidden">
           {/* Table header */}
           <div
-            className="shrink-0 grid bg-bg2 px-4 py-2 font-mono text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
-            style={{ gridTemplateColumns: '32px 1fr 130px 100px 72px 72px 32px' }}
+            className="shrink-0 grid bg-bg2 px-3 lg:px-4 py-2 font-mono text-[9px] lg:text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
+            style={{ gridTemplateColumns: COL_TEMPLATE }}
           >
             <span>#</span>
             <span>REPO / PR</span>
@@ -175,12 +175,12 @@ export default function InstallationDetail() {
                 <button
                   key={session.id}
                   onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
-                  className={`group w-full grid items-center px-4 py-2.5 text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
+                  className={`group w-full grid items-center px-3 lg:px-4 py-2 lg:py-2.5 text-[12px] lg:text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
                     idx < sessions.length - 1 ? 'border-b border-rule' : ''
                   }`}
-                  style={{ gridTemplateColumns: '32px 1fr 130px 100px 72px 72px 32px' }}
+                  style={{ gridTemplateColumns: COL_TEMPLATE }}
                 >
-                  <span className="font-mono text-[11px] text-dim2">
+                  <span className="font-mono text-[10px] lg:text-[11px] text-dim2">
                     {String(idx + 1 + (page - 1) * PER_PAGE).padStart(2, '0')}
                   </span>
                   <span className="font-mono text-ink truncate">
@@ -188,10 +188,10 @@ export default function InstallationDetail() {
                   </span>
                   <span><Chip variant="accent">{session.skill_name}</Chip></span>
                   <span><Chip variant={statusColor}>{session.status}</Chip></span>
-                  <span className="font-mono text-[11px] text-ink2 text-right">
+                  <span className="font-mono text-[10px] lg:text-[11px] text-ink2 text-right">
                     {formatDuration(session.started_at, session.completed_at)}
                   </span>
-                  <span className="font-mono text-[11px] text-dim text-right">
+                  <span className="font-mono text-[10px] lg:text-[11px] text-dim text-right">
                     {formatRelativeTime(session.created_at)}
                   </span>
                   <span
@@ -242,7 +242,7 @@ export default function InstallationDetail() {
 
     {/* Delete confirmation modal */}
     {deleteTarget && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm p-4">
         <Card className="w-full max-w-sm">
           <Overline className="mb-3 text-danger">{'\u25b8'} DELETE SESSION</Overline>
           <p className="text-ink text-sm font-sans mb-1">
