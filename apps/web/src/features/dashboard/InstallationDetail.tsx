@@ -190,7 +190,8 @@ export default function InstallationDetail() {
 
       {/* Session table */}
       {!loading && sessions.length > 0 && (
-        <div className="flex-1 min-h-0 flex flex-col border border-rule-str rounded-[8px] overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col">
+        <div className="max-h-full min-h-0 flex flex-col border border-rule-str rounded-[8px] overflow-hidden">
           {/* Table header */}
           <div
             className="shrink-0 grid bg-bg2 px-3 lg:px-4 py-2 font-mono text-[9px] lg:text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
@@ -254,6 +255,7 @@ export default function InstallationDetail() {
               )
             })}
           </div>
+        </div>
         </div>
       )}
 
