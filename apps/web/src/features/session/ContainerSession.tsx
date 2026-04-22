@@ -475,14 +475,13 @@ export default function ContainerSession({
           <span data-testid="session-status"><Chip variant={statusVariant}>{status}</Chip></span>
 
           {isRunning && (
-            <button
+            <span
               onClick={handleStop}
-              disabled={stopping}
               data-testid="stop-button"
-              className="font-mono text-[11px] font-medium px-2 py-0.5 rounded-default border border-danger/35 text-danger bg-danger/10 hover:bg-danger/20 transition-colors cursor-pointer disabled:opacity-40"
+              className={`cursor-pointer hover:brightness-125 transition-all ${stopping ? 'opacity-40 pointer-events-none' : ''}`}
             >
-              {stopping ? 'stopping...' : 'stop'}
-            </button>
+              <Chip variant="danger">{stopping ? 'stopping...' : 'stop'}</Chip>
+            </span>
           )}
         </div>
       </div>
