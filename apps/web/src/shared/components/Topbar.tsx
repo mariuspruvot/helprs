@@ -14,8 +14,8 @@ export function Topbar() {
 
   return (
     <header className="sticky top-0 z-50 h-14 bg-bg2 border-b border-rule flex items-center px-5">
-      <Link to="/installations" className="font-mono text-sm font-bold text-accent tracking-tight">
-        helPRs
+      <Link to="/installations" className="font-mono text-sm font-bold tracking-tight flex items-center gap-0.5">
+        <span className="text-dim">hel</span><span className="text-accent">[PR]</span><span className="text-dim">s</span>
       </Link>
 
       <div className="flex-1" />
