@@ -49,6 +49,29 @@ export async function fetchInstallations(): Promise<InstallationListResponse> {
   return resp.json() as Promise<InstallationListResponse>
 }
 
+export interface DailyCount {
+  date: string
+  count: number
+}
+
+export interface StatusTotals {
+  completed: number
+  failed: number
+  timeout: number
+  total: number
+}
+
+export interface UserStats {
+  daily_counts: DailyCount[]
+  totals: StatusTotals
+}
+
+export async function fetchUserStats(): Promise<UserStats> {
+  const resp = await apiFetch('/api/v1/auth/me/stats')
+  if (!resp.ok) throw new Error(`Failed to fetch stats: ${resp.status}`)
+  return resp.json() as Promise<UserStats>
+}
+
 export async function fetchInstallationSessions(
   installationId: number,
   page: number = 1,
