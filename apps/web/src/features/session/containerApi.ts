@@ -115,7 +115,11 @@ export async function fetchScorecard(sessionId: string): Promise<ScorecardRespon
     throw new ContainerSessionError(resp.status, `Failed to fetch scorecard: ${resp.status}`)
   }
   try {
-    return (await resp.json()) as ScorecardResponse
+    const data = (await resp.json()) as Record<string, unknown>
+    // The API returns {session_id, scorecard, xp_earned} — extract the nested scorecard
+    const scorecard = (data.scorecard ?? data) as ScorecardResponse
+    if (!scorecard.dimensions || !scorecard.skill) return null
+    return scorecard
   } catch {
     return null
   }
