@@ -1,25 +1,36 @@
 /**
- * InstallationList — dashboard landing page showing all installations.
+ * InstallationList — dashboard landing page.
+ * Matches the R2 redesign mockup: greeting, stat strip, activity chart,
+ * installation cards with avatar + status grid + action buttons.
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router'
 import { useAuthStore } from '../auth/store'
-import { fetchInstallations } from './dashboardApi'
-import type { InstallationSummary } from './dashboardApi'
+import { fetchInstallations, fetchUserStats } from './dashboardApi'
+import type { InstallationSummary, UserStats } from './dashboardApi'
+import { Button, Card, Chip, Dot, Overline, StatCard } from '../../shared/components'
+import ActivityChart from './ActivityChart'
+
+const INSTALL_URL = `https://github.com/apps/${import.meta.env.VITE_GITHUB_APP_SLUG ?? 'helprs'}/installations/new`
 
 export default function InstallationList() {
   const navigate = useNavigate()
   const user = useAuthStore((s) => s.user)
   const [installations, setInstallations] = useState<InstallationSummary[]>([])
+  const [stats, setStats] = useState<UserStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await fetchInstallations()
-      setInstallations(data.items)
+      const [instData, statsData] = await Promise.all([
+        fetchInstallations(),
+        fetchUserStats().catch(() => null),
+      ])
+      setInstallations(instData.items)
+      setStats(statsData)
     } catch {
       setError('Failed to load installations')
     } finally {
@@ -29,164 +40,147 @@ export default function InstallationList() {
 
   useEffect(() => { load() }, [load])
 
-  return (
-    <div className="min-h-screen bg-primary text-text-primary">
-      {/* Header */}
-      <div
-        className="h-14 flex items-center px-6 gap-4 border-b"
-        style={{ borderColor: 'rgba(255, 255, 255, 0.06)' }}
-      >
-        <span
-          className="text-[15px] font-mono font-bold tracking-tight"
-          style={{ color: '#E2A039' }}
-        >
-          helPRs
-        </span>
-        <span className="text-text-muted text-[12px]">|</span>
-        <span className="text-text-secondary text-[13px] font-sans">Dashboard</span>
+  const totalSessions = installations.reduce((sum, i) => sum + i.session_count, 0)
+  const configured = installations.filter((i) => i.byok_configured).length
 
-        <div className="ml-auto flex items-center gap-3">
-          {user?.avatar_url && (
-            <img
-              src={user.avatar_url}
-              alt={user.github_login}
-              className="w-6 h-6 rounded-full"
-            />
-          )}
-          <span className="text-text-secondary text-[13px] font-sans">
-            {user?.github_login}
-          </span>
-        </div>
+  function greeting(): string {
+    const hour = new Date().getHours()
+    if (hour < 12) return 'Good morning'
+    if (hour < 18) return 'Good afternoon'
+    return 'Good evening'
+  }
+
+  return (
+    <div>
+      {/* Greeting */}
+      <div className="mb-8">
+        <h1 className="font-mono text-xl font-bold mb-1">
+          {greeting()}, <span className="text-accent">{user?.github_login}</span>
+        </h1>
+        <Overline>// your installations and recent activity</Overline>
       </div>
 
-      {/* Content */}
-      <div className="max-w-4xl mx-auto px-6 py-8">
-        <h1 className="text-[20px] font-sans font-semibold mb-6">
-          Your Installations
-        </h1>
+      {/* Stat strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard label="Installations" value={installations.length} />
+        <StatCard label="Configured" value={configured} color={configured > 0 ? 'ok' : 'warn'} sub={`of ${installations.length}`} />
+        <StatCard label="Total sessions" value={stats?.totals.total ?? totalSessions} color="accent" />
+        <StatCard label="Completed" value={stats?.totals.completed ?? 0} color="ok" />
+      </div>
 
-        {loading && (
-          <div className="text-text-muted text-[14px] font-sans py-12 text-center">
-            Loading...
+      {/* Activity chart */}
+      {stats && (
+        <Card className="mb-4">
+          <div className="flex justify-between items-baseline mb-3">
+            <Overline>{'\u25b8'} ACTIVITY {'\u00b7'} LAST 30 DAYS</Overline>
+            <span className="font-mono text-[11px] text-dim">sessions per day</span>
           </div>
-        )}
+          <ActivityChart data={stats.daily_counts} />
+        </Card>
+      )}
 
-        {error && (
-          <div
-            className="text-[13px] px-4 py-3 rounded-lg mb-6"
-            style={{ background: 'rgba(255, 59, 48, 0.08)', color: '#ff6961' }}
-          >
-            {error}
-          </div>
-        )}
+      {/* Error */}
+      {error && (
+        <Card className="mb-4 border-danger/30">
+          <p className="text-danger text-sm">{error}</p>
+        </Card>
+      )}
 
-        {!loading && !error && installations.length === 0 && (
-          <div
-            className="rounded-xl px-6 py-12 text-center"
-            style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.06)' }}
-          >
-            <p className="text-text-secondary text-[14px] font-sans mb-4">
-              No installations found.
-            </p>
-            <p className="text-text-muted text-[13px] font-sans">
-              Install the GitHub App on your organization or account to get started.
-            </p>
-          </div>
-        )}
+      {/* Loading */}
+      {loading && (
+        <div className="text-dim text-sm py-12 text-center font-mono">
+          <Dot pulse className="mr-2" /> Loading installations...
+        </div>
+      )}
 
-        {!loading && installations.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {installations.map((inst) => (
-              <button
-                key={inst.id}
-                onClick={() => navigate(`/installations/${inst.github_installation_id}`)}
-                className="text-left rounded-xl p-5 transition-all cursor-pointer group"
-                style={{
-                  background: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid rgba(255, 255, 255, 0.06)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(226, 160, 57, 0.3)'
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)'
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)'
-                }}
-              >
-                {/* Account header */}
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="text-[15px] font-sans font-medium text-text-primary">
-                    {inst.account_login}
+      {/* Empty state */}
+      {!loading && !error && installations.length === 0 && (
+        <Card className="text-center py-12">
+          <p className="text-ink2 text-sm mb-2">No installations found.</p>
+          <p className="text-dim text-xs font-mono">
+            // <a href={INSTALL_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">install the GitHub App</a> to get started
+          </p>
+        </Card>
+      )}
+
+      {/* Installation cards */}
+      {!loading && installations.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {installations.map((inst) => (
+            <Card key={inst.id} hover>
+              {/* Header: avatar + account name + type chip */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-8 h-8 rounded-full bg-accent text-bg inline-flex items-center justify-center font-mono font-bold text-sm">
+                    {inst.account_login[0]?.toLowerCase()}
                   </span>
-                  <span
-                    className="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase"
-                    style={{
-                      color: '#9a9898',
-                      background: 'rgba(154, 152, 152, 0.1)',
-                    }}
-                  >
-                    {inst.account_type}
-                  </span>
+                  <div>
+                    <div className="font-mono text-[15px] font-semibold text-ink">{inst.account_login}</div>
+                    <div className="font-mono text-[11px] text-dim tracking-[0.04em]">
+                      installation #{inst.github_installation_id}
+                    </div>
+                  </div>
                 </div>
+                <Chip>{inst.account_type.toUpperCase()}</Chip>
+              </div>
 
-                {/* Stats row */}
-                <div className="flex items-center gap-4 mb-3">
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full"
-                      style={{
-                        background: inst.byok_configured ? '#30d158' : '#ff9f0a',
-                      }}
-                    />
-                    <span className="text-text-muted text-[12px] font-sans">
-                      {inst.byok_configured ? 'Token configured' : 'No token'}
+              {/* Status grid: token + sessions */}
+              <div className="grid grid-cols-2 gap-2.5 mb-3.5">
+                <div className="px-3 py-2.5 bg-bg2 border border-rule rounded-[6px]">
+                  <div className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">Token</div>
+                  <div className="font-mono text-xs mt-1 flex items-center gap-1.5">
+                    <Dot color={inst.byok_configured ? 'ok' : 'warn'} />
+                    <span className={inst.byok_configured ? 'text-ok' : 'text-warn'}>
+                      {inst.byok_configured ? 'configured' : 'not set'}
                     </span>
                   </div>
-                  <span className="text-text-muted text-[12px] font-sans">
-                    {inst.session_count} session{inst.session_count !== 1 ? 's' : ''}
-                  </span>
                 </div>
+                <div className="px-3 py-2.5 bg-bg2 border border-rule rounded-[6px]">
+                  <div className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">Sessions</div>
+                  <div className="font-mono text-xs text-ink mt-1">{inst.session_count} total</div>
+                </div>
+              </div>
 
-                {/* Actions row */}
-                <div className="flex items-center gap-3">
-                  <span
-                    className="text-[12px] font-sans group-hover:underline"
-                    style={{ color: '#E2A039' }}
+              {/* Action buttons */}
+              <div className="flex gap-2 pt-3.5 border-t border-rule">
+                <Button
+                  className="text-xs py-1.5 px-3"
+                  onClick={() => navigate(`/installations/${inst.github_installation_id}`)}
+                >
+                  View sessions {'\u2192'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="text-xs py-1.5 px-3"
+                  onClick={() => navigate(`/installations/${inst.github_installation_id}/settings`)}
+                >
+                  Settings
+                </Button>
+                {!inst.byok_configured && (
+                  <Button
+                    variant="ghost"
+                    className="text-xs py-1.5 px-3 text-warn"
+                    onClick={() => navigate(`/installations/${inst.github_installation_id}/setup`)}
                   >
-                    View sessions
-                  </span>
-                  <span className="text-text-muted text-[11px]">|</span>
-                  <span
-                    className="text-[12px] text-text-secondary font-sans hover:text-text-primary"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      navigate(`/installations/${inst.github_installation_id}/settings`)
-                    }}
-                  >
-                    Settings
-                  </span>
-                  {!inst.byok_configured && (
-                    <>
-                      <span className="text-text-muted text-[11px]">|</span>
-                      <span
-                        className="text-[12px] font-sans"
-                        style={{ color: '#ff9f0a' }}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          navigate(`/installations/${inst.github_installation_id}/setup`)
-                        }}
-                      >
-                        Setup
-                      </span>
-                    </>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+                    Setup
+                  </Button>
+                )}
+              </div>
+            </Card>
+          ))}
+
+          {/* Add installation placeholder */}
+          <a
+            href={INSTALL_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="border border-dashed border-rule-str rounded-card p-5 flex flex-col items-center justify-center gap-2 hover:border-accent/30 transition-colors min-h-[180px]"
+          >
+            <span className="text-accent text-2xl font-mono">+</span>
+            <span className="text-dim text-xs font-mono">Connect another account</span>
+          </a>
+        </div>
+      )}
     </div>
   )
 }

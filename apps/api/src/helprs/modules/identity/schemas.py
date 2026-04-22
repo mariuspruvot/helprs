@@ -24,3 +24,20 @@ class TokenResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     pass
+
+
+class DailyCount(BaseModel):
+    date: datetime
+    count: int
+
+
+class StatusTotals(BaseModel):
+    completed: int
+    failed: int
+    timeout: int
+    total: int
+
+
+class UserStatsResponse(BaseModel):
+    daily_counts: list[DailyCount]
+    totals: StatusTotals

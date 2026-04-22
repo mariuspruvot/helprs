@@ -1,12 +1,16 @@
 """Container session API routes."""
 
 import json
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.core.config import get_settings
 from helprs.core.database import get_db_context
@@ -19,6 +23,7 @@ from helprs.modules.container.pr_comment import build_session_url, extract_score
 from helprs.modules.container.schemas import (
     ContainerSessionResponse,
     CreateSessionRequest,
+    ScorecardResponse,
     SendMessageRequest,
     SendMessageResponse,
     SessionEventResponse,
@@ -29,6 +34,7 @@ from helprs.modules.container.service import (
     AioDockerClient,
     ContainerStatus,
     create_session,
+    delete_session,
     get_session_events,
     get_session_or_404,
     mark_completed,
@@ -181,6 +187,7 @@ async def stream_container_output(
                     if completed.status == ContainerStatus.FAILED:
                         msg = "Session failed."
                     elif completed.status == ContainerStatus.COMPLETED:
+                        await _persist_scorecard(db_ctx, completed)
                         await _post_results_comment(session_id, cs)
             except Exception:
                 pass  # Best effort; cleanup task handles stragglers
@@ -221,6 +228,25 @@ async def get_session_events_endpoint(
         session_id=session_id,
         events=[SessionEventResponse.model_validate(e) for e in events],
         total=len(events),
+    )
+
+
+@router.get("/sessions/{session_id}/scorecard", response_model=ScorecardResponse)
+@limiter.limit("30/minute")
+async def get_session_scorecard(
+    session_id: UUID,
+    request: Request,
+    db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+):
+    """Get the parsed scorecard for a completed session."""
+    cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
+    return ScorecardResponse(
+        session_id=session_id,
+        scorecard=cs.scorecard,
+        xp_earned=cs.xp_earned,
     )
 
 
@@ -279,6 +305,49 @@ async def stop_container_session(
         status=cs.status.value,
         message=f"Session {cs.status.value}",
     )
+
+
+@router.delete("/sessions/{session_id}")
+@limiter.limit("10/minute")
+async def delete_container_session(
+    session_id: UUID,
+    request: Request,
+    db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+):
+    """Delete a container session and its events."""
+    cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
+    await delete_session(db=db, session_id=session_id)
+    return {"status": "deleted", "id": str(session_id)}
+
+
+async def _persist_scorecard(db: "AsyncSession", cs: ContainerSession) -> None:  # noqa: UP037
+    """Extract and persist the helprs-scorecard from session events (best-effort)."""
+    from helprs.modules.container.scorecard import extract_scorecard
+
+    events = await get_session_events(db, cs.id)
+    # Walk events in reverse to find the last assistant text block
+    for event in reversed(events):
+        data = event.data
+        if data.get("type") == "assistant" and isinstance(data.get("message"), dict):
+            for block in reversed(data["message"].get("content", [])):
+                if block.get("type") == "text":
+                    scorecard = extract_scorecard(block.get("text", ""))
+                    if scorecard:
+                        cs.scorecard = scorecard
+                        await db.flush()
+                        return
+    # Also check result events which carry the final text
+    for event in reversed(events):
+        data = event.data
+        if data.get("type") == "result" and isinstance(data.get("result"), str):
+            scorecard = extract_scorecard(data["result"])
+            if scorecard:
+                cs.scorecard = scorecard
+                await db.flush()
+                return
 
 
 async def _post_results_comment(session_id: UUID, cs: ContainerSession) -> None:

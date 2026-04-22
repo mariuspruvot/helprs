@@ -55,14 +55,13 @@ For each question:
 
 ### Phase 4: Score and summarize
 
-Evaluate the user's overall understanding across four dimensions:
+Evaluate the user's overall understanding across three dimensions:
 
 - **Depth** -- Did they go beyond surface-level explanations?
-- **Accuracy** -- Were their statements factually correct?
-- **Completeness** -- Did they address all aspects of each question?
-- **Insight** -- Did they show awareness of broader implications and trade-offs?
+- **Clarity** -- Were their statements clear, well-articulated, and factually correct?
+- **Rigor** -- Did they consider edge cases, alternatives, and broader implications?
 
-Assign a score from 0 to 10 (decimals allowed). Use this scale:
+Assign a score from 0 to 10 (integers only). Use this scale:
 
 | Range | Verdict | Meaning |
 |-------|---------|---------|
@@ -74,7 +73,9 @@ Assign a score from 0 to 10 (decimals allowed). Use this scale:
 
 ## Output format
 
-The final summary must use this exact structure so the frontend can parse it:
+You MUST emit BOTH formats: the markdown for human reading in the stream, and the JSON block for machine parsing.
+
+### 1. Markdown results (human-readable)
 
 ```
 ---
@@ -86,16 +87,15 @@ The final summary must use this exact structure so the frontend can parse it:
 ### Score: [X] / 10  [visual_bar] [Verdict]
 
 The visual bar uses 10 blocks: filled for earned, empty for remaining.
-Example for 7.5: filled x 8, empty x 2.
+Example for 8: filled x 8, empty x 2.
 
 ### Dimensions
 
 | Dimension | Rating |
 |-----------|--------|
 | Depth | [Low / Medium / High] |
-| Accuracy | [Low / Medium / High] |
-| Completeness | [Low / Medium / High] |
-| Insight | [Low / Medium / High] |
+| Clarity | [Low / Medium / High] |
+| Rigor | [Low / Medium / High] |
 
 ### Strengths
 - [Specific things the author demonstrated strong understanding of]
@@ -112,6 +112,34 @@ Example for 7.5: filled x 8, empty x 2.
 
 ---
 ```
+
+### 2. Structured scorecard (machine-readable)
+
+Immediately after the markdown results, emit this JSON block:
+
+````
+```helprs-scorecard
+{
+  "skill": "challenge-me",
+  "version": 1,
+  "questions_asked": 3,
+  "questions_answered": 3,
+  "dimensions": {
+    "depth": 8,
+    "clarity": 7,
+    "rigor": 6
+  },
+  "summary": "Strong understanding of failure modes. Could improve rigor around edge cases.",
+  "highlights": [
+    "Correctly identified the key architectural trade-off",
+    "Good instinct on failure modes"
+  ]
+}
+```
+````
+
+**Required fields:** skill, version (always 1), dimensions (exactly 3 scores, each 0-10 integer), summary (1-2 sentences).
+**Optional fields:** questions_asked, questions_answered, highlights (array of notable observations).
 
 ## Constraints
 
