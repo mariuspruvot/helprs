@@ -58,9 +58,9 @@ export default function InstallationDetail() {
   const completionPct = total > 0 ? Math.round((completed / Math.max(sessions.length, 1)) * 100) : 0
 
   return (
-    <div>
-      {/* Header + filters */}
-      <div className="flex justify-between items-end mb-5">
+    <div className="flex flex-col h-[calc(100vh-56px)]">
+      {/* Sticky header + filters */}
+      <div className="shrink-0 flex justify-between items-end mb-5">
         <div>
           <Overline className="mb-1.5">{'\u25b8'} SESSIONS {'\u00b7'} {total} TOTAL</Overline>
           <h1 className="font-mono text-2xl font-bold tracking-[-0.02em]">Session History</h1>
@@ -85,7 +85,7 @@ export default function InstallationDetail() {
 
       {/* Completion bar */}
       {!loading && sessions.length > 0 && (
-        <div className="flex items-center gap-5 px-4 py-3.5 bg-card border border-rule rounded-card mb-5">
+        <div className="shrink-0 flex items-center gap-5 px-4 py-3.5 bg-card border border-rule rounded-card mb-5">
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-[22px] font-bold">{completionPct}%</span>
             <span className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">completion</span>
@@ -102,6 +102,9 @@ export default function InstallationDetail() {
           </div>
         </div>
       )}
+
+      {/* Scrollable content */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
 
       {/* Error */}
       {error && (
@@ -205,6 +208,8 @@ export default function InstallationDetail() {
           )}
         </>
       )}
+
+      </div>{/* end scrollable */}
     </div>
   )
 }
