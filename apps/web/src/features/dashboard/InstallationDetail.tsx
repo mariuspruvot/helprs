@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router'
+import { Link, useParams, useNavigate } from 'react-router'
 import { deleteSession, fetchInstallationSessions } from './dashboardApi'
 import type { PaginatedSessionsResponse } from './dashboardApi'
 import { formatDuration, formatRelativeTime } from './formatters'
@@ -104,10 +104,27 @@ export default function InstallationDetail() {
   return (
     <>
     <div className="flex flex-col h-full">
+      {/* Breadcrumb + settings — pinned to the very top */}
+      <div className="shrink-0 flex items-center justify-between gap-3 mb-3">
+        <Overline>
+          <Link to="/installations" className="hover:text-ink2 transition-colors">installations</Link>
+          {' '}{'\u00b7'}{' '}
+          <span className="text-ink2">history</span>
+          {' '}{'\u00b7'}{' '}
+          {total} total
+        </Overline>
+        <Link
+          to={`/installations/${installationId}/settings`}
+          className="font-mono text-[11px] lg:text-[12px] font-medium px-2.5 py-1 lg:px-3 lg:py-1.5 rounded-[6px] border border-rule-str bg-card text-ink hover:bg-card-hi transition-colors inline-flex items-center gap-1.5"
+        >
+          <span aria-hidden="true" className="text-dim">{'\u2699'}</span>
+          Settings
+        </Link>
+      </div>
+
       {/* Header + filters — wraps on small screens */}
       <div className="shrink-0 flex flex-col lg:flex-row lg:justify-between lg:items-end gap-3 mb-4">
         <div className="min-w-0">
-          <Overline className="mb-1">{'\u25b8'} SESSIONS {'\u00b7'} {total} TOTAL</Overline>
           <h1 className="font-mono text-xl lg:text-2xl font-bold tracking-[-0.02em]">Session History</h1>
           <p className="font-mono text-[13px] text-dim mt-0.5">// every time Claude ran against one of your PRs</p>
         </div>
