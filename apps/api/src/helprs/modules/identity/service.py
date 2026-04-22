@@ -152,3 +152,62 @@ async def refresh_tokens(
         raise UnauthorizedError("User not found")
 
     return create_token_pair(user, settings)
+
+
+async def get_user_stats(
+    session: AsyncSession,
+    user: GitHubUser,
+    settings: "Settings",
+) -> dict:
+    """Return session stats for the authenticated user across all accessible installations."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import case, cast, func
+    from sqlalchemy.types import Date
+
+    from helprs.modules.container.models import ContainerSession, ContainerStatus
+    from helprs.modules.installation.service import get_installations_for_user
+
+    installations = await get_installations_for_user(session, user, settings)
+    installation_ids = [i.id for i in installations]
+
+    if not installation_ids:
+        return {
+            "daily_counts": [],
+            "totals": {"completed": 0, "failed": 0, "timeout": 0, "total": 0},
+        }
+
+    # Status totals
+    totals_result = await session.execute(
+        select(
+            func.count(ContainerSession.id).label("total"),
+            func.count(case((ContainerSession.status == ContainerStatus.COMPLETED, 1))).label("completed"),
+            func.count(case((ContainerSession.status == ContainerStatus.FAILED, 1))).label("failed"),
+            func.count(case((ContainerSession.status == ContainerStatus.TIMEOUT, 1))).label("timeout"),
+        ).where(ContainerSession.installation_id.in_(installation_ids))
+    )
+    row = totals_result.one()
+    totals = {
+        "completed": row.completed,
+        "failed": row.failed,
+        "timeout": row.timeout,
+        "total": row.total,
+    }
+
+    # Daily counts (last 30 days)
+    cutoff = datetime.now(UTC) - timedelta(days=30)
+    daily_result = await session.execute(
+        select(
+            cast(ContainerSession.created_at, Date).label("day"),
+            func.count(ContainerSession.id).label("count"),
+        )
+        .where(
+            ContainerSession.installation_id.in_(installation_ids),
+            ContainerSession.created_at >= cutoff,
+        )
+        .group_by("day")
+        .order_by("day")
+    )
+    daily_counts = [{"date": row.day, "count": row.count} for row in daily_result.all()]
+
+    return {"daily_counts": daily_counts, "totals": totals}

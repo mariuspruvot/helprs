@@ -8,12 +8,13 @@ from fastapi.responses import RedirectResponse
 
 from helprs.core.dependencies import DbSession, GetSettings, get_current_user
 from helprs.core.middleware import limiter
-from helprs.modules.identity.schemas import TokenResponse, UserResponse
+from helprs.modules.identity.schemas import TokenResponse, UserResponse, UserStatsResponse
 from helprs.modules.identity.service import (
     create_token_pair,
     exchange_code_for_token,
     fetch_github_user,
     get_or_create_user,
+    get_user_stats,
     refresh_tokens,
 )
 
@@ -146,6 +147,19 @@ async def refresh(
         max_age=7 * 24 * 3600,
     )
     return response
+
+
+@router.get("/me/stats", response_model=UserStatsResponse)
+@limiter.limit("30/minute")
+async def get_my_stats(
+    request: Request,
+    session: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+):
+    """Return session statistics for the authenticated user."""
+    stats = await get_user_stats(session, user, settings)
+    return UserStatsResponse(**stats)
 
 
 @router.get("/me", response_model=UserResponse)

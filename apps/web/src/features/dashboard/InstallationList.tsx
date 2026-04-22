@@ -6,9 +6,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router'
 import { useAuthStore } from '../auth/store'
-import { fetchInstallations } from './dashboardApi'
-import type { InstallationSummary } from './dashboardApi'
+import { fetchInstallations, fetchUserStats } from './dashboardApi'
+import type { InstallationSummary, UserStats } from './dashboardApi'
 import { Card, Chip, Dot, Overline, StatCard } from '../../shared/components'
+import ActivityChart from './ActivityChart'
 
 const INSTALL_URL = `https://github.com/apps/${import.meta.env.VITE_GITHUB_APP_SLUG ?? 'helprs'}/installations/new`
 
@@ -16,14 +17,19 @@ export default function InstallationList() {
   const navigate = useNavigate()
   const user = useAuthStore((s) => s.user)
   const [installations, setInstallations] = useState<InstallationSummary[]>([])
+  const [stats, setStats] = useState<UserStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await fetchInstallations()
-      setInstallations(data.items)
+      const [instData, statsData] = await Promise.all([
+        fetchInstallations(),
+        fetchUserStats().catch(() => null),
+      ])
+      setInstallations(instData.items)
+      setStats(statsData)
     } catch {
       setError('Failed to load installations')
     } finally {
@@ -57,9 +63,17 @@ export default function InstallationList() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <StatCard label="Installations" value={installations.length} />
         <StatCard label="Configured" value={configured} color={configured > 0 ? 'ok' : 'warn'} sub={`of ${installations.length}`} />
-        <StatCard label="Total sessions" value={totalSessions} color="accent" />
-        <StatCard label="Status" value={error ? 'Error' : 'Live'} color={error ? 'danger' : 'ok'} />
+        <StatCard label="Total sessions" value={stats?.totals.total ?? totalSessions} color="accent" />
+        <StatCard label="Completed" value={stats?.totals.completed ?? 0} color="ok" />
       </div>
+
+      {/* Activity chart */}
+      {stats && stats.daily_counts.length > 0 && (
+        <Card className="mb-8 px-4 py-3">
+          <Overline className="mb-3">{'\u25b8'} ACTIVITY {'\u00b7'} last 30 days</Overline>
+          <ActivityChart data={stats.daily_counts} />
+        </Card>
+      )}
 
       {/* Error */}
       {error && (
