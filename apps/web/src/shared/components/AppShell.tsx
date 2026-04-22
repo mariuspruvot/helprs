@@ -7,10 +7,10 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   return (
-    <div className="relative min-h-screen bg-bg text-ink">
+    <div className="relative h-screen flex flex-col bg-bg text-ink overflow-hidden">
       <GrainOverlay />
       <Topbar />
-      <main className="relative max-w-[1120px] mx-auto px-5 py-8">
+      <main className="relative flex-1 min-h-0 max-w-[1120px] w-full mx-auto px-5 py-6">
         {children}
       </main>
     </div>
