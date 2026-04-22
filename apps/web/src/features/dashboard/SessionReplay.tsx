@@ -7,6 +7,7 @@ import { useParams, useNavigate } from 'react-router'
 import { getContainerSession } from '../session/containerApi'
 import type { ContainerSessionResponse } from '../session/containerTypes'
 import ContainerSession from '../session/ContainerSession'
+import { Dot } from '../../shared/components'
 
 export default function SessionReplay() {
   const { installationId, sessionId } = useParams<{
@@ -26,14 +27,14 @@ export default function SessionReplay() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-primary text-text-primary flex items-center justify-center">
+      <div className="flex items-center justify-center py-20">
         <div className="text-center">
-          <p className="text-[14px] font-sans mb-4" style={{ color: '#ff6961' }}>{error}</p>
+          <p className="text-danger text-sm font-sans mb-4">{error}</p>
           <button
             onClick={() => navigate(`/installations/${installationId}`)}
-            className="text-[13px] font-sans text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+            className="text-dim text-sm font-mono hover:text-ink2 transition-colors cursor-pointer"
           >
-            &larr; Back to sessions
+            {'\u2190'} Back to sessions
           </button>
         </div>
       </div>
@@ -42,8 +43,10 @@ export default function SessionReplay() {
 
   if (!sessionData) {
     return (
-      <div className="min-h-screen bg-primary text-text-primary flex items-center justify-center">
-        <span className="text-text-muted text-[14px] font-sans">Loading session...</span>
+      <div className="flex items-center justify-center py-20">
+        <span className="text-dim text-sm font-mono">
+          <Dot pulse className="mr-2" /> Loading session...
+        </span>
       </div>
     )
   }

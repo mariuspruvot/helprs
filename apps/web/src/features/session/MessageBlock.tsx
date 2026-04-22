@@ -1,10 +1,10 @@
 /**
  * MessageBlock — renders a single StreamMessage based on its role.
  *
- * Dispatches to role-specific layouts:
- * - assistant: markdown text + collapsible tool_use/thinking blocks
- * - user: tool_result blocks (paired with tool_use) or user input echo
- * - system: small dimmed status line
+ * Direction E styles:
+ * - assistant: card bg + 3px amber left border
+ * - user: cardHi bg + ruleStr border
+ * - system: // comment ornament
  * - result: session-end metadata
  */
 
@@ -26,12 +26,11 @@ interface MessageBlockProps {
 }
 
 function AssistantMessage({ message }: { message: StreamMessage }) {
-  // Only render text blocks — tool_use and thinking are internal activity
   const textBlocks = message.blocks.filter((b) => b.type === 'text')
   if (textBlocks.length === 0) return null
 
   return (
-    <div className="py-3">
+    <div className="py-3 px-4 my-2 bg-card border-l-[3px] border-l-accent rounded-r-[8px]">
       {textBlocks.map((block, i) => (
         <MarkdownContent key={i} text={block.text ?? ''} />
       ))}
@@ -41,13 +40,8 @@ function AssistantMessage({ message }: { message: StreamMessage }) {
 
 function UserInputMessage({ text }: { text: string }) {
   return (
-    <div
-      className="py-3 px-4 my-2 rounded-lg"
-      style={{ background: 'rgba(226, 160, 57, 0.06)', borderLeft: '2px solid #E2A039' }}
-    >
-      <span className="text-[14px] font-sans" style={{ color: '#E0E0E0' }}>
-        {text}
-      </span>
+    <div className="py-3 px-4 my-2 bg-card-hi border border-rule-str rounded-[8px]">
+      <span className="text-sm font-sans text-ink">{text}</span>
     </div>
   )
 }
@@ -56,11 +50,8 @@ function SystemMessage({ message }: { message: StreamMessage }) {
   const text = message.blocks[0]?.text ?? ''
   return (
     <div className="py-1">
-      <span
-        className="text-[12px] font-mono"
-        style={{ color: '#6e6e73', fontStyle: 'italic' }}
-      >
-        {text}
+      <span className="text-xs font-mono text-dim">
+        // {text}
       </span>
     </div>
   )
@@ -70,14 +61,13 @@ function ResultMessage({ message }: { message: StreamMessage }) {
   if (message.isError) {
     return (
       <div className="py-2">
-        <span className="text-[13px] font-mono" style={{ color: '#ff6961' }}>
+        <span className="text-sm font-mono text-danger">
           {message.blocks[0]?.text ?? 'Session ended with error'}
         </span>
       </div>
     )
   }
 
-  // Success — show metadata summary
   const parts: string[] = []
   if (message.numTurns !== undefined) {
     parts.push(`${message.numTurns} turns`)
@@ -88,16 +78,9 @@ function ResultMessage({ message }: { message: StreamMessage }) {
   if (parts.length === 0) return null
 
   return (
-    <div
-      className="py-2 mt-2 border-t flex items-center gap-2"
-      style={{ borderColor: 'rgba(255, 255, 255, 0.06)' }}
-    >
-      <span className="text-[12px] font-mono" style={{ color: '#6e6e73' }}>
-        Session completed
-      </span>
-      <span className="text-[11px] font-mono" style={{ color: '#6e6e73' }}>
-        {parts.join(' / ')}
-      </span>
+    <div className="py-2 mt-2 border-t border-rule flex items-center gap-2">
+      <span className="text-xs font-mono text-dim">// session completed</span>
+      <span className="text-[11px] font-mono text-dim2">{parts.join(' {"\u00b7"} ')}</span>
     </div>
   )
 }
@@ -107,12 +90,9 @@ function MessageBlockInner({ message }: MessageBlockProps) {
     case 'assistant':
       return <AssistantMessage message={message} />
     case 'user':
-      // User messages with text blocks are user input (typed in the input bar)
       if (message.blocks.length > 0 && message.blocks[0].type === 'text') {
         return <UserInputMessage text={message.blocks[0].text ?? ''} />
       }
-      // User messages with only tool_result blocks are handled by pairing with tool_use.
-      // They don't render independently — results are shown inside ToolUseBlock.
       return null
     case 'system':
       return <SystemMessage message={message} />
