@@ -23,6 +23,7 @@ import ConversationOutput from './ConversationOutput'
 import SessionRail from './SessionRail'
 import type { ScorecardResponse } from './containerApi'
 import {
+  extractScorecardFromText,
   parseStoredMessage,
   parseStreamMessage,
 } from './containerTypes'
@@ -142,6 +143,18 @@ export default function ContainerSession({
       try {
         const resp = await getSessionEvents(sessionId)
         for (const evt of resp.events) {
+          // Extract scorecard from stored assistant events
+          if (evt.data.type === 'assistant') {
+            const content = (evt.data.message as { content?: Array<{ type: string; text?: string }> })?.content
+            if (content) {
+              for (const block of content) {
+                if (block.type === 'text' && block.text) {
+                  const sc = extractScorecardFromText(block.text)
+                  if (sc) setScorecard(sc as unknown as ScorecardResponse)
+                }
+              }
+            }
+          }
           const parsed = parseStoredMessage(evt.data)
           if (parsed) {
             appendMessage(parsed)
@@ -268,6 +281,21 @@ export default function ContainerSession({
           else if (raw.type === 'result') setIsThinking(false)
         } catch {
           // ignore
+        }
+
+        // Check for scorecard in raw assistant text before it gets stripped
+        try {
+          const rawEvt = JSON.parse(event.data as string) as { type?: string; message?: { content?: Array<{ type: string; text?: string }> } }
+          if (rawEvt.type === 'assistant' && rawEvt.message?.content) {
+            for (const block of rawEvt.message.content) {
+              if (block.type === 'text' && block.text) {
+                const sc = extractScorecardFromText(block.text)
+                if (sc) setScorecard(sc as unknown as ScorecardResponse)
+              }
+            }
+          }
+        } catch {
+          // ignore — best-effort scorecard extraction
         }
 
         const parsed = parseStreamMessage(event.data as string)
