@@ -103,12 +103,9 @@ export default function InstallationDetail() {
         </div>
       )}
 
-      {/* Scrollable content */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
-
       {/* Error */}
       {error && (
-        <div className="mb-4 px-4 py-3 bg-danger/8 border border-danger/20 rounded-card text-danger text-sm">
+        <div className="shrink-0 mb-4 px-4 py-3 bg-danger/8 border border-danger/20 rounded-card text-danger text-sm">
           {error}
         </div>
       )}
@@ -129,24 +126,24 @@ export default function InstallationDetail() {
         </div>
       )}
 
-      {/* Session table */}
+      {/* Session table — sticky header, scrollable rows */}
       {!loading && sessions.length > 0 && (
-        <>
-          <div className="border border-rule-str rounded-card overflow-hidden">
-            {/* Header row */}
-            <div
-              className="grid bg-bg2 px-4 py-2.5 font-mono text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
-              style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px' }}
-            >
-              <span>#</span>
-              <span>REPO / PR</span>
-              <span>SKILL</span>
-              <span>STATUS</span>
-              <span className="text-right">DURATION</span>
-              <span className="text-right">RAN</span>
-            </div>
+        <div className="flex-1 min-h-0 flex flex-col border border-rule-str rounded-card overflow-hidden">
+          {/* Table header (sticky) */}
+          <div
+            className="shrink-0 grid bg-bg2 px-4 py-2.5 font-mono text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
+            style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px' }}
+          >
+            <span>#</span>
+            <span>REPO / PR</span>
+            <span>SKILL</span>
+            <span>STATUS</span>
+            <span className="text-right">DURATION</span>
+            <span className="text-right">RAN</span>
+          </div>
 
-            {/* Data rows */}
+          {/* Scrollable rows */}
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {sessions.map((session, idx) => {
               const statusColor =
                 session.status === 'completed' ? 'ok' as const :
@@ -181,35 +178,33 @@ export default function InstallationDetail() {
               )
             })}
           </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-4 mt-6">
-              <Button
-                variant="secondary"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-                className="text-xs"
-              >
-                Previous
-              </Button>
-              <span className="text-dim text-xs font-mono">
-                Page {page} of {totalPages}
-              </span>
-              <Button
-                variant="secondary"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-                className="text-xs"
-              >
-                Next
-              </Button>
-            </div>
-          )}
-        </>
+        </div>
       )}
 
-      </div>{/* end scrollable */}
+      {/* Pagination (always outside scroll) */}
+      {!loading && totalPages > 1 && (
+        <div className="shrink-0 flex items-center justify-center gap-4 py-4">
+          <Button
+            variant="secondary"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="text-xs"
+          >
+            Previous
+          </Button>
+          <span className="text-dim text-xs font-mono">
+            Page {page} of {totalPages}
+          </span>
+          <Button
+            variant="secondary"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+            className="text-xs"
+          >
+            Next
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
