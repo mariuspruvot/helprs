@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router'
-import { fetchInstallationSessions } from './dashboardApi'
+import { deleteSession, fetchInstallationSessions } from './dashboardApi'
 import type { PaginatedSessionsResponse } from './dashboardApi'
 import { formatDuration, formatRelativeTime } from './formatters'
 import { Button, Chip, Dot, Overline } from '../../shared/components'
@@ -49,6 +49,17 @@ export default function InstallationDetail() {
   const handleStatusChange = (value: string) => {
     setStatusFilter(value)
     setPage(1)
+  }
+
+  const handleDelete = async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await deleteSession(sessionId)
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      setTotal((prev) => prev - 1)
+    } catch {
+      // silently ignore — session may already be deleted
+    }
   }
 
   // Completion stats from loaded sessions (approximation from current page)
@@ -132,7 +143,7 @@ export default function InstallationDetail() {
           {/* Table header (sticky) */}
           <div
             className="shrink-0 grid bg-bg2 px-4 py-2.5 font-mono text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
-            style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px' }}
+            style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px 36px' }}
           >
             <span>#</span>
             <span>REPO / PR</span>
@@ -140,6 +151,7 @@ export default function InstallationDetail() {
             <span>STATUS</span>
             <span className="text-right">DURATION</span>
             <span className="text-right">RAN</span>
+            <span></span>
           </div>
 
           {/* Scrollable rows */}
@@ -155,10 +167,10 @@ export default function InstallationDetail() {
                 <button
                   key={session.id}
                   onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
-                  className={`w-full grid items-center px-4 py-3 text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
+                  className={`group w-full grid items-center px-4 py-3 text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
                     idx < sessions.length - 1 ? 'border-b border-rule' : ''
                   }`}
-                  style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px' }}
+                  style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px 36px' }}
                 >
                   <span className="font-mono text-[11px] text-dim2">
                     {String(idx + 1 + (page - 1) * 20).padStart(2, '0')}
@@ -173,6 +185,13 @@ export default function InstallationDetail() {
                   </span>
                   <span className="font-mono text-xs text-dim text-right">
                     {formatRelativeTime(session.created_at)}
+                  </span>
+                  <span
+                    className="text-center text-dim2 hover:text-danger transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+                    onClick={(e) => handleDelete(session.id, e)}
+                    title="Delete session"
+                  >
+                    {'\u2715'}
                   </span>
                 </button>
               )

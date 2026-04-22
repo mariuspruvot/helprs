@@ -34,6 +34,7 @@ from helprs.modules.container.service import (
     AioDockerClient,
     ContainerStatus,
     create_session,
+    delete_session,
     get_session_events,
     get_session_or_404,
     mark_completed,
@@ -304,6 +305,22 @@ async def stop_container_session(
         status=cs.status.value,
         message=f"Session {cs.status.value}",
     )
+
+
+@router.delete("/sessions/{session_id}")
+@limiter.limit("10/minute")
+async def delete_container_session(
+    session_id: UUID,
+    request: Request,
+    db: DbSession,
+    settings: GetSettings,
+    user=Depends(get_current_user),  # noqa: B008
+):
+    """Delete a container session and its events."""
+    cs = await get_session_or_404(db, session_id)
+    await verify_session_access(user, cs, db, settings)
+    await delete_session(db=db, session_id=session_id)
+    return {"status": "deleted", "id": str(session_id)}
 
 
 async def _persist_scorecard(db: "AsyncSession", cs: ContainerSession) -> None:  # noqa: UP037

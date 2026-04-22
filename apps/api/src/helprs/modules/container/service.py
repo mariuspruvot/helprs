@@ -472,6 +472,13 @@ async def get_session_events(
     return list(result.scalars().all())
 
 
+async def delete_session(db: AsyncSession, session_id: UUID) -> None:
+    """Delete a container session and its events (CASCADE)."""
+    session = await get_session_or_404(db, session_id)
+    await db.delete(session)
+    await db.flush()
+
+
 async def send_message(
     db: AsyncSession,
     session_id: UUID,

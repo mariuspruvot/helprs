@@ -88,3 +88,10 @@ export async function fetchInstallationSessions(
   if (!resp.ok) throw new Error(`Failed to fetch sessions: ${resp.status}`)
   return resp.json() as Promise<PaginatedSessionsResponse>
 }
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const resp = await apiFetch(`/api/v1/containers/sessions/${sessionId}`, {
+    method: 'DELETE',
+  })
+  if (!resp.ok) throw new Error(`Failed to delete session: ${resp.status}`)
+}
