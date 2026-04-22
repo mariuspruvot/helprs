@@ -1,6 +1,6 @@
 /**
- * ActivityChart — simple SVG bar chart for session activity over 30 days.
- * No external charting library — just proportional <rect> elements.
+ * ActivityChart — flex-based bar chart matching the R2 redesign mockup.
+ * 30 bars with 3px gap, 120px height, accent color with active highlight.
  */
 
 interface DailyCount {
@@ -12,63 +12,56 @@ interface ActivityChartProps {
   data: DailyCount[]
 }
 
-export default function ActivityChart({ data }: ActivityChartProps) {
-  if (data.length === 0) {
-    return (
-      <div className="text-dim text-xs font-mono py-4 text-center">
-        // no sessions in the last 30 days
-      </div>
-    )
+/** Fill sparse data to 30 consecutive days ending today. */
+function fillToThirtyDays(data: DailyCount[]): DailyCount[] {
+  const map = new Map(data.map((d) => [d.date.slice(0, 10), d.count]))
+  const result: DailyCount[] = []
+  const today = new Date()
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    const key = d.toISOString().slice(0, 10)
+    result.push({ date: key, count: map.get(key) ?? 0 })
   }
+  return result
+}
 
-  const maxCount = Math.max(...data.map((d) => d.count), 1)
-  const barCount = data.length
-  const chartWidth = 100
-  const chartHeight = 80
-  const barGap = 1
-  const barWidth = Math.max(1, (chartWidth - barGap * (barCount - 1)) / barCount)
+export default function ActivityChart({ data }: ActivityChartProps) {
+  const days = fillToThirtyDays(data)
+  const maxCount = Math.max(...days.map((d) => d.count), 1)
 
   return (
-    <svg
-      viewBox={`0 0 ${chartWidth} ${chartHeight + 16}`}
-      className="w-full"
-      style={{ height: '100px' }}
-      preserveAspectRatio="none"
-    >
-      {data.map((d, i) => {
-        const barHeight = Math.max(1, (d.count / maxCount) * chartHeight)
-        const x = i * (barWidth + barGap)
-        const y = chartHeight - barHeight
+    <div>
+      <div className="flex items-end gap-[3px]" style={{ height: 120 }}>
+        {days.map((d, i) => {
+          const heightPx = d.count === 0 ? 2 : Math.max(4, (d.count / maxCount) * 110)
+          const isRecent = i >= 23
+          const isEmpty = d.count === 0
 
-        return (
-          <g key={d.date}>
-            <rect
-              x={x}
-              y={y}
-              width={barWidth}
-              height={barHeight}
-              rx={0.5}
-              fill="var(--color-accent)"
-              opacity={0.65}
-            >
-              <title>{`${d.date}: ${d.count} session${d.count !== 1 ? 's' : ''}`}</title>
-            </rect>
-            {/* Show label every 7 bars */}
-            {i % 7 === 0 && (
-              <text
-                x={x + barWidth / 2}
-                y={chartHeight + 10}
-                textAnchor="middle"
-                fill="var(--color-dim)"
-                fontSize="3"
-                fontFamily="var(--font-family-mono)"
-              >
-                {new Date(d.date).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
-              </text>
-            )}
-          </g>
-        )
-      })}
-    </svg>
+          return (
+            <div
+              key={d.date}
+              className="flex-1 rounded-[2px] transition-opacity hover:opacity-100"
+              style={{
+                height: heightPx,
+                backgroundColor: isEmpty
+                  ? 'var(--color-rule)'
+                  : isRecent
+                    ? 'var(--color-accent)'
+                    : 'rgba(226,160,57,0.35)',
+                opacity: isEmpty ? 0.5 : isRecent ? 1 : 0.85,
+              }}
+              title={`${d.date}: ${d.count} session${d.count !== 1 ? 's' : ''}`}
+            />
+          )
+        })}
+      </div>
+      <div className="flex justify-between mt-2 font-mono text-[10px] text-dim2 tracking-[0.12em]">
+        <span>30D AGO</span>
+        <span>15D</span>
+        <span>7D</span>
+        <span>TODAY</span>
+      </div>
+    </div>
   )
 }

@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 import { useAuthStore } from './features/auth/store'
 import OAuthCallback from './features/auth/OAuthCallback'
 import ProtectedRoute from './features/auth/ProtectedRoute'
-import { AppShell } from './shared/components'
+import { AppShell, ErrorBoundary } from './shared/components'
 import InstallationList from './features/dashboard/InstallationList'
 import InstallationDetail from './features/dashboard/InstallationDetail'
 import SessionReplay from './features/dashboard/SessionReplay'
@@ -19,6 +19,7 @@ function AuthRedirect() {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <BrowserRouter>
       <Routes>
         {/* Public routes — no shell */}
@@ -34,5 +35,6 @@ export default function App() {
         <Route path="/session/:installationId/*" element={<ProtectedRoute><AppShell><SessionView /></AppShell></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
+    </ErrorBoundary>
   )
 }

@@ -1,21 +1,21 @@
 /**
- * InstallationDetail — session history list for a single installation.
+ * InstallationDetail — session history for a single installation.
+ * Matches R2 redesign: completion bar, grid table, filter buttons.
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router'
+import { useParams, useNavigate } from 'react-router'
 import { fetchInstallationSessions } from './dashboardApi'
-import type { SessionSummary, PaginatedSessionsResponse } from './dashboardApi'
-import StatusBadge from './StatusBadge'
+import type { PaginatedSessionsResponse } from './dashboardApi'
 import { formatDuration, formatRelativeTime } from './formatters'
-import { Button, Card, Chip, Dot, Overline } from '../../shared/components'
+import { Button, Chip, Dot, Overline } from '../../shared/components'
 
 const STATUS_OPTIONS = ['all', 'completed', 'failed', 'running', 'pending', 'timeout'] as const
 
 export default function InstallationDetail() {
   const { installationId } = useParams<{ installationId: string }>()
   const navigate = useNavigate()
-  const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [sessions, setSessions] = useState<PaginatedSessionsResponse['items']>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(0)
   const [total, setTotal] = useState(0)
@@ -28,7 +28,7 @@ export default function InstallationDetail() {
     setLoading(true)
     setError(null)
     try {
-      const data: PaginatedSessionsResponse = await fetchInstallationSessions(
+      const data = await fetchInstallationSessions(
         Number(installationId),
         page,
         20,
@@ -51,57 +51,63 @@ export default function InstallationDetail() {
     setPage(1)
   }
 
+  // Completion stats from loaded sessions (approximation from current page)
+  const completed = sessions.filter((s) => s.status === 'completed').length
+  const failed = sessions.filter((s) => s.status === 'failed').length
+  const timeout = sessions.filter((s) => s.status === 'timeout').length
+  const completionPct = total > 0 ? Math.round((completed / Math.max(sessions.length, 1)) * 100) : 0
+
   return (
     <div>
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 mb-6 text-sm">
-        <Link to="/installations" className="text-dim hover:text-ink2 transition-colors font-mono">
-          &larr; Installations
-        </Link>
-        <span className="text-dim2">|</span>
-        <span className="text-ink font-mono font-medium">
-          Installation #{installationId}
-        </span>
-        <div className="ml-auto">
-          <Link
-            to={`/installations/${installationId}/settings`}
-            className="text-dim text-xs font-mono hover:text-ink2 transition-colors"
-          >
-            Settings
-          </Link>
-        </div>
-      </div>
-
-      {/* Title + filter */}
-      <div className="flex items-center justify-between mb-6">
+      {/* Header + filters */}
+      <div className="flex justify-between items-end mb-5">
         <div>
-          <h1 className="font-mono text-lg font-bold">
-            Session History
-            {!loading && (
-              <span className="text-dim text-sm font-normal ml-2">({total})</span>
-            )}
-          </h1>
-          <Overline className="mt-1">// every time Claude ran against one of your PRs</Overline>
+          <Overline className="mb-1.5">{'\u25b8'} SESSIONS {'\u00b7'} {total} TOTAL</Overline>
+          <h1 className="font-mono text-2xl font-bold tracking-[-0.02em]">Session History</h1>
+          <p className="font-mono text-sm text-dim mt-1">// every time Claude ran against one of your PRs</p>
         </div>
-
-        <select
-          value={statusFilter}
-          onChange={(e) => handleStatusChange(e.target.value)}
-          className="font-mono text-xs px-3 py-1.5 rounded-button bg-card border border-rule text-ink cursor-pointer outline-none"
-        >
+        <div className="flex gap-2">
           {STATUS_OPTIONS.map((opt) => (
-            <option key={opt} value={opt} className="bg-card">
-              {opt.charAt(0).toUpperCase() + opt.slice(1)}
-            </option>
+            <button
+              key={opt}
+              onClick={() => handleStatusChange(opt)}
+              className={`font-mono text-[13px] font-medium px-4 py-2 rounded-[7px] border transition-colors cursor-pointer ${
+                statusFilter === opt
+                  ? 'bg-accent/15 border-accent/30 text-accent'
+                  : 'bg-card border-rule-str text-ink hover:bg-card-hi'
+              }`}
+            >
+              {opt === 'all' ? 'Status: all' : opt.charAt(0).toUpperCase() + opt.slice(1)}
+            </button>
           ))}
-        </select>
+        </div>
       </div>
+
+      {/* Completion bar */}
+      {!loading && sessions.length > 0 && (
+        <div className="flex items-center gap-5 px-4 py-3.5 bg-card border border-rule rounded-card mb-5">
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-[22px] font-bold">{completionPct}%</span>
+            <span className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">completion</span>
+          </div>
+          <div className="flex-1 h-1.5 bg-bg2 rounded-full flex gap-0.5 overflow-hidden">
+            {completed > 0 && <div className="bg-ok" style={{ flex: completed }} />}
+            {timeout > 0 && <div className="bg-warn" style={{ flex: timeout }} />}
+            {failed > 0 && <div className="bg-danger" style={{ flex: failed }} />}
+          </div>
+          <div className="flex gap-4 font-mono text-[11px] text-dim">
+            <span><Dot color="ok" className="mr-1" />{completed} done</span>
+            <span><Dot color="warn" className="mr-1" />{timeout} timeout</span>
+            <span><Dot color="danger" className="mr-1" />{failed} failed</span>
+          </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && (
-        <Card className="mb-6 border-danger/30">
-          <p className="text-danger text-sm">{error}</p>
-        </Card>
+        <div className="mb-4 px-4 py-3 bg-danger/8 border border-danger/20 rounded-card text-danger text-sm">
+          {error}
+        </div>
       )}
 
       {/* Loading */}
@@ -113,39 +119,64 @@ export default function InstallationDetail() {
 
       {/* Empty */}
       {!loading && !error && sessions.length === 0 && (
-        <Card className="text-center py-12">
+        <div className="text-center py-12 bg-card border border-rule rounded-card">
           <p className="text-ink2 text-sm">
             {statusFilter === 'all' ? 'No sessions yet.' : `No ${statusFilter} sessions.`}
           </p>
-        </Card>
+        </div>
       )}
 
       {/* Session table */}
       {!loading && sessions.length > 0 && (
         <>
-          <div className="rounded-card border border-rule overflow-hidden">
-            {sessions.map((session, idx) => (
-              <button
-                key={session.id}
-                onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
-                className={`w-full text-left px-5 py-3.5 flex items-center gap-4 transition-colors cursor-pointer hover:bg-card-hi ${idx % 2 === 0 ? 'bg-card/50' : 'bg-transparent'} ${idx < sessions.length - 1 ? 'border-b border-rule/50' : ''}`}
-              >
-                <div className="flex-1 min-w-0">
-                  <span className="text-ink text-[13px]">{session.repo_full_name}</span>
-                  <span className="text-dim text-xs ml-1.5">#{session.pr_number}</span>
-                </div>
-                <Chip variant="accent">{session.skill_name}</Chip>
-                <div className="shrink-0 w-20 text-center">
-                  <StatusBadge status={session.status} />
-                </div>
-                <span className="text-dim text-xs font-mono shrink-0 w-16 text-right">
-                  {formatDuration(session.started_at, session.completed_at)}
-                </span>
-                <span className="text-dim text-xs shrink-0 w-16 text-right">
-                  {formatRelativeTime(session.created_at)}
-                </span>
-              </button>
-            ))}
+          <div className="border border-rule-str rounded-card overflow-hidden">
+            {/* Header row */}
+            <div
+              className="grid bg-bg2 px-4 py-2.5 font-mono text-[10px] text-dim tracking-[0.18em] uppercase border-b border-rule"
+              style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px' }}
+            >
+              <span>#</span>
+              <span>REPO / PR</span>
+              <span>SKILL</span>
+              <span>STATUS</span>
+              <span className="text-right">DURATION</span>
+              <span className="text-right">RAN</span>
+            </div>
+
+            {/* Data rows */}
+            {sessions.map((session, idx) => {
+              const statusColor =
+                session.status === 'completed' ? 'ok' as const :
+                session.status === 'timeout' ? 'warn' as const :
+                session.status === 'failed' ? 'danger' as const :
+                'default' as const
+
+              return (
+                <button
+                  key={session.id}
+                  onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
+                  className={`w-full grid items-center px-4 py-3 text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
+                    idx < sessions.length - 1 ? 'border-b border-rule' : ''
+                  }`}
+                  style={{ gridTemplateColumns: '36px 1fr 140px 110px 80px 80px' }}
+                >
+                  <span className="font-mono text-[11px] text-dim2">
+                    {String(idx + 1 + (page - 1) * 20).padStart(2, '0')}
+                  </span>
+                  <span className="font-mono text-ink truncate">
+                    {session.repo_full_name} <span className="text-accent">#{session.pr_number}</span>
+                  </span>
+                  <span><Chip variant="accent">{session.skill_name}</Chip></span>
+                  <span><Chip variant={statusColor}>{session.status}</Chip></span>
+                  <span className="font-mono text-xs text-ink2 text-right">
+                    {formatDuration(session.started_at, session.completed_at)}
+                  </span>
+                  <span className="font-mono text-xs text-dim text-right">
+                    {formatRelativeTime(session.created_at)}
+                  </span>
+                </button>
+              )
+            })}
           </div>
 
           {/* Pagination */}

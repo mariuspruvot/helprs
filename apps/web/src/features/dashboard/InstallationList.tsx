@@ -1,6 +1,7 @@
 /**
  * InstallationList — dashboard landing page.
- * Shows stat strip, installation cards, and placeholder for new installs.
+ * Matches the R2 redesign mockup: greeting, stat strip, activity chart,
+ * installation cards with avatar + status grid + action buttons.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -8,7 +9,7 @@ import { useNavigate } from 'react-router'
 import { useAuthStore } from '../auth/store'
 import { fetchInstallations, fetchUserStats } from './dashboardApi'
 import type { InstallationSummary, UserStats } from './dashboardApi'
-import { Card, Chip, Dot, Overline, StatCard } from '../../shared/components'
+import { Button, Card, Chip, Dot, Overline, StatCard } from '../../shared/components'
 import ActivityChart from './ActivityChart'
 
 const INSTALL_URL = `https://github.com/apps/${import.meta.env.VITE_GITHUB_APP_SLUG ?? 'helprs'}/installations/new`
@@ -60,7 +61,7 @@ export default function InstallationList() {
       </div>
 
       {/* Stat strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <StatCard label="Installations" value={installations.length} />
         <StatCard label="Configured" value={configured} color={configured > 0 ? 'ok' : 'warn'} sub={`of ${installations.length}`} />
         <StatCard label="Total sessions" value={stats?.totals.total ?? totalSessions} color="accent" />
@@ -68,16 +69,19 @@ export default function InstallationList() {
       </div>
 
       {/* Activity chart */}
-      {stats && stats.daily_counts.length > 0 && (
-        <Card className="mb-8 px-4 py-3">
-          <Overline className="mb-3">{'\u25b8'} ACTIVITY {'\u00b7'} last 30 days</Overline>
+      {stats && (
+        <Card className="mb-4">
+          <div className="flex justify-between items-baseline mb-3">
+            <Overline>{'\u25b8'} ACTIVITY {'\u00b7'} LAST 30 DAYS</Overline>
+            <span className="font-mono text-[11px] text-dim">sessions per day</span>
+          </div>
           <ActivityChart data={stats.daily_counts} />
         </Card>
       )}
 
       {/* Error */}
       {error && (
-        <Card className="mb-6 border-danger/30">
+        <Card className="mb-4 border-danger/30">
           <p className="text-danger text-sm">{error}</p>
         </Card>
       )}
@@ -103,67 +107,65 @@ export default function InstallationList() {
       {!loading && installations.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {installations.map((inst) => (
-            <Card
-              key={inst.id}
-              hover
-              className="cursor-pointer"
-            >
-              <button
-                className="w-full text-left cursor-pointer"
-                onClick={() => navigate(`/installations/${inst.github_installation_id}`)}
-              >
-                {/* Account header */}
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="font-mono text-sm font-semibold text-ink">
-                    {inst.account_login}
+            <Card key={inst.id} hover>
+              {/* Header: avatar + account name + type chip */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-8 h-8 rounded-full bg-accent text-bg inline-flex items-center justify-center font-mono font-bold text-sm">
+                    {inst.account_login[0]?.toLowerCase()}
                   </span>
-                  <Chip>{inst.account_type}</Chip>
+                  <div>
+                    <div className="font-mono text-[15px] font-semibold text-ink">{inst.account_login}</div>
+                    <div className="font-mono text-[11px] text-dim tracking-[0.04em]">
+                      installation #{inst.github_installation_id}
+                    </div>
+                  </div>
                 </div>
+                <Chip>{inst.account_type.toUpperCase()}</Chip>
+              </div>
 
-                {/* Status row */}
-                <div className="flex items-center gap-4 mb-3">
-                  <div className="flex items-center gap-1.5">
+              {/* Status grid: token + sessions */}
+              <div className="grid grid-cols-2 gap-2.5 mb-3.5">
+                <div className="px-3 py-2.5 bg-bg2 border border-rule rounded-[6px]">
+                  <div className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">Token</div>
+                  <div className="font-mono text-xs mt-1 flex items-center gap-1.5">
                     <Dot color={inst.byok_configured ? 'ok' : 'warn'} />
-                    <span className="text-dim text-xs">
-                      {inst.byok_configured ? 'Token configured' : 'No token'}
+                    <span className={inst.byok_configured ? 'text-ok' : 'text-warn'}>
+                      {inst.byok_configured ? 'configured' : 'not set'}
                     </span>
                   </div>
-                  <span className="text-dim text-xs font-mono">
-                    {inst.session_count} session{inst.session_count !== 1 ? 's' : ''}
-                  </span>
                 </div>
+                <div className="px-3 py-2.5 bg-bg2 border border-rule rounded-[6px]">
+                  <div className="font-mono text-[10px] text-dim tracking-[0.12em] uppercase">Sessions</div>
+                  <div className="font-mono text-xs text-ink mt-1">{inst.session_count} total</div>
+                </div>
+              </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="text-accent font-mono font-medium">
-                    View sessions
-                  </span>
-                  <span className="text-dim2">|</span>
-                  <span
-                    className="text-dim hover:text-ink2 transition-colors"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      navigate(`/installations/${inst.github_installation_id}/settings`)
-                    }}
+              {/* Action buttons */}
+              <div className="flex gap-2 pt-3.5 border-t border-rule">
+                <Button
+                  className="text-xs py-1.5 px-3"
+                  onClick={() => navigate(`/installations/${inst.github_installation_id}`)}
+                >
+                  View sessions {'\u2192'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="text-xs py-1.5 px-3"
+                  onClick={() => navigate(`/installations/${inst.github_installation_id}/settings`)}
+                >
+                  Settings
+                </Button>
+                {!inst.byok_configured && (
+                  <Button
+                    variant="ghost"
+                    className="text-xs py-1.5 px-3 text-warn"
+                    onClick={() => navigate(`/installations/${inst.github_installation_id}/setup`)}
                   >
-                    Settings
-                  </span>
-                  {!inst.byok_configured && (
-                    <>
-                      <span className="text-dim2">|</span>
-                      <span
-                        className="text-warn"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          navigate(`/installations/${inst.github_installation_id}/setup`)
-                        }}
-                      >
-                        Setup
-                      </span>
-                    </>
-                  )}
-                </div>
-              </button>
+                    Setup
+                  </Button>
+                )}
+              </div>
             </Card>
           ))}
 
@@ -172,7 +174,7 @@ export default function InstallationList() {
             href={INSTALL_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="border border-dashed border-rule-str rounded-card p-5 flex flex-col items-center justify-center gap-2 hover:border-accent/30 transition-colors min-h-[140px]"
+            className="border border-dashed border-rule-str rounded-card p-5 flex flex-col items-center justify-center gap-2 hover:border-accent/30 transition-colors min-h-[180px]"
           >
             <span className="text-accent text-2xl font-mono">+</span>
             <span className="text-dim text-xs font-mono">Connect another account</span>

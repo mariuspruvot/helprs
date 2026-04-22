@@ -3,7 +3,7 @@
  * Skills per spec: challenge-me (active), eli5/pair-debug/hot-seat/test-me (coming soon).
  */
 
-import { Button, Card, Chip, Overline } from '../../shared/components'
+import { Card, Chip, Overline } from '../../shared/components'
 import type { Skill } from './containerTypes'
 
 const SKILLS: Skill[] = [
@@ -106,9 +106,9 @@ export default function SkillSelector({
                   {skill.comingSoon ? (
                     <Chip variant="warn">soon</Chip>
                   ) : (
-                    <Button variant="ghost" className="text-accent text-xs font-semibold px-0">
+                    <span className="text-accent text-xs font-semibold font-mono">
                       Run &rarr;
-                    </Button>
+                    </span>
                   )}
                 </div>
               </div>

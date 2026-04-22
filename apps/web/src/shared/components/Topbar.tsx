@@ -1,15 +1,22 @@
+import { Link, useNavigate } from 'react-router'
 import { useAuthStore } from '../../features/auth/store'
 import { Dot } from './Dot'
 
 export function Topbar() {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
+  const navigate = useNavigate()
+
+  const handleSignOut = () => {
+    logout()
+    navigate('/')
+  }
 
   return (
     <header className="sticky top-0 z-50 h-14 bg-bg2 border-b border-rule flex items-center px-5">
-      <a href="/installations" className="font-mono text-sm font-bold text-accent tracking-tight">
+      <Link to="/installations" className="font-mono text-sm font-bold text-accent tracking-tight">
         helPRs
-      </a>
+      </Link>
 
       <div className="flex-1" />
 
@@ -30,7 +37,7 @@ export function Topbar() {
           <span className="font-mono text-xs text-ink2">{user.github_login}</span>
 
           <button
-            onClick={logout}
+            onClick={handleSignOut}
             className="font-mono text-[11px] text-dim hover:text-ink2 transition-colors cursor-pointer ml-1"
           >
             sign out
