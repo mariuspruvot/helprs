@@ -14,6 +14,7 @@ interface InstallationDetail {
   byok_key_status: string | null
   byok_validated_at: string | null
   suppression_labels: string[]
+  post_results_to_pr: boolean
 }
 
 const GITHUB_APP_SLUG = import.meta.env.VITE_GITHUB_APP_SLUG ?? 'helprs'
@@ -35,6 +36,10 @@ export default function SettingsView() {
   const [labelsLoading, setLabelsLoading] = useState(false)
   const [labelsError, setLabelsError] = useState<string | null>(null)
 
+  const [postResults, setPostResults] = useState(false)
+  const [postResultsLoading, setPostResultsLoading] = useState(false)
+  const [postResultsError, setPostResultsError] = useState<string | null>(null)
+
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const fetchInstallation = useCallback(async () => {
@@ -48,6 +53,7 @@ export default function SettingsView() {
       const data = await resp.json() as InstallationDetail
       setInstallation(data)
       setLabels(data.suppression_labels)
+      setPostResults(data.post_results_to_pr)
     } finally {
       setLoading(false)
     }
@@ -146,6 +152,27 @@ export default function SettingsView() {
     const updated = labels.filter((l) => l !== label)
     setLabels(updated)
     saveLabels(updated)
+  }
+
+  const togglePostResults = async (enabled: boolean) => {
+    const previous = postResults
+    setPostResults(enabled)
+    setPostResultsLoading(true)
+    setPostResultsError(null)
+    try {
+      const resp = await apiFetch(`/api/v1/installations/${installationId}/post-results`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_results_to_pr: enabled }),
+      })
+      if (!resp.ok) {
+        const data = await resp.json() as { message?: string }
+        setPostResultsError(data.message ?? 'Failed to update setting')
+        setPostResults(previous)
+      }
+    } finally {
+      setPostResultsLoading(false)
+    }
   }
 
   if (loading) {
@@ -332,6 +359,38 @@ export default function SettingsView() {
         >
           Configure on GitHub {'\u2197'}
         </a>
+      </Card>
+
+      {/* PR Integration */}
+      <Card className="mb-6">
+        <Overline className="mb-4">PR Integration</Overline>
+        <label className="flex items-start gap-3 cursor-pointer select-none">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={postResults}
+            onClick={() => togglePostResults(!postResults)}
+            disabled={postResultsLoading}
+            className={`relative mt-0.5 shrink-0 w-9 h-5 rounded-full transition-colors cursor-pointer disabled:opacity-50 ${
+              postResults ? 'bg-accent' : 'bg-rule-str'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-bg transition-transform ${
+                postResults ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
+          <div>
+            <p className="text-ink text-sm font-sans">Post results to PR</p>
+            <p className="text-dim text-xs font-mono mt-0.5">
+              // after each challenge-me session, post the scorecard as a PR comment
+            </p>
+          </div>
+        </label>
+        {postResultsError && (
+          <p className="text-danger text-sm mt-3">{postResultsError}</p>
+        )}
       </Card>
 
       {/* Danger Zone */}

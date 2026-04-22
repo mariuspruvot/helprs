@@ -3,6 +3,7 @@
  * Skills per spec: challenge-me (active), eli5/pair-debug/hot-seat/test-me (coming soon).
  */
 
+import { Link, useParams } from 'react-router'
 import { Card, Chip, Overline } from '../../shared/components'
 import type { Skill } from './containerTypes'
 
@@ -58,11 +59,22 @@ export default function SkillSelector({
   onSelectSkill,
   disabled = false,
 }: SkillSelectorProps) {
+  const { installationId } = useParams<{ installationId: string }>()
+  const installationUrl = installationId ? `/installations/${installationId}` : '/installations'
+
   return (
     <div
       data-testid="skill-selector"
       className="min-h-screen bg-bg text-ink font-sans flex flex-col items-center justify-center px-6 py-12"
     >
+      {/* Back to installation */}
+      <Link
+        to={installationUrl}
+        className="absolute top-5 left-5 font-mono text-xs text-dim hover:text-ink2 transition-colors"
+      >
+        {'\u2190'} installation
+      </Link>
+
       {/* Header */}
       <div className="text-center mb-10 max-w-lg">
         <h1 className="font-mono text-lg font-bold text-accent mb-2">helPRs</h1>
