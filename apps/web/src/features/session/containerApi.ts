@@ -98,6 +98,29 @@ export async function getSessionEvents(sessionId: string): Promise<SessionEvents
  * Auth token is appended as a query parameter since EventSource cannot send headers.
  * Optional `offset` skips already-received events on reconnect.
  */
+export interface ScorecardResponse {
+  skill: string
+  version: number
+  dimensions: Record<string, number>
+  summary: string
+  questions_asked?: number
+  questions_answered?: number
+  highlights?: string[]
+}
+
+export async function fetchScorecard(sessionId: string): Promise<ScorecardResponse | null> {
+  const resp = await apiFetch(`/api/v1/containers/sessions/${sessionId}/scorecard`)
+  if (!resp.ok) {
+    if (resp.status === 404) return null
+    throw new ContainerSessionError(resp.status, `Failed to fetch scorecard: ${resp.status}`)
+  }
+  try {
+    return (await resp.json()) as ScorecardResponse
+  } catch {
+    return null
+  }
+}
+
 export function buildStreamUrl(sessionId: string, accessToken: string, offset?: number): string {
   let url = `${API_BASE}/api/v1/containers/sessions/${sessionId}/stream?access_token=${encodeURIComponent(accessToken)}`
   if (offset && offset > 0) {
