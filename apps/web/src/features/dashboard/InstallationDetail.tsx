@@ -218,7 +218,7 @@ export default function InstallationDetail() {
                 <button
                   key={session.id}
                   onClick={() => navigate(`/installations/${installationId}/sessions/${session.id}`)}
-                  className={`group w-full grid items-center px-3 lg:px-4 py-2 lg:py-2.5 text-[12px] lg:text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
+                  className={`group w-full grid items-center text-left px-3 lg:px-4 py-2 lg:py-2.5 text-[12px] lg:text-[13px] transition-colors cursor-pointer hover:bg-card-hi ${
                     idx < sessions.length - 1 ? 'border-b border-rule' : ''
                   }`}
                   style={{ gridTemplateColumns: COL_TEMPLATE }}
