@@ -440,7 +440,7 @@ export default function ContainerSession({
 
         {/* Status + controls right-aligned */}
         <div className="ml-auto flex items-center gap-3">
-          <Chip variant={statusVariant} data-testid="session-status">{status}</Chip>
+          <span data-testid="session-status"><Chip variant={statusVariant}>{status}</Chip></span>
 
           {isRunning && (
             <Button

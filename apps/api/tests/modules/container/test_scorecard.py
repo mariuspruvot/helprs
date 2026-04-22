@@ -2,7 +2,6 @@
 
 from helprs.modules.container.scorecard import extract_scorecard
 
-
 VALID_SCORECARD = """\
 Some assistant text before the scorecard.
 
