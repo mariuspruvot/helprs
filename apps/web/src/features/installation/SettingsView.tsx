@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 import { apiFetch } from '../../shared/api/client'
 import { Button, Card, Chip, Dot, Overline } from '../../shared/components'
 
@@ -196,10 +196,20 @@ export default function SettingsView() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto py-8">
+    <div className="max-w-2xl mx-auto py-8 w-full">
+      {/* Breadcrumb */}
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <Overline>
+          <Link to="/installations" className="hover:text-ink2 transition-colors">installations</Link>
+          {' '}{'\u00b7'}{' '}
+          <Link to={`/installations/${installationId}`} className="hover:text-ink2 transition-colors">history</Link>
+          {' '}{'\u00b7'}{' '}
+          <span className="text-ink2">settings</span>
+        </Overline>
+      </div>
+
       {/* Header */}
       <div className="mb-8">
-        <Overline className="mb-2">{'\u25b8'} SETTINGS</Overline>
         <h1 className="font-mono text-2xl font-bold text-ink">Installation Settings</h1>
         <p className="text-dim text-sm mt-1 font-sans">
           {installation.account_login} {'\u00b7'} {installation.account_type}
