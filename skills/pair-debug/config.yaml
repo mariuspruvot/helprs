@@ -1,0 +1,10 @@
+name: pair-debug
+description: "Pair Debug -- find the subtle bug Claude injected into your code"
+version: "1.0.0"
+fetch_strategy: shallow_clone
+estimated_duration: "5-12 min"
+output_format: sse_stream
+tags:
+  - debugging
+  - pair-programming
+  - investigation
