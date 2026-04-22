@@ -29,10 +29,10 @@ export default function App() {
         {/* Protected routes — wrapped in AppShell */}
         <Route path="/installations" element={<ProtectedRoute><AppShell><InstallationList /></AppShell></ProtectedRoute>} />
         <Route path="/installations/:installationId" element={<ProtectedRoute><AppShell><InstallationDetail /></AppShell></ProtectedRoute>} />
-        <Route path="/installations/:installationId/sessions/:sessionId" element={<ProtectedRoute><AppShell><SessionReplay /></AppShell></ProtectedRoute>} />
+        <Route path="/installations/:installationId/sessions/:sessionId" element={<ProtectedRoute><SessionReplay /></ProtectedRoute>} />
         <Route path="/installations/:installationId/setup" element={<ProtectedRoute><AppShell><SetupView /></AppShell></ProtectedRoute>} />
         <Route path="/installations/:installationId/settings" element={<ProtectedRoute><AppShell><SettingsView /></AppShell></ProtectedRoute>} />
-        <Route path="/session/:installationId/*" element={<ProtectedRoute><AppShell><SessionView /></AppShell></ProtectedRoute>} />
+        <Route path="/session/:installationId/*" element={<ProtectedRoute><SessionView /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
     </ErrorBoundary>
