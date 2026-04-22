@@ -71,14 +71,46 @@ PR_DESCRIPTION=$(jq -r '.body // "No description provided."' /tmp/pr_meta.json)
 PR_DIFF=$(cat /tmp/pr_diff.txt)
 FILE_LIST=$(jq -r '.files[].path' /tmp/pr_meta.json)
 
-# Read the prompt template and substitute placeholders
-PROMPT=$(cat "/skills/$SKILL_NAME/prompt.md")
-PROMPT="${PROMPT//\{\{PR_NUMBER\}\}/$PR_NUMBER}"
-PROMPT="${PROMPT//\{\{PR_TITLE\}\}/$PR_TITLE}"
-PROMPT="${PROMPT//\{\{PR_AUTHOR\}\}/$PR_AUTHOR}"
-PROMPT="${PROMPT//\{\{PR_DESCRIPTION\}\}/$PR_DESCRIPTION}"
-PROMPT="${PROMPT//\{\{FILE_LIST\}\}/$FILE_LIST}"
-PROMPT="${PROMPT//\{\{PR_DIFF\}\}/$PR_DIFF}"
+# Build the prompt file from template + PR context.
+# Write to a file instead of holding in a shell variable to avoid
+# "Argument list too long" on large PRs (ARG_MAX ~2MB).
+PROMPT_FILE=/tmp/prompt.md
+{
+  cat "/skills/$SKILL_NAME/prompt.md"
+} > "$PROMPT_FILE"
+
+# Substitute placeholders using sed (handles large diffs without hitting ARG_MAX).
+# Small fields first (safe as shell vars), then large fields via temp files.
+sed -i "s|{{PR_NUMBER}}|$PR_NUMBER|g" "$PROMPT_FILE"
+sed -i "s|{{PR_TITLE}}|$PR_TITLE|g" "$PROMPT_FILE"
+sed -i "s|{{PR_AUTHOR}}|$PR_AUTHOR|g" "$PROMPT_FILE"
+
+# Large fields: use sed with file-read to avoid shell expansion limits.
+# PR_DESCRIPTION, FILE_LIST, and PR_DIFF are written to temp files
+# and inserted via sed's r command with a marker-delete approach.
+echo "$PR_DESCRIPTION" > /tmp/pr_description.txt
+echo "$FILE_LIST" > /tmp/pr_filelist.txt
+
+# For each large placeholder: replace the line containing it with the file contents.
+# Using awk because sed r-command can't replace inline — it only appends.
+for placeholder_pair in \
+    "{{PR_DESCRIPTION}}:/tmp/pr_description.txt" \
+    "{{FILE_LIST}}:/tmp/pr_filelist.txt" \
+    "{{PR_DIFF}}:/tmp/pr_diff.txt"; do
+  marker="${placeholder_pair%%:*}"
+  file="${placeholder_pair##*:}"
+  if grep -qF "$marker" "$PROMPT_FILE" && [ -f "$file" ]; then
+    awk -v marker="$marker" -v file="$file" '
+      index($0, marker) {
+        while ((getline line < file) > 0) print line
+        close(file)
+        next
+      }
+      { print }
+    ' "$PROMPT_FILE" > /tmp/prompt_tmp.md
+    mv /tmp/prompt_tmp.md "$PROMPT_FILE"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Multi-turn conversation via per-turn invocations
@@ -102,7 +134,9 @@ mkfifo "$FIFO"
 exec 3<>"$FIFO"
 
 # First turn: initial skill prompt (one-shot, creates the conversation)
-claude -p "$PROMPT" \
+# The full prompt is written to a file to avoid ARG_MAX on large PRs.
+# We pass a short bootstrap prompt that tells Claude to read the file.
+claude -p "Read the file /tmp/prompt.md and follow its instructions exactly. It contains a skill prompt with PR context. Start immediately." \
     --output-format stream-json \
     --verbose \
     --dangerously-skip-permissions \
