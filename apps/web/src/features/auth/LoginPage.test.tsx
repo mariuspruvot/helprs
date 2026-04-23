@@ -22,8 +22,14 @@ describe('LoginPage', () => {
     expect(link.getAttribute('href')).toContain('github.com/mariuspruvot/helprs')
   })
 
-  test('renders tagline', () => {
+  test('renders tagline explaining interactive skills', () => {
     const { container } = render(<LoginPage />)
+    expect(container.textContent).toContain('Interactive skills')
     expect(container.textContent).toContain('Self-hosted')
+  })
+
+  test('renders enter-to-continue hint', () => {
+    const { container } = render(<LoginPage />)
+    expect(container.textContent?.toLowerCase()).toContain('enter')
   })
 })
