@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how helPRs works for contributors and curious self-hosters. For deployment instructions, see [Self-Hosting Guide](self-hosting.md). For the decision rationale, see [ADR-001](adr-001-claude-code-container-pivot.md).
+This document explains how helPRs works for contributors and curious self-hosters. For deployment instructions, see [Self-Hosting Guide](self-hosting.md). For the decision rationale behind the container model, see [ADR-001](adr-001-claude-code-container-pivot.md).
 
 ---
 
@@ -34,7 +34,22 @@ graph TB
     style DB fill:#1a1a2e,stroke:#4a9eff
 ```
 
-The backend is a **container orchestrator**, not an AI host. It receives webhooks, manages Docker containers, and relays output. All AI work happens inside ephemeral Claude Code containers.
+The backend is a **container orchestrator**, not an AI host. It receives webhooks, manages Docker containers, and relays output. All AI work happens inside ephemeral Claude Code containers using the user's own Claude credentials (BYOK).
+
+---
+
+## Stack
+
+| Layer | Tech |
+|-------|------|
+| Backend | FastAPI, Python 3.12, uv |
+| Frontend | React, Vite, TypeScript, Zustand, React Query, React Router |
+| Database | PostgreSQL 16 |
+| Containers | Docker, Claude Code CLI, `gh` CLI |
+| Admin | SQLAdmin (mounted at `/admin`) |
+| Deploy | Coolify (Traefik + Let's Encrypt) |
+
+API prefix for all REST routes: `/api/v1`.
 
 ---
 
@@ -59,13 +74,13 @@ The webhook handler returns 200 immediately, then dispatches processing as a bac
 ```
 Browser                    helPRs API                    Docker
   │                            │                            │
-  │──POST /sessions───────────>│                            │
+  │──POST /containers/sessions>│                            │
   │  {installation_id,         │──create container─────────>│
   │   pr_number, skill}        │  (inject credentials,      │
   │<───201 {session_id}────────│   mount skills volume)     │
   │                            │                            │
-  │──GET /sessions/{id}/stream>│                            │
-  │  (SSE)                     │<───stdout (NDJSON)─────────│
+  │──GET /containers/sessions/ │                            │
+  │       {id}/stream (SSE)────│<───stdout (NDJSON)─────────│
   │<───event: message──────────│                            │
   │<───event: message──────────│                            │
   │  ...                       │                            │
@@ -77,7 +92,8 @@ Browser                    helPRs API                    Docker
 ```
 Browser                    helPRs API                    Container
   │                            │                            │
-  │──POST /sessions/{id}/msg──>│                            │
+  │──POST /containers/sessions │                            │
+  │       /{id}/message────────│                            │
   │  {content: "my answer"}    │──docker exec echo > FIFO──>│
   │<───200 {status: "sent"}────│                            │
   │                            │                            │
@@ -89,60 +105,81 @@ The container runs `claude -p` for the first turn, then loops reading from a FIF
 
 ---
 
-## Module Map
+## Backend Modules
 
 All backend modules live under `apps/api/src/helprs/modules/`. Each module is flat: `router.py`, `service.py`, `models.py`, `schemas.py`.
 
 ### Identity (`/api/v1/auth/*`)
 
-GitHub OAuth flow + JWT tokens.
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /auth/github` | Redirect to GitHub OAuth |
-| `GET /auth/github/callback` | Exchange code for token, create/update user |
-| `POST /auth/refresh` | Refresh JWT via httpOnly cookie |
-| `GET /auth/me` | Current user profile |
-| `POST /auth/logout` | Clear refresh token cookie |
+GitHub OAuth flow + JWT tokens. See [api-contracts-api.md](api-contracts-api.md) for exact endpoint signatures.
 
 ### Installation (`/api/v1/installations/*`)
 
-GitHub App installations and their configuration.
+GitHub App installations, BYOK configuration, per-installation settings (suppression labels, post-results toggle), and session history.
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /installations` | List accessible installations |
-| `GET /installations/{id}` | Installation detail |
-| `POST /installations/{id}/byok` | Configure Claude credentials |
-| `DELETE /installations/{id}/byok` | Remove credentials |
-| `PUT /installations/{id}/suppression-labels` | Set PR labels that skip sessions |
-| `GET /installations/{id}/sessions` | Session history (paginated) |
-| `PUT /installations/{id}/post-results` | Enable/disable PR comment posting |
-
-Note: `{id}` is the GitHub installation ID (integer), not the internal UUID.
+Note: `{installation_id}` in URLs is the **GitHub installation ID** (integer), not the internal UUID.
 
 ### Webhook (`/api/v1/webhooks/*`)
 
-GitHub webhook receiver. Single endpoint, HMAC-verified.
-
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /webhooks/github` | Receive and dispatch GitHub events |
-
-Handles: `installation.*`, `pull_request.opened`, `pull_request.synchronize`. Other events are logged and ignored.
+Single HMAC-verified endpoint that persists raw events and dispatches processing. Handles `installation.*`, `pull_request.opened`, `pull_request.synchronize`. Other events are logged and ignored.
 
 ### Container (`/api/v1/containers/*`)
 
-Container lifecycle management and SSE streaming.
+Ephemeral container lifecycle, SSE streaming, event persistence, scorecard extraction, follow-up messages, and session stop/delete.
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /sessions` | Create session + start container |
-| `GET /sessions/{id}` | Session status |
-| `GET /sessions/{id}/stream` | SSE stream (live output) |
-| `GET /sessions/{id}/events` | Persisted events (replay) |
-| `POST /sessions/{id}/message` | Send follow-up message |
-| `POST /sessions/{id}/stop` | Stop running container |
+### Admin (`/admin`)
+
+SQLAdmin panel configured in `admin/views.py`. Used as a superadmin escape hatch. End-user flows go through the dashboard UI.
+
+---
+
+## Frontend Features
+
+The SPA lives under `apps/web/src/`. Feature-first layout, one folder per feature.
+
+| Feature | Responsibility |
+|---------|----------------|
+| `features/auth/` | Login page, OAuth callback, protected-route wrapper, Zustand auth store |
+| `features/dashboard/` | Installation list, installation detail, activity chart, session replay |
+| `features/installation/` | Per-install setup (`SetupView`) and settings (`SettingsView`) — BYOK form, suppression labels, post-results toggle |
+| `features/session/` | Live session UI: skill selector, SSE conversation view, progress tracker, scorecard display, markdown + syntax highlighting |
+| `features/demo/` | Placeholder (reserved for demo fixtures) |
+| `shared/api/` | Fetch client (`client.ts`) with credential handling |
+| `shared/components/` | Reusable UI: `AppShell`, `Button`, `Card`, `Chip`, `ErrorBoundary`, `Topbar`, etc. |
+
+### Routes (see `apps/web/src/App.tsx`)
+
+| Path | Component |
+|------|-----------|
+| `/` | `AuthRedirect` — redirects to `/installations` if logged in, otherwise `LoginPage` |
+| `/auth/callback` | `OAuthCallback` |
+| `/installations` | `InstallationList` |
+| `/installations/:installationId` | `InstallationDetail` |
+| `/installations/:installationId/setup` | `SetupView` |
+| `/installations/:installationId/settings` | `SettingsView` |
+| `/installations/:installationId/sessions/:sessionId` | `SessionReplay` |
+| `/session/:installationId/*` | `SessionView` (live session) |
+
+Protected routes are wrapped in `<ProtectedRoute>` and `<AppShell>`.
+
+### Session rendering pipeline
+
+The live session UI renders structured content blocks (not raw text). Data flow:
+
+```
+SSE stream ──> StreamMessage[] ──> ConversationOutput (scroll container)
+                                        │
+                                        v
+                                   MessageBlock (dispatches on role)
+                                        │
+                              ┌─────────┴─────────┐
+                              v                   v
+                       MarkdownContent       CodeBlock
+                       (react-markdown,      (shiki with JS
+                        remark-gfm)           regex engine)
+```
+
+`ScorecardDisplay` renders the parsed score card when a session finishes. `ProgressTracker` + `SessionRail` track turns and show token/cost metadata.
 
 ---
 
@@ -155,7 +192,7 @@ Container lifecycle management and SSE streaming.
                     ┌──────────────┐
                     │   PENDING    │  Session created, container not yet running
                     └──────┬───────┘
-                           │ POST /sessions
+                           │ POST /containers/sessions
                            v
                     ┌──────────────┐
                     │   RUNNING    │  Container executing skill
@@ -173,10 +210,12 @@ Container lifecycle management and SSE streaming.
                         └──────────┘
 ```
 
-**Lifecycle details**:
-- On boot, the API reconciles stale RUNNING/PENDING sessions (marks them FAILED)
-- A periodic cleanup task stops containers that exceed `CONTAINER_TTL_SECONDS` (default: 15 min)
-- On shutdown, the API stops all running containers gracefully
+**Lifecycle details:**
+
+- On boot, the API reconciles stale `RUNNING`/`PENDING` sessions (marks them `FAILED`).
+- A periodic cleanup task stops containers that exceed `CONTAINER_TTL_SECONDS` (default: 15 min).
+- On shutdown, the API stops all running containers gracefully.
+- With multiple uvicorn workers, the reaper and cleanup are idempotent (atomic row-level claim + double-stop suppression).
 
 ---
 
@@ -190,13 +229,15 @@ Containers emit NDJSON (one JSON object per line) with these event types:
 | `assistant` | Content block (thinking, text, tool_use) | During Claude's response |
 | `user` | Tool result | After Claude uses a tool |
 | `result` | Turn completion + metadata | End of each turn |
-| `error` | Setup failure (clone, checkout, auth) | On container error |
+| `rate_limit_event` | Rate-limit backoff | When Claude API throttles |
+| `error` | Setup failure (clone, checkout, auth) | Emitted by entrypoint on fatal error |
 
-**Key behaviors**:
-- One `assistant` event per content block (not per token -- no partial streaming)
-- `result.result` duplicates the last assistant text -- display assistant events, use result for status only
-- Multiple `system`/`result` events per session (one pair per conversation turn)
-- The SSE `done` event includes `status` (`completed` or `failed`) for session finalization
+**Key behaviors:**
+
+- One `assistant` event per content block (not per token — no partial streaming).
+- `result.result` duplicates the last assistant text — display assistant events, use `result` for status only.
+- Multiple `system`/`result` events per session (one pair per conversation turn).
+- The SSE `done` event carries `status` (`completed` or `failed`) for session finalization.
 
 ### Event flow for a single turn
 
@@ -210,11 +251,13 @@ Containers emit NDJSON (one JSON object per line) with these event types:
 {"type":"result", "result":"...", "cost_usd":0.05, ...}
 ```
 
+Events are batch-persisted to `session_events` during streaming. Completed sessions can be replayed from `GET /api/v1/containers/sessions/{id}/events`.
+
 ---
 
 ## Multi-Turn Mechanism
 
-Claude Code CLI with `--output-format stream-json` exits after each turn. The container uses a FIFO-based loop:
+Claude Code CLI with `--input-format stream-json` exits after each turn. The container uses a FIFO-based loop:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -230,7 +273,7 @@ Claude Code CLI with `--output-format stream-json` exits after each turn. The co
          ▲
          │ docker exec echo "answer" > /tmp/claude-input
          │
-    helPRs API (POST /sessions/{id}/message)
+    helPRs API (POST /containers/sessions/{id}/message)
 ```
 
 The FIFO is opened in read-write mode (`<>`) to avoid blocking. Each `claude -c` invocation inherits the full conversation from Claude's local session store.
@@ -239,7 +282,7 @@ The FIFO is opened in read-write mode (`<>`) to avoid blocking. Each `claude -c`
 
 ## Security Model
 
-### Credential flow
+### Credential flow (BYOK)
 
 ```
 User configures token         helPRs stores encrypted       Container uses token
@@ -252,27 +295,29 @@ in dashboard                  with Fernet                   as env var
                                                             to disk
 ```
 
+Both API keys (`sk-ant-api03-...`) and OAuth tokens (`sk-ant-oat...`) are accepted. OAuth tokens are validated at runtime by Claude Code CLI (no server-side check).
+
 ### Access control
 
-Two-tier authorization:
+Two-tier authorization in `installation/service.py`:
 
-1. **Installation access** -- user must own the installation or be a member of the GitHub org (verified via GitHub API `/user/orgs`)
-2. **Session access** -- session owner gets instant access (no API call); other users fall back to installation membership check
-3. **Admin access** -- separate role check for BYOK configuration and settings
+1. **Installation access** — user must own the installation or be a member of the GitHub org (verified via GitHub API `/user/orgs`).
+2. **Session access** — session owners get instant access (no API call); other users fall back to installation membership.
+3. **Admin access** — separate role check for BYOK configuration and settings.
 
 ### Container isolation
 
-- Containers run as non-root (`runner` user)
-- Credentials injected as environment variables (ephemeral, not persisted)
-- Skills mounted read-only
-- Container destroyed after completion or timeout
-- Docker socket on the host is the main trust boundary -- the API container has Docker access to spawn runners
+- Containers run as non-root (`runner` user).
+- Credentials injected as environment variables (ephemeral, not persisted to the container filesystem).
+- Skills mounted read-only.
+- Container destroyed after completion or timeout.
+- The Docker socket on the host is the main trust boundary — the API container has Docker access to spawn runners.
 
 ---
 
 ## Database Schema
 
-Six main tables:
+Six main tables. See [data-models-api.md](data-models-api.md) for full column listings.
 
 | Table | Purpose |
 |-------|---------|
@@ -280,7 +325,25 @@ Six main tables:
 | `installations` | GitHub App installations with settings |
 | `byok_configs` | Fernet-encrypted Claude credentials |
 | `webhook_events` | Raw webhook payloads for audit/replay |
-| `container_sessions` | Session state machine (PENDING -> RUNNING -> COMPLETED) |
+| `container_sessions` | Session state machine (`PENDING → RUNNING → COMPLETED`) |
 | `session_events` | Persisted stream-json events (JSONB) for replay |
 
-Migrations managed by Alembic. The API runs `alembic upgrade head` on startup.
+Migrations are managed by Alembic. Run `make migrate` (or `alembic upgrade head` inside the API container).
+
+---
+
+## Skills
+
+Skills are pluggable Claude Code agent definitions under `skills/`. Each skill is a self-contained folder with `CLAUDE.md`, `prompt.md`, and `config.yaml`, mounted read-only into the runner container. See [`skills/SKILL_SPEC.md`](../skills/SKILL_SPEC.md) and [creating-skills.md](creating-skills.md) for the specification.
+
+Current built-in skills: `challenge-me`, `eli5`, `hot-seat`, `pair-debug`, `test-me`.
+
+---
+
+## Deployment
+
+Production runs on **Coolify** with Traefik + Let's Encrypt. See [deploy-coolify.md](deploy-coolify.md). The production compose file is `infra/coolify/docker-compose.prod.yml`. Two domains are used: the web app and the API (e.g. `helprs.tech` / `api.helprs.tech`).
+
+The `claude-runner` service is declared as a **build-only service** in both compose files (`entrypoint: /bin/true`, `restart: no`) so that it builds the runner image on the host but never runs as a long-lived service. The API spawns containers from `claude-runner:latest` dynamically through the mounted Docker socket.
+
+For self-hosting on any Docker-capable host, see [self-hosting.md](self-hosting.md).

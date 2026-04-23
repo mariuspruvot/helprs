@@ -50,9 +50,9 @@ Complete the [Self-Hosting Setup](self-hosting.md) first:
 
 ## Deployment Options
 
-### [Coolify](deploy-coolify.md) -- Recommended
+### [Coolify](deploy-coolify.md) — Recommended
 
-Best for single-VPS deployments. Coolify provides a web UI for managing Docker Compose services with automatic TLS via Traefik, GitHub integration for auto-deploys, and a built-in environment variable editor.
+Best for single-VPS deployments. Coolify provides a web UI for managing Docker Compose services with automatic TLS via Traefik, GitHub integration for auto-deploys, and a built-in environment variable editor. This is the target we maintain and test against.
 
 **Good for**: Solo developers, small teams, side projects.
 
@@ -62,11 +62,9 @@ Manual deployment using the production compose file with your own reverse proxy.
 
 **Good for**: Operators comfortable with Docker and reverse proxy configuration.
 
-### [AWS ECS](deploy-aws-ecs.md)
+### Other platforms
 
-Managed container orchestration on AWS with RDS for PostgreSQL and ALB for routing. Requires EC2-backed ECS tasks (not Fargate) because the API needs Docker socket access.
-
-**Good for**: Teams with existing AWS infrastructure, production workloads needing auto-scaling.
+Anything that runs `docker compose` with access to the host Docker socket will work (Kubernetes with DinD, AWS ECS with EC2-backed tasks, etc.). None of these are officially supported — expect to adapt the compose file yourself.
 
 ## Common Requirements
 
@@ -86,7 +84,7 @@ All deployment methods should verify these endpoints after deploy:
 
 | Service | Check | Expected |
 |---------|-------|----------|
-| **API** | `GET /health` | `{"status": "ok"}` |
+| **API** | `GET /health` | `{"status": "ok", "db": "ok"}` (503 with `db: "unreachable"` when DB is down) |
 | **Database** | `pg_isready -U helprs` | exit code 0 |
 | **Web** | `GET /` | HTTP 200 (serves `index.html`) |
 | **TLS** | `curl -I https://yourdomain.com` | valid certificate |
@@ -112,11 +110,10 @@ Push to any branch / PR to main
 
 ### Continuous Deployment
 
-Images are built locally on the deployment host (not pushed to a registry). Each deployment platform handles this differently:
+Images are built locally on the deployment host (not pushed to a registry):
 
-- **Coolify**: auto-deploys on push via GitHub App integration
-- **VPS**: `git pull && docker compose up -d --build`
-- **AWS ECS**: push to ECR, update ECS service (see [AWS guide](deploy-aws-ecs.md))
+- **Coolify**: auto-deploys on push via GitHub App integration.
+- **VPS**: `git pull && docker compose -f infra/coolify/docker-compose.prod.yml up -d --build`.
 
 ## Rollback
 

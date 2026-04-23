@@ -20,11 +20,8 @@ cd helprs
 cp .env.example .env
 # Fill in .env (at minimum: SECRET_KEY, FERNET_KEY, GitHub App credentials)
 
-# Start all services
+# Start all services (also builds the claude-runner image as a build-only service)
 docker compose up --build      # API :8000, Web :5173, Postgres :5432
-
-# Build the claude-runner image (needed for running skills)
-make build-runner
 
 # Create test database (once)
 docker exec helprs-db-1 psql -U helprs -c "CREATE DATABASE helprs_test;"
@@ -33,8 +30,9 @@ docker exec helprs-db-1 psql -U helprs -c "CREATE DATABASE helprs_test;"
 ### Running checks
 
 ```bash
-make lint     # Ruff check + format (API), ESLint (Web)
-make test     # pytest (API), vitest (Web)
+make lint        # ruff check + format + mypy (non-strict) + eslint
+make typecheck   # mypy only (shortcut for API type-checking)
+make test        # pytest (API) + vitest (Web)
 ```
 
 Or run backend/frontend checks individually:
@@ -44,6 +42,7 @@ Or run backend/frontend checks individually:
 cd apps/api
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
+uv run mypy src/
 uv run pytest
 uv run pytest tests/modules/identity/     # Single module
 
