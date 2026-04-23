@@ -68,7 +68,11 @@ Skills are pluggable Claude Code agent definitions in `skills/`. See `skills/SKI
 
 | Skill | Purpose | PR fetch strategy |
 |-------|---------|-------------------|
-| `challenge-me` | Socratic quiz on PR changes | Shallow clone |
+| `challenge-me` | Socratic comprehension quiz on PR changes | `shallow_clone` |
+| `eli5` | Explain Like I'm 5 — vulgarize your own code | `shallow_clone` |
+| `hot-seat` | Architecture Hot Seat — defend design choices under pressure | `shallow_clone` |
+| `pair-debug` | Find the subtle bug Claude injected into your code | `shallow_clone` |
+| `test-me` | Predict whether test cases pass or fail on your code | `shallow_clone` |
 
 ## Code Style
 
