@@ -9,12 +9,12 @@ import SessionReplay from './features/dashboard/SessionReplay'
 import SetupView from './features/installation/SetupView'
 import SettingsView from './features/installation/SettingsView'
 import SessionView from './features/session/SessionView'
-import LandingPage from './features/landing/LandingPage'
+import LoginPage from './features/auth/LoginPage'
 
 function AuthRedirect() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   if (isAuthenticated) return <Navigate to="/installations" replace />
-  return <LandingPage />
+  return <LoginPage />
 }
 
 export default function App() {
