@@ -201,11 +201,7 @@ The API runs on port 8000, the frontend on port 80. You need a reverse proxy (ng
 
 See the [Coolify deployment guide](deploy-coolify.md) for step-by-step instructions.
 
-### Option C: AWS ECS
-
-See the [AWS ECS deployment guide](deploy-aws-ecs.md) for cloud deployment.
-
-### Option D: Any Docker host (VPS)
+### Option C: Any Docker host (VPS)
 
 The production compose file works on any machine with Docker:
 

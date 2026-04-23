@@ -1,242 +1,166 @@
-# Data Models -- Backend
+# Data Models
 
-> Updated 2026-04-17 (post-cleanup)
+Database schema and Pydantic API schemas. Models live in `apps/api/src/helprs/modules/*/models.py`; schemas in `apps/api/src/helprs/modules/*/schemas.py`. See [api-contracts-api.md](api-contracts-api.md) for which endpoints return which schemas.
 
-## Database Schema
+## Base columns
 
-All tables inherit from `Base` which provides:
-
-| Column | Type | Constraints | Default | Description |
-|--------|------|-------------|---------|-------------|
-| id | UUID | PK | `uuid4()` | Primary key |
-| created_at | DateTime(tz) | NOT NULL | `now()` | Row creation time |
-| updated_at | DateTime(tz) | NOT NULL | `now()` (onupdate: `now()`) | Last modification time |
-
----
-
-### github_users
+All tables inherit from `Base`, which provides:
 
 | Column | Type | Constraints | Default | Description |
 |--------|------|-------------|---------|-------------|
-| id | UUID | PK | uuid4() | inherited |
-| github_id | BigInteger | UNIQUE, NOT NULL, INDEX | -- | GitHub numeric user ID |
-| github_login | String(255) | NOT NULL, INDEX | -- | GitHub username |
-| email | String(255) | nullable | -- | Email address |
-| avatar_url | String(512) | nullable | -- | GitHub avatar URL |
-| github_access_token_enc | String(512) | NOT NULL | -- | Fernet-encrypted GitHub OAuth token |
-| created_at | DateTime(tz) | NOT NULL | now() | inherited |
-| updated_at | DateTime(tz) | NOT NULL | now() | inherited |
+| `id` | UUID | PK | `uuid4()` | Primary key |
+| `created_at` | DateTime(tz) | NOT NULL | `now()` | Row creation time |
+| `updated_at` | DateTime(tz) | NOT NULL | `now()` (onupdate: `now()`) | Last modification time |
 
----
+## Tables
 
-### installations
+### `github_users`
 
-| Column | Type | Constraints | Default | Description |
-|--------|------|-------------|---------|-------------|
-| id | UUID | PK | uuid4() | inherited |
-| github_installation_id | BigInteger | UNIQUE, NOT NULL, INDEX | -- | GitHub App installation ID |
-| account_login | String(255) | NOT NULL | -- | Account name (user/org) |
-| account_id | BigInteger | NOT NULL | -- | GitHub account numeric ID |
-| account_type | String(50) | NOT NULL | -- | `"User"` or `"Organization"` |
-| repository_selection | String(20) | NOT NULL | -- | `"all"` or `"selected"` |
-| app_slug | String(255) | NOT NULL | -- | GitHub App slug |
-| target_type | String(50) | NOT NULL | -- | `"Organization"` or `"User"` |
-| permissions | JSON | nullable | -- | GitHub App permissions granted |
-| events | JSON | nullable | -- | Subscribed webhook events |
-| suppression_labels | JSON | nullable | `[]` | PR labels that suppress session creation |
-| suspended_at | DateTime(tz) | nullable | -- | When installation was suspended |
-| deleted_at | DateTime(tz) | nullable | -- | Soft-delete timestamp |
-| created_at | DateTime(tz) | NOT NULL | now() | inherited |
-| updated_at | DateTime(tz) | NOT NULL | now() | inherited |
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `github_id` | BigInteger | UNIQUE, NOT NULL, INDEX | GitHub numeric user ID |
+| `github_login` | String(255) | NOT NULL, INDEX | GitHub username |
+| `email` | String(255) | nullable | Email address |
+| `avatar_url` | String(512) | nullable | GitHub avatar URL |
+| `github_access_token_enc` | String(512) | NOT NULL | Fernet-encrypted GitHub OAuth token |
 
-**Relationships:** `byok_config` -- one-to-one with `BYOKConfig`
+### `installations`
 
----
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `github_installation_id` | BigInteger | UNIQUE, NOT NULL, INDEX | GitHub App installation ID |
+| `account_login` | String(255) | NOT NULL | Account name (user / org) |
+| `account_id` | BigInteger | NOT NULL | GitHub account numeric ID |
+| `account_type` | String(50) | NOT NULL | `"User"` or `"Organization"` |
+| `repository_selection` | String(20) | NOT NULL | `"all"` or `"selected"` |
+| `app_slug` | String(255) | NOT NULL | GitHub App slug |
+| `target_type` | String(50) | NOT NULL | `"Organization"` or `"User"` |
+| `permissions` | JSON | nullable | GitHub App permissions granted |
+| `events` | JSON | nullable | Subscribed webhook events |
+| `suppression_labels` | JSON | nullable (default `[]`) | PR labels that suppress session creation |
+| `post_results_to_pr` | Boolean | NOT NULL, default `false` | Whether session score cards are posted as PR comments |
+| `suspended_at` | DateTime(tz) | nullable | When the installation was suspended |
+| `deleted_at` | DateTime(tz) | nullable | Soft-delete timestamp |
 
-### byok_configs
+Relationships: `byok_config` — one-to-one with `byok_configs`.
 
-Stores encrypted Claude credentials per installation.
+### `byok_configs`
 
-| Column | Type | Constraints | Default | Description |
-|--------|------|-------------|---------|-------------|
-| id | UUID | PK | uuid4() | inherited |
-| installation_id | UUID | FK(installations.id), UNIQUE, NOT NULL, INDEX | -- | Parent installation |
-| encrypted_api_key | String(1024) | NOT NULL | -- | Fernet-encrypted credentials |
-| key_status | String(20) | NOT NULL | `"valid"` | Validation status |
-| validated_at | DateTime(tz) | nullable | -- | Last validation timestamp |
-| key_hint | String(20) | nullable | -- | Last 4 chars hint (`"...xxxx"`) |
-| created_at | DateTime(tz) | NOT NULL | now() | inherited |
-| updated_at | DateTime(tz) | NOT NULL | now() | inherited |
+Fernet-encrypted Claude credentials per installation.
 
----
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `installation_id` | UUID | FK(installations.id), UNIQUE, NOT NULL, INDEX | Parent installation |
+| `encrypted_api_key` | String(1024) | NOT NULL | Fernet-encrypted credentials |
+| `key_status` | String(20) | default `"valid"` | Validation status |
+| `validated_at` | DateTime(tz) | nullable | Last validation timestamp |
+| `key_hint` | String(20) | nullable | Last-4 hint (`"...xxxx"`) |
 
-### webhook_events
+### `webhook_events`
 
-| Column | Type | Constraints | Default | Description |
-|--------|------|-------------|---------|-------------|
-| id | UUID | PK | uuid4() | inherited |
-| delivery_id | String(64) | UNIQUE, NOT NULL, INDEX | -- | `X-GitHub-Delivery` header |
-| event_type | String(50) | NOT NULL, INDEX | -- | `X-GitHub-Event` header value |
-| action | String(50) | nullable | -- | Payload `action` field |
-| github_installation_id | BigInteger | nullable, INDEX | -- | Extracted installation ID |
-| payload | JSONB | NOT NULL | -- | Raw webhook JSON payload |
-| status | String(20) | NOT NULL, INDEX | `"pending"` | `pending` / `processing` / `processed` / `failed` / `ignored` / `abandoned` |
-| retry_count | Integer | NOT NULL | `0` | Number of processing attempts |
-| error_message | Text | nullable | -- | Last error message |
-| processed_at | DateTime(tz) | nullable | -- | When processing completed |
-| created_at | DateTime(tz) | NOT NULL | now() | inherited |
-| updated_at | DateTime(tz) | NOT NULL | now() | inherited |
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `delivery_id` | String(64) | UNIQUE, NOT NULL, INDEX | `X-GitHub-Delivery` header |
+| `event_type` | String(50) | NOT NULL, INDEX | `X-GitHub-Event` header value |
+| `action` | String(50) | nullable | Payload `action` field |
+| `github_installation_id` | BigInteger | nullable, INDEX | Extracted installation ID |
+| `payload` | JSONB | NOT NULL | Raw webhook JSON payload |
+| `status` | String(20) | NOT NULL, default `"pending"`, INDEX | `pending` / `processing` / `processed` / `failed` / `ignored` / `abandoned` |
+| `retry_count` | Integer | NOT NULL, default `0` | Processing attempts |
+| `error_message` | Text | nullable | Last error message |
+| `processed_at` | DateTime(tz) | nullable | Processing completion time |
 
-**Status machine:** `pending` -> `processing` -> `processed` | `ignored` | `failed` -> (after 5 retries) `abandoned`
+Status machine: `pending → processing → processed | ignored | failed`, with `failed` eventually moving to `abandoned` after 5 retries.
 
----
+### `container_sessions`
 
-### container_sessions
+Ephemeral Docker sessions running a skill against a PR.
 
-Tracks ephemeral Docker containers running skills against PRs.
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `installation_id` | UUID | FK(installations.id), NOT NULL, INDEX | Parent installation |
+| `user_id` | UUID | FK(github_users.id), nullable, INDEX | User who triggered the session |
+| `pr_number` | Integer | NOT NULL | Pull request number |
+| `repo_full_name` | String(255) | NOT NULL, INDEX | `"owner/repo"` |
+| `skill_name` | String(100) | NOT NULL | Skill executed (e.g. `challenge-me`) |
+| `container_id` | String(128) | nullable | Docker container ID (set when running) |
+| `status` | Enum `ContainerStatus` (`container_status`, 20 chars) | NOT NULL, INDEX, default `pending` | `pending` / `running` / `completed` / `failed` / `timeout` |
+| `started_at` | DateTime(tz) | nullable | Container start time |
+| `completed_at` | DateTime(tz) | nullable | Container end time |
+| `scorecard` | JSONB | nullable | Parsed `helprs-scorecard` JSON (set on completion for `challenge-me`) |
+| `xp_earned` | Integer | nullable | XP extracted from the score card |
 
-| Column | Type | Constraints | Default | Description |
-|--------|------|-------------|---------|-------------|
-| id | UUID | PK | uuid4() | inherited |
-| installation_id | UUID | FK(installations.id), NOT NULL, INDEX | -- | Parent installation |
-| user_id | UUID | FK(github_users.id), nullable, INDEX | -- | User who triggered the session |
-| pr_number | Integer | NOT NULL | -- | Pull request number |
-| repo_full_name | String(255) | NOT NULL, INDEX | -- | Repository in `owner/repo` format |
-| skill_name | String(100) | NOT NULL | -- | Skill executed (e.g. `challenge-me`) |
-| container_id | String(128) | nullable | -- | Docker container ID (set when running) |
-| status | Enum(ContainerStatus) | NOT NULL, INDEX | `"pending"` | `pending` / `running` / `completed` / `failed` / `timeout` |
-| started_at | DateTime(tz) | nullable | -- | When container started |
-| completed_at | DateTime(tz) | nullable | -- | When container finished |
-| created_at | DateTime(tz) | NOT NULL | now() | inherited |
-| updated_at | DateTime(tz) | NOT NULL | now() | inherited |
+### `session_events`
 
-**Status enum:** `ContainerStatus` -- `pending`, `running`, `completed`, `failed`, `timeout`
+Raw stream-json events persisted from a live session, for replay.
 
----
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `session_id` | UUID | FK(container_sessions.id, ON DELETE CASCADE), NOT NULL, INDEX | Parent session |
+| `event_id` | Integer | NOT NULL, UNIQUE together with `session_id` | Monotonic event index within the session |
+| `data` | JSONB | NOT NULL | Raw stream-json event (`assistant`, `system`, `user`, `result`) |
 
-## Entity Relationship Diagram
+Events are batch-written during SSE streaming via `stream_and_persist()` and read back by `GET /api/v1/containers/sessions/{id}/events`.
+
+## Entity relationships
 
 ```
-github_users --------+
-                     |
-                     | (user_id FK, nullable)
-                     v
-installations --1:1-- byok_configs
-      |
-      | (installation_id FK)
-      +-----> webhook_events (via github_installation_id, no FK)
-      |
-      +-----> container_sessions
+github_users
+   │
+   │ (user_id, nullable)
+   v
+installations ──1:1── byok_configs
+   │
+   │ (installation_id FK)
+   ├──── webhook_events  (via github_installation_id — no FK)
+   │
+   └──── container_sessions ──1:N── session_events
 ```
 
----
+## Pydantic schemas
 
-## Pydantic Schemas
+Schemas are grouped by module. Field validators (e.g. `api_key` must start with `sk-ant-`, `labels` de-duplication, `repo_full_name` format) live next to each schema — see the source files for exact rules.
 
-### Identity Module
+### Identity (`modules/identity/schemas.py`)
 
-#### UserResponse
+- `UserResponse` — `{ id, github_id, github_login, email, avatar_url, created_at }`.
+- `TokenResponse` — `{ access_token, token_type }` (default `"bearer"`).
+- `DailyCount` — `{ date, count }`.
+- `StatusTotals` — `{ completed, failed, timeout, total }`.
+- `UserStatsResponse` — `{ daily_counts: DailyCount[], totals: StatusTotals }`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| id | UUID | User ID |
-| github_id | int | GitHub numeric ID |
-| github_login | str | GitHub username |
-| email | str \| None | Email |
-| avatar_url | str \| None | Avatar URL |
-| created_at | datetime | Created timestamp |
+### Installation (`modules/installation/schemas.py`)
 
-#### TokenResponse
+- `BYOKConfigureRequest` — `{ api_key }` (must start with `sk-ant-`, length ≥ 20).
+- `BYOKConfigResponse` — `{ key_hint, key_status, validated_at }`.
+- `SuppressionLabelsRequest` — `{ labels: string[] }` (≤ 20 items, alphanumeric + `-`, length ≤ 50).
+- `SuppressionLabelsResponse` — `{ labels }`.
+- `PostResultsSettingRequest` / `PostResultsSettingResponse` — `{ post_results_to_pr: boolean }`.
+- `InstallationResponse` — full installation snapshot including BYOK status, `session_count`, `post_results_to_pr`, `suppression_labels`.
+- `InstallationDetailResponse` — same shape as `InstallationResponse`.
+- `InstallationListResponse` — `{ items: InstallationResponse[], total }`.
+- `SessionSummaryResponse` — `{ id, pr_number, repo_full_name, skill_name, status, started_at, completed_at, created_at }`.
+- `PaginatedSessionsResponse` — `{ items: SessionSummaryResponse[], total, page, per_page, total_pages }`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| access_token | str | JWT access token |
-| token_type | str | `"bearer"` |
+### Container (`modules/container/schemas.py`)
 
-### Installation Module
+- `CreateSessionRequest` — `{ installation_id: int, pr_number: int ≥ 1, repo_full_name: "owner/repo", skill_name }`.
+- `ContainerSessionResponse` — full session snapshot including `scorecard` and `xp_earned`.
+- `SendMessageRequest` — `{ content }` (non-empty).
+- `SendMessageResponse` — `{ session_id, status, message }`.
+- `StopSessionResponse` — `{ id, status, message }`.
+- `SessionEventResponse` — `{ event_id, data, created_at }`.
+- `SessionEventsListResponse` — `{ session_id, events: SessionEventResponse[], total }`.
+- `ScorecardResponse` — `{ session_id, scorecard, xp_earned }`.
 
-#### BYOKConfigureRequest
+## Migrations
 
-| Field | Type | Validation | Description |
-|-------|------|------------|-------------|
-| api_key | str | Min 20 chars | Claude credentials |
+Migrations live in `apps/api/alembic/versions/`. Use `alembic history` / `alembic current` to inspect the live state rather than maintaining a hand-written list here. The pre-pivot migration files (`sessions`, `questions`, `answers`, `scores`, `reports`, `feedback`) are still on disk but their corresponding code has been removed since the container pivot — a future squash migration will clean them up.
 
-#### BYOKConfigResponse
+Create a new migration:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| key_hint | str | Last 4 chars |
-| key_status | str | Status |
-| validated_at | datetime \| None | Validation time |
-
-#### InstallationResponse
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | UUID | Internal ID |
-| github_installation_id | int | GitHub installation ID |
-| account_login | str | Account name |
-| account_type | str | User or Organization |
-| repository_selection | str | all or selected |
-| suspended_at | datetime \| None | Suspension time |
-| created_at | datetime | Creation time |
-| byok_configured | bool | BYOK status |
-| byok_key_hint | str \| None | Key hint |
-| byok_key_status | str \| None | Key status |
-| byok_validated_at | datetime \| None | Validation time |
-| suppression_labels | list[str] | Labels |
-
-### Container Module
-
-#### CreateSessionRequest
-
-| Field | Type | Validation | Description |
-|-------|------|------------|-------------|
-| installation_id | UUID | Required | Parent installation |
-| pr_number | int | >= 1 | Pull request number |
-| repo_full_name | str | `owner/repo` format | Target repository |
-| skill_name | str | Alphanumeric + hyphens/underscores | Skill to execute |
-
-#### ContainerSessionResponse
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | UUID | Session ID |
-| installation_id | UUID | Parent installation |
-| user_id | UUID \| None | Triggering user |
-| pr_number | int | PR number |
-| repo_full_name | str | Repository |
-| skill_name | str | Skill name |
-| container_id | str \| None | Docker container ID |
-| status | str | Current status |
-| started_at | datetime \| None | Start time |
-| completed_at | datetime \| None | Completion time |
-| created_at | datetime | Created |
-| updated_at | datetime | Updated |
-
-#### StopSessionResponse
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | UUID | Session ID |
-| status | str | Final status |
-| message | str | Result message |
-
----
-
-## Migration History
-
-| Revision | Description |
-|----------|-------------|
-| `f91a5f49775b` | Add `github_users` table |
-| `bcc0b5382ffd` | Add `installations` table |
-| `792dfdfd0924` | Add `byok_configs` table + `suppression_labels` column |
-| `98dc1b6e754e` | Add `webhook_events` table |
-| `9036c7377667` | Add `sessions` table (pre-pivot, comprehension) |
-| `a1b2c3d4e5f6` | Add `questions` table (pre-pivot, comprehension) |
-| `b2c3d4e5f6a7` | Add `answers` table (pre-pivot, comprehension) |
-| `c3d4e5f6a7b8` | Add `scores` table (pre-pivot, comprehension) |
-| `d4e5f6a7b8c9` | Add `question_reports` and `session_feedback` tables (pre-pivot, comprehension) |
-| `e5f6a7b8c9d0` | Add `container_sessions` table |
-
-Note: migrations `9036c7377667` through `d4e5f6a7b8c9` create pre-pivot comprehension tables (`sessions`, `questions`, `answers`, `scores`, `question_reports`, `session_feedback`). The corresponding backend code has been removed but the migration files remain in the alembic history. A future squash migration should clean these up.
+```bash
+cd apps/api
+uv run alembic revision --autogenerate -m "description"
+uv run alembic upgrade head
+```

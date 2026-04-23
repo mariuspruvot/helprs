@@ -1,7 +1,5 @@
 # Development Guide
 
-> Auto-generated on 2026-04-17 (post-pivot rewrite)
-
 ## Prerequisites
 
 | Tool | Version | Purpose |
@@ -16,33 +14,30 @@
 ## Quick Start
 
 ```bash
-# Clone and start all services
 git clone <repo-url> && cd helprs
-cp .env.example .env  # Configure required env vars
+cp .env.example .env  # Fill in GITHUB_APP_* and secrets
 docker compose up --build
 # API at http://localhost:8000, Web at http://localhost:5173
 ```
 
+The first run creates the `helprs` database. Tests need a separate `helprs_test` DB (see [Testing](#testing) below).
+
 ## Environment Variables
 
-Required in `.env` at repo root:
+All variables are documented in `.env.example` with generation instructions. The critical ones for local dev:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DATABASE_URL` | Postgres connection string | `postgresql+asyncpg://helprs:helprs@localhost:5432/helprs` |
-| `SECRET_KEY` | JWT signing secret | `your-secret-key` |
-| `GITHUB_APP_ID` | GitHub App numeric ID | `123456` |
-| `GITHUB_WEBHOOK_SECRET` | Webhook HMAC secret | `webhook-secret` |
-| `FERNET_KEY` | Encryption key for stored credentials | `base64-encoded-key` |
-| `GITHUB_APP_PRIVATE_KEY` | RSA private key (via `docker-compose.override.yml`) | PEM format |
-| `FRONTEND_URL` | Frontend origin for CORS/redirects | `http://localhost:5173` |
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | Postgres connection string (default works with docker compose) |
+| `SECRET_KEY` | JWT signing secret (generate with `secrets.token_urlsafe(48)`) |
+| `FERNET_KEY` | Encryption key for stored credentials (`Fernet.generate_key()`) |
+| `GITHUB_APP_ID`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_PRIVATE_KEY` | GitHub App credentials |
+| `VITE_API_URL` | API base URL seen by the frontend (build-time) |
+| `VITE_GITHUB_APP_SLUG` | GitHub App slug used to build the "Install app" link (build-time) |
+| `APP_BASE_URL` | Public URL of the frontend (used by backend for PR comments) |
+| `CORS_ORIGINS` | JSON array of allowed CORS origins |
 
-Frontend (Vite):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VITE_API_URL` | `http://localhost:8000` | API base URL |
-| `VITE_GITHUB_APP_SLUG` | `helprs` | GitHub App slug for install links |
+Production-only additions: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `DOCKER_GID`, `SKILLS_HOST_PATH`, `CONTAINER_TTL_SECONDS`, `UVICORN_WORKERS`. See [self-hosting.md](self-hosting.md) and [deploy-coolify.md](deploy-coolify.md).
 
 ## Local Development (without Docker)
 
@@ -50,8 +45,8 @@ Frontend (Vite):
 
 ```bash
 cd apps/api
-uv sync                              # Install dependencies
-uv run alembic upgrade head           # Run migrations
+uv sync                                  # Install dependencies
+uv run alembic upgrade head              # Run migrations
 uv run uvicorn helprs.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -59,19 +54,20 @@ uv run uvicorn helprs.main:app --host 0.0.0.0 --port 8000 --reload
 
 ```bash
 cd apps/web
-npm ci                                # Install dependencies
-npx vite --host 0.0.0.0 --port 5173  # Start dev server
+npm ci                                    # Install dependencies
+npx vite --host 0.0.0.0 --port 5173      # Start dev server
 ```
 
 ## Makefile Targets
 
-| Target | Command | Description |
-|--------|---------|-------------|
-| `make dev` | `docker compose up --build` | Start all services |
-| `make lint` | ruff check/format + eslint | Run all linters |
-| `make test` | pytest + vitest | Run all test suites |
-| `make build` | prod docker-compose build | Build production images |
-| `make migrate` | `alembic upgrade head` | Run DB migrations |
+| Target | Description |
+|--------|-------------|
+| `make dev` | `docker compose up --build` |
+| `make lint` | ruff check/format + mypy (non-strict) + eslint |
+| `make typecheck` | mypy only (API) |
+| `make test` | pytest + vitest |
+| `make build` | Build production images via `infra/coolify/docker-compose.prod.yml` |
+| `make migrate` | `alembic upgrade head` inside the API container |
 
 ## Testing
 
@@ -79,96 +75,84 @@ npx vite --host 0.0.0.0 --port 5173  # Start dev server
 
 ```bash
 cd apps/api
-uv run pytest                         # All tests
-uv run pytest tests/modules/webhook/  # Single module
-uv run pytest -k "test_name"          # By name pattern
+uv run pytest                            # All tests
+uv run pytest tests/modules/webhook/     # Single module
+uv run pytest -k "test_name"             # By name pattern
 ```
 
-- Uses `AsyncClient` + `ASGITransport` (no real server needed)
-- `asyncio_mode = "auto"` -- no `@pytest.mark.asyncio` needed
-- `conftest.py` sets env vars **before** any app imports (order matters)
-- CI runs against real Postgres service container
+- Uses `AsyncClient` + `ASGITransport` (no real server needed).
+- `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` decorators needed.
+- `conftest.py` sets env vars **before** any app imports — order matters.
+- The test DB (`helprs_test`) must exist: `docker exec helprs-db-1 psql -U helprs -c "CREATE DATABASE helprs_test;"`.
 
 ### Frontend (vitest)
 
 ```bash
 cd apps/web
-npx vitest run                        # All tests (single run)
-npx vitest                            # Watch mode
-npx vitest run src/features/session/  # Single module
+npx vitest run                           # All tests (single run)
+npx vitest                               # Watch mode
+npx vitest run src/features/session/     # Single module
 ```
 
-- Uses `jsdom` environment
-- `@testing-library/react` for component tests
+- Uses `jsdom`, `@testing-library/react`.
+- Session-rendering tests must mock `./shiki` to avoid loading real TextMate grammars.
 
 ## Code Style
 
-### Python (ruff)
+### Python (ruff + mypy)
 
-- Line length: 120
-- Target: Python 3.12
-- Rules: `E, F, I, N, UP, B, A, SIM, TCH`
-- Auto-format: `uv run ruff format src/ tests/`
-- Check: `uv run ruff check src/ tests/`
+- `line-length = 120`, target Python 3.12.
+- Rules: `E, F, I, N, UP, B, A, SIM, TCH`.
+- mypy is **non-strict** with the pydantic plugin; per-module overrides in `apps/api/pyproject.toml`.
+- Format / check:
+  ```bash
+  uv run ruff format src/ tests/
+  uv run ruff check src/ tests/
+  ```
 
 ### TypeScript (eslint)
 
-- Strict mode enabled
-- `noUnusedLocals`, `noUnusedParameters`
-- Check: `npx eslint src/`
+- Strict mode, `noUnusedLocals`, `noUnusedParameters`.
+- `npx eslint src/`.
 
 ## Database Migrations
 
 ```bash
-# Create new migration
 cd apps/api
-uv run alembic revision --autogenerate -m "description"
-
-# Apply migrations
-uv run alembic upgrade head
-
-# Rollback one step
-uv run alembic downgrade -1
+uv run alembic revision --autogenerate -m "description"  # Create
+uv run alembic upgrade head                               # Apply
+uv run alembic downgrade -1                               # Rollback one
 ```
 
-## Project Architecture Patterns
+## Architecture Patterns
 
-### Backend
+See [architecture.md](architecture.md) for the full picture. Quick reference:
 
-- **App factory**: `helprs.main:create_app()` -- lifespan manages DB engine
-- **Flat modules** (identity, installation, webhook): `router.py`, `service.py`, `models.py`, `schemas.py`
-- **Container module** (new): orchestrates ephemeral Docker containers for skill execution
-- **API prefix**: All routes under `/api/v1`
-- **Admin panel**: SQLAdmin at `/admin`
+**Backend**
 
-### Frontend
+- App factory: `helprs.main:create_app()` — lifespan manages the DB engine.
+- Flat modules under `apps/api/src/helprs/modules/`: `router.py`, `service.py`, `models.py`, `schemas.py`.
+- Modules: `identity`, `installation`, `webhook`, `container`.
+- API prefix `/api/v1`. Admin panel at `/admin` (SQLAdmin).
 
-- **Feature-based**: `features/{auth,landing,dashboard,installation,session}`
-- **Shared infrastructure**: `shared/{api,components,hooks,theme,types,utils}`
-- **State**: Zustand (auth + session stores) + React Query (session data)
-- **Routing**: react-router v7 with `ProtectedRoute` -> `AppShell` wrapper
-- **Responsive**: SplitLayout (desktop) / TabbedLayout (tablet) / MobileLayout (mobile)
+**Frontend**
+
+- Feature-based: `features/{auth, dashboard, installation, session, demo}`.
+- Shared under `shared/{api, components}`.
+- State: Zustand (auth store) + React Query (server state).
+- Routing: `react-router` v7 with `ProtectedRoute` → `AppShell` wrapper.
+- See [component-inventory-web.md](component-inventory-web.md).
 
 ## Skill Development
 
-Skills are self-contained agent definitions in the `skills/` directory. Each skill folder is mounted into the ephemeral claude-runner container as a volume. Claude Code discovers and executes them natively.
+Skills are self-contained agent definitions under `skills/`, mounted read-only into the runner container. The repo ships with five built-in skills: `challenge-me`, `eli5`, `hot-seat`, `pair-debug`, `test-me`.
 
-```
-skills/
-+-- challenge-me/     # Socratic quiz on PR changes
-+-- code-review/      # Multi-layer adversarial code review
-+-- security-audit/   # Vulnerability scan on the diff
-+-- doc-generator/    # Generate/update impacted documentation
-+-- test-suggester/   # Propose missing test cases
-```
-
-Skill structure and development guidelines: *Coming in Phase 2.*
+To write a new skill, follow [`skills/SKILL_SPEC.md`](../skills/SKILL_SPEC.md) and the walkthrough in [creating-skills.md](creating-skills.md).
 
 ## Gotchas
 
-- **Test conftest order**: `conftest.py` MUST set env vars before importing from `helprs.*`
-- **RSA key in override**: `docker-compose.override.yml` contains the GitHub App private key as YAML block scalar (docker-compose can't do multi-line `.env` values)
-- **Zombie Service Workers**: If SSE fails with `NS_ERROR_INTERCEPTION_FAILED` on localhost:5173, unregister stale Workbox SW in DevTools
-- **Nginx in prod**: Serves only static files, no API proxy -- Coolify/external reverse proxy handles `/api/*` routing
-- **Always lint before pushing**: `make lint` must pass (ruff + eslint)
-- **Docker socket**: For local container module development, the API process needs access to the Docker socket
+- **Test conftest order**: env vars must be set before any `from helprs.*` import.
+- **GitHub App private key**: multi-line PEM; store as raw PEM in Coolify env vars (not base64). Locally, use `docker-compose.override.yml` with a YAML block scalar if `.env` truncation is an issue.
+- **Stale Service Workers**: if SSE fails on `localhost:5173` with `NS_ERROR_INTERCEPTION_FAILED`, unregister the worker in DevTools.
+- **Docker socket**: local container-module work requires the API process to see `/var/run/docker.sock`.
+- **Always run `make lint` before pushing** — ruff + mypy + eslint must pass.
