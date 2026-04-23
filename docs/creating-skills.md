@@ -228,20 +228,6 @@ Or test via the full helPRs stack:
 
 ---
 
-## Optional Files
-
-Skills can include additional files referenced from `CLAUDE.md`:
-
-| File | Purpose |
-|------|---------|
-| `examples/` | Example inputs/outputs for testing |
-| `scoring.md` | Detailed scoring rubric |
-| `context.md` | Additional domain context |
-
-These must be explicitly referenced in `CLAUDE.md` -- Claude Code will not discover them automatically.
-
----
-
 ## Output Conventions
 
 For `sse_stream` skills, the frontend parses known patterns from the streamed output:

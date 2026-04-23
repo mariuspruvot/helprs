@@ -58,6 +58,10 @@ Skills are pluggable Claude Code agent definitions. Each skill is a self-contain
 | Skill | Description | Duration |
 |-------|-------------|----------|
 | **[challenge-me](skills/challenge-me/)** | Socratic comprehension quiz -- probes whether the PR author truly understands their own changes. Generates 3-5 targeted questions, evaluates answers, and produces a score card. | 5-10 min |
+| **[eli5](skills/eli5/)** | Explain Like I'm 5 -- can you vulgarize your own code? | 5-8 min |
+| **[hot-seat](skills/hot-seat/)** | Architecture Hot Seat -- defend your design choices under pressure. | 5-10 min |
+| **[pair-debug](skills/pair-debug/)** | Pair Debug -- find the subtle bug Claude injected into your code. | 5-12 min |
+| **[test-me](skills/test-me/)** | Test Me -- predict whether test cases pass or fail on your code. | 5-8 min |
 
 Want to create your own? See [Creating Skills](docs/creating-skills.md).
 
