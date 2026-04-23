@@ -1,0 +1,84 @@
+# Config for the repo-hygiene subagent.
+# Used by .claude/agents/repo-hygiene.md to audit dead code, orphan files,
+# and stale docs. Dry-run by default — invoke with "apply" to open a PR.
+version: 1
+
+# Files matching these globs are never flagged as dead code or orphan files.
+# Paths are relative to the repo root.
+allowlist:
+  # Python convention-loaded (discovered at runtime, not imported by name)
+  - "apps/api/alembic/versions/*.py"
+  - "apps/api/alembic/env.py"
+  - "apps/api/src/helprs/modules/*/router.py"
+  - "apps/api/src/helprs/modules/*/schemas.py"
+  - "apps/api/src/helprs/modules/**/__init__.py"
+  - "apps/api/src/helprs/admin/views.py"
+  - "apps/api/src/helprs/core/config.py"
+  - "apps/api/src/helprs/core/security.py"
+  - "apps/api/src/helprs/core/middleware.py"
+  - "apps/api/src/helprs/core/database.py"
+  - "apps/api/src/helprs/main.py"
+  - "apps/api/tests/**/conftest.py"
+  # TS entry points and shared public API surfaces
+  - "apps/web/index.html"
+  - "apps/web/src/main.tsx"
+  - "apps/web/src/vite-env.d.ts"
+  - "apps/web/src/index.css"
+  - "apps/web/src/app.tsx"
+  - "apps/web/src/shared/components/index.ts"
+  - "apps/web/src/shared/api/client.ts"
+  - "apps/web/src/features/dashboard/dashboardApi.ts"
+  - "apps/web/src/features/session/containerApi.ts"
+  - "apps/web/src/features/auth/store.ts"
+  - "apps/web/public/**"
+  - "apps/web/**/*.test.tsx"
+  - "apps/web/vite.config.ts"
+  # Skills are mounted as volumes at runtime, never imported
+  - "skills/**"
+
+vulture:
+  paths: ["src", "tests"]           # run from apps/api
+  min_confidence: 80
+  exclude: ["alembic"]
+  ignore_names:
+    - "model_config"
+    - "ConfigDict"
+    - "lifespan"
+    - "validate_*"
+    - "_run_webhook_reaper"
+    - "_run_container_cleanup"
+    - "_replay_pending_webhook_events"
+  ignore_decorators:
+    - "@field_validator"
+    - "@model_validator"
+    - "@pytest.fixture"
+    - "@app.middleware"
+    - "@router.*"
+
+knip:
+  # Knip's config lives here. The agent invokes knip via a small stub
+  # (apps/web/knip.json is intentionally absent — single source of truth).
+  entry:
+    - "index.html"
+    - "src/main.tsx"
+    - "vite.config.ts"
+    - "**/*.test.tsx"
+  project: ["src/**/*.{ts,tsx}"]
+  ignore: ["dist/**", "node_modules/**"]
+
+docs_audit:
+  scan: ["CLAUDE.md", "README.md", "CONTRIBUTING.md", "docs/**/*.md"]
+  exclude: ["docs/backlog.md", "docs/.archive/**"]
+  reference_patterns:
+    file_paths: '(?:apps|infra|skills|docs|scripts)/[A-Za-z0-9._/*-]+'
+    symbols:    '`([A-Z_][A-Za-z0-9_]*)`'
+    env_vars:   '`([A-Z][A-Z0-9_]{2,})`'
+    make_cmds:  '`make ([a-z-]+)`'
+    cli_cmds:   '`(uv run [^`]+|npx [^`]+|docker compose [^`]+)`'
+
+apply_mode:
+  branch_prefix: "hygiene/"
+  base_branch: "main"
+  commit_subject: "feat(hygiene): "
+  require_confirmation: true
+  max_delete_confidence: 90

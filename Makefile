@@ -1,4 +1,4 @@
-.PHONY: dev lint test build build-runner migrate types typecheck
+.PHONY: dev lint test build build-runner migrate types typecheck hygiene
 
 dev:
 	docker compose up --build
@@ -33,3 +33,7 @@ migrate:
 
 types:
 	@echo "OpenAPI → TypeScript type generation (configured in future story)"
+
+hygiene:
+	@echo "Run the repo-hygiene subagent via Claude Code (e.g. 'audit dead code in the repo')."
+	@echo "Config: .repo-hygiene.yml  •  Agent: .claude/agents/repo-hygiene.md"
