@@ -153,6 +153,14 @@ html, body, #root {
   50% { opacity: 0.3; }
 }
 
+/* Terminal cursor blink */
+@keyframes cursor-blink {
+  50% { opacity: 0; }
+}
+.animate-cursor {
+  animation: cursor-blink 1.1s steps(2, end) infinite;
+}
+
 /* Overline letter-spacing */
 .overline {
   font-family: var(--font-family-mono);
