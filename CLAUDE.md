@@ -21,7 +21,7 @@ apps/api/          — FastAPI backend (Python 3.12, uv)
   tests/           — mirrors modules/ structure
   alembic/         — DB migrations
 apps/web/          — React frontend (Vite, TypeScript)
-  src/features/    — feature modules: auth, dashboard, landing, installation, session
+  src/features/    — feature modules: auth, dashboard, installation, session
   src/shared/      — API client (shared/api/client.ts)
 skills/            — Claude Code skill definitions (mounted into ephemeral containers)
 infra/
