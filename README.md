@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mariuspruvot/helprs/actions/workflows/ci.yml/badge.svg)](https://github.com/mariuspruvot/helprs/actions/workflows/ci.yml)
 
-**Pluggable AI skill runner for pull requests.**
+**Pluggable AI skill runner for pull requests.** BYOK, zero API cost.
 
 helPRs spins up ephemeral Docker containers running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to execute skills against your PRs -- comprehension quizzes, code reviews, security audits -- and streams results back in real time.
 
