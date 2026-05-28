@@ -53,3 +53,8 @@ apps/api/alembic/versions/*.pyc
 _bmad/
 _bmad-output/
 .claude/
+
+# Internal redesign artifacts & dev-only scratchpads (kept locally, not in public repo)
+redisign/
+docs/frontend-redesign.md
+scripts/qa-frontend-agent.md
