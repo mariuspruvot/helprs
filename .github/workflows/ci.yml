@@ -45,6 +45,8 @@ jobs:
       - run: uv sync --frozen
       - run: uv run pytest --cov=helprs --cov-report=term-missing --cov-fail-under=70
         env:
+          # Test-only values. The ephemeral CI database is destroyed after each run
+          # and nothing it encrypts ever leaves the job. Do not reuse anywhere else.
           DATABASE_URL: postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test
           SECRET_KEY: ci-test-secret-key
           FERNET_KEY: "-fB7lL74GHGbXnRClRQTaBP9_flqSUHFC9_c2n3Tvbo="

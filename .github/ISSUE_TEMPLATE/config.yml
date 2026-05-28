@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mariuspruvot/helprs/security/advisories/new
+    about: Please report security issues privately, not as a public issue. See SECURITY.md.
+  - name: Self-hosting question
+    url: https://github.com/mariuspruvot/helprs/blob/main/docs/self-hosting.md
+    about: Most setup questions are answered in the self-hosting guide.
