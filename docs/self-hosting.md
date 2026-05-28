@@ -11,6 +11,20 @@ Deploy helPRs from zero to a running instance. By the end you'll have helPRs con
 - A **Claude account** -- you'll generate an OAuth token with `claude setup-token` (or use an Anthropic API key)
 - A server with a public URL if you want GitHub webhooks (or use a tunnel like ngrok for local dev)
 
+### Hardware
+
+helPRs itself is lightweight (API + web + Postgres). The real footprint comes from the ephemeral `claude-runner` containers it spawns per session -- each one runs Node + Claude Code CLI, clones the target repo, and holds it in memory for the duration of the skill (typically 5-15 min).
+
+| Profile | vCPU | RAM | Disk | Concurrency |
+|---------|------|-----|------|-------------|
+| **Minimum** (try it out, 1 user, 1 session at a time) | 2 | 2 GB | 10 GB | 1 |
+| **Recommended** (small team, a few concurrent sessions) | 2-4 | 4 GB | 20 GB | 3-5 |
+| **Comfortable** (larger team, many parallel PRs) | 4-8 | 8 GB+ | 40 GB+ | 10+ |
+
+Each running `claude-runner` container peaks around 300-600 MB RSS and one core. Plan ~1 GB of RAM headroom per concurrent session you expect, on top of the base ~1 GB used by the API + Postgres + web. Disk usage grows with the size of the repos cloned at runtime (shallow clones, so it's small; cleaned up on container exit).
+
+Runners are killed after `CONTAINER_TTL_SECONDS` (default 15 min). Lower it if your host is tight on RAM.
+
 ---
 
 ## Step 1: Create a GitHub App

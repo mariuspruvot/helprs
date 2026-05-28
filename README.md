@@ -1,12 +1,18 @@
 # helPRs
 
 [![CI](https://github.com/mariuspruvot/helprs/actions/workflows/ci.yml/badge.svg)](https://github.com/mariuspruvot/helprs/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
 **Pluggable AI skill runner for pull requests.**
 
 helPRs spins up ephemeral Docker containers running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to execute skills against your PRs -- comprehension quizzes, code reviews, security audits -- and streams results back in real time.
 
-BYOK (Bring Your Own Key): you provide your Claude credentials once. The backend never calls the Claude API -- containers use your credentials natively.
+BYOK (Bring Your Own Key): you provide your Claude credentials once. The backend never calls the Claude API -- containers use your credentials natively. Costs are billed to your Claude subscription (or Anthropic API account if you use an API key instead).
+
+## Status
+
+helPRs is **alpha**. The architecture is stable, the core flows work end-to-end, but the API and skill spec may still break between releases. Self-hosting is supported and documented -- see the [self-hosting guide](docs/self-hosting.md) for hardware requirements and step-by-step setup.
 
 ---
 
@@ -108,6 +114,7 @@ For the full picture, see:
 | [Creating Skills](docs/creating-skills.md) | Skill authors | Build custom skills |
 | [Skill Specification](skills/SKILL_SPEC.md) | Skill authors | Formal spec for skill definitions |
 | [Contributing](CONTRIBUTING.md) | Contributors | Dev setup, code style, PR process |
+| [Security policy](SECURITY.md) | Everyone | Reporting vulnerabilities |
 | [ADR-001](docs/adr-001-claude-code-container-pivot.md) | Everyone | Why ephemeral containers |
 
 ---
