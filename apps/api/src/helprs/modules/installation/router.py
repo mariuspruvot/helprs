@@ -1,8 +1,8 @@
 """Installation API routes."""
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Request, Response
 
-from helprs.core.dependencies import DbSession, GetSettings, get_current_user
+from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
 from helprs.modules.installation.schemas import (
@@ -28,6 +28,7 @@ from helprs.modules.installation.service import (
     update_post_results_setting,
     update_suppression_labels,
     verify_admin_permission,
+    verify_installation_access,
 )
 
 router = APIRouter(prefix="/installations", tags=["installations"])
@@ -59,7 +60,7 @@ async def list_installations(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """List installations the current user has access to."""
     installations = await get_installations_for_user(session, user, settings)
@@ -87,13 +88,15 @@ async def get_installation(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Get installation details with BYOK status and suppression labels."""
     installation = await get_installation_by_github_id(session, installation_id)
     if not installation:
         raise NotFoundError("Installation not found")
-    await verify_admin_permission(user, installation, settings)
+    # Read-only: any member who sees the install in the list can open it.
+    # Admin is reserved for the BYOK and settings routes below.
+    await verify_installation_access(user, installation, settings)
     # Eagerly load byok_config
     await session.refresh(installation, ["byok_config"])
     data = _build_installation_response(installation)
@@ -108,7 +111,7 @@ async def post_byok(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Configure BYOK API key for an installation."""
     installation = await get_installation_by_github_id(session, installation_id)
@@ -126,7 +129,7 @@ async def delete_byok(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Remove BYOK API key for an installation."""
     installation = await get_installation_by_github_id(session, installation_id)
@@ -148,7 +151,7 @@ async def put_suppression_labels(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Update suppression labels for an installation."""
     installation = await get_installation_by_github_id(session, installation_id)
@@ -166,7 +169,7 @@ async def list_installation_sessions(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
     page: int = 1,
     per_page: int = 20,
     status: str | None = None,
@@ -175,7 +178,7 @@ async def list_installation_sessions(
     installation = await get_installation_by_github_id(session, installation_id)
     if not installation:
         raise NotFoundError("Installation not found")
-    await verify_admin_permission(user, installation, settings)
+    await verify_installation_access(user, installation, settings)
 
     if per_page > 100:
         per_page = 100
@@ -211,7 +214,7 @@ async def put_post_results_setting(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Enable or disable automatic posting of session results to PRs."""
     installation = await get_installation_by_github_id(session, installation_id)

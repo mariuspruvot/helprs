@@ -1,7 +1,5 @@
 """Integration tests for installation sessions list endpoint."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -13,6 +11,7 @@ from helprs.main import create_app
 from helprs.modules.container.models import ContainerSession, ContainerStatus
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import Installation
+from tests.github_double import serving_github
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
 
@@ -100,20 +99,8 @@ async def authed_client_with_installation(app_with_db):
 
 
 def _mock_github_admin():
-    """Return a context manager that mocks GitHub API for admin permission check."""
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"role": "admin", "state": "active"}
-    mock_response.raise_for_status = MagicMock()
-
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_response
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    return patch(
-        "helprs.modules.installation.service.httpx.AsyncClient",
-        return_value=mock_client,
-    )
+    """Serve the GitHub calls these routes make (org list, org membership)."""
+    return serving_github()
 
 
 class TestListInstallationSessions:

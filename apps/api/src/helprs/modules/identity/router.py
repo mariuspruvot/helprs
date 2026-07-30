@@ -3,10 +3,10 @@
 import secrets
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 
-from helprs.core.dependencies import DbSession, GetSettings, get_current_user
+from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
 from helprs.core.middleware import limiter
 from helprs.modules.identity.schemas import TokenResponse, UserResponse, UserStatsResponse
 from helprs.modules.identity.service import (
@@ -155,7 +155,7 @@ async def get_my_stats(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Return session statistics for the authenticated user."""
     stats = await get_user_stats(session, user, settings)
@@ -166,7 +166,7 @@ async def get_my_stats(
 @limiter.limit("30/minute")
 async def get_me(
     request: Request,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Return the current authenticated user."""
     return user

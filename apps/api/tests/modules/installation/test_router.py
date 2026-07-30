@@ -12,6 +12,7 @@ from helprs.core.security import create_access_token, fernet_encrypt
 from helprs.main import create_app
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import Installation
+from tests.github_double import serving_github
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
 
@@ -123,18 +124,7 @@ class TestGetInstallation:
     async def test_returns_installation_details(self, authed_client_with_installation):
         client, installation = authed_client_with_installation
 
-        # Mock GitHub API for admin permission check
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"role": "admin", "state": "active"}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
+        with serving_github():
             response = await client.get(f"/api/v1/installations/{installation.github_installation_id}")
 
         assert response.status_code == 200
@@ -145,17 +135,7 @@ class TestGetInstallation:
     async def test_includes_post_results_flag(self, authed_client_with_installation):
         client, installation = authed_client_with_installation
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"role": "admin", "state": "active"}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
+        with serving_github():
             response = await client.get(f"/api/v1/installations/{installation.github_installation_id}")
 
         assert response.status_code == 200

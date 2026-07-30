@@ -20,12 +20,10 @@ if not database_url:
 config.set_main_option("sqlalchemy.url", database_url)
 
 # Auto-discover all models so Alembic sees every table for autogenerate
-import helprs.modules  # noqa: E402
-from helprs.core.database import Base  # noqa: E402
+import helprs.modules
+from helprs.core.database import Base
 
-for _, module_name, _ in pkgutil.walk_packages(
-    helprs.modules.__path__, prefix="helprs.modules."
-):
+for _, module_name, _ in pkgutil.walk_packages(helprs.modules.__path__, prefix="helprs.modules."):
     if module_name.endswith(".models"):
         importlib.import_module(module_name)
 

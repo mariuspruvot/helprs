@@ -35,8 +35,25 @@ GITHUB_API_BASE = "https://api.github.com"
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 
-async def get_installation_access_token(installation_id: int, app_jwt: str) -> dict:
-    """Exchange an App JWT for a scoped installation access token."""
+async def get_installation_access_token(
+    installation_id: int,
+    app_jwt: str,
+    *,
+    repositories: list[str] | None = None,
+    permissions: dict[str, str] | None = None,
+) -> dict:
+    """Exchange an App JWT for an installation access token.
+
+    Without ``repositories``/``permissions`` GitHub returns a token carrying
+    every permission the App holds on every repo in the installation. Callers
+    handing the token to a less-trusted consumer must narrow it down.
+    """
+    payload: dict[str, object] = {}
+    if repositories is not None:
+        payload["repositories"] = repositories
+    if permissions is not None:
+        payload["permissions"] = permissions
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -46,6 +63,7 @@ async def get_installation_access_token(installation_id: int, app_jwt: str) -> d
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
+                json=payload or None,
             )
             resp.raise_for_status()
     except httpx.TimeoutException as e:
@@ -53,20 +71,44 @@ async def get_installation_access_token(installation_id: int, app_jwt: str) -> d
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
             raise UnauthorizedError("GitHub App JWT is invalid or expired") from e
+        if e.response.status_code == 422:
+            raise DomainValidationError("Requested repository is not covered by this installation") from e
         raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
     return resp.json()
 
 
-async def mint_installation_token(github_installation_id: int, settings: Settings) -> str:
-    """Mint a scoped GitHub App installation access token.
+async def mint_installation_token(
+    github_installation_id: int,
+    settings: Settings,
+    *,
+    repositories: list[str] | None = None,
+    permissions: dict[str, str] | None = None,
+) -> str:
+    """Mint an installation access token, optionally narrowed to one repo.
 
     Thin orchestrator over ``create_app_jwt`` + ``get_installation_access_token``
     that returns the bare token string — callers building an
     ``Authorization: Bearer ...`` header do not need the metadata envelope.
     """
     app_jwt = create_app_jwt(settings.GITHUB_APP_ID, settings.GITHUB_APP_PRIVATE_KEY)
-    response = await get_installation_access_token(github_installation_id, app_jwt)
+    response = await get_installation_access_token(
+        github_installation_id,
+        app_jwt,
+        repositories=repositories,
+        permissions=permissions,
+    )
     return response["token"]
+
+
+# A runner container executes Claude Code over attacker-controllable PR content
+# with network egress, so its token is narrowed to the single repo under review
+# and to read-only scopes. The API mints its own separate token when it needs
+# to write (posting the result comment).
+RUNNER_TOKEN_PERMISSIONS = {
+    "contents": "read",
+    "metadata": "read",
+    "pull_requests": "read",
+}
 
 
 async def post_pr_comment(
@@ -443,6 +485,46 @@ async def verify_installation_access(user: "GitHubUser", installation: Installat
     if installation.account_login.lower() in user_org_logins:
         return True
     raise ForbiddenError("You do not have access to this installation")
+
+
+async def verify_repo_access(user: "GitHubUser", repo_full_name: str, settings: Settings) -> bool:
+    """Verify the user can read ``owner/repo`` with their own GitHub token.
+
+    Installation-level access is not enough: an installation may cover repos
+    the caller cannot read, and a session clones the repo and streams its diff
+    back to that caller. Asking GitHub with the *user's* token — not the
+    installation token — is what keeps per-repo permissions authoritative.
+
+    Raises ``ForbiddenError`` when the repo is invisible to the user.
+    """
+    try:
+        github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
+    except InvalidToken as e:
+        raise UnauthorizedError("Stored GitHub token is corrupted") from e
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{GITHUB_API_BASE}/repos/{repo_full_name}",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            resp.raise_for_status()
+    except httpx.TimeoutException as e:
+        raise ExternalServiceError("GitHub is temporarily unavailable") from e
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            raise UnauthorizedError("GitHub token is invalid or revoked") from e
+        # GitHub returns 404 (not 403) for repos the token cannot see, so both
+        # mean the same thing here: no access.
+        if e.response.status_code in (403, 404):
+            raise ForbiddenError("You do not have access to this repository") from e
+        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
+
+    return True
 
 
 async def verify_session_access(

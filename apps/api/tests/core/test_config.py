@@ -1,5 +1,7 @@
 """Tests for Settings configuration."""
 
+import base64
+
 import pytest
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
@@ -79,3 +81,72 @@ def test_settings_optional_fields_default_empty(monkeypatch):
 def test_settings_cors_origins_override():
     s = _make_settings(CORS_ORIGINS=["https://helprs.dev", "http://localhost:3000"])
     assert s.CORS_ORIGINS == ["https://helprs.dev", "http://localhost:3000"]
+
+
+PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n"
+
+
+def test_private_key_raw_pem_passes_through():
+    assert PEM.strip() == _make_settings(GITHUB_APP_PRIVATE_KEY=PEM).GITHUB_APP_PRIVATE_KEY
+
+
+def test_private_key_base64_is_decoded():
+    encoded = base64.b64encode(PEM.encode()).decode()
+    assert _make_settings(GITHUB_APP_PRIVATE_KEY=encoded).GITHUB_APP_PRIVATE_KEY == PEM
+
+
+def test_private_key_empty_stays_empty():
+    assert _make_settings(GITHUB_APP_PRIVATE_KEY="").GITHUB_APP_PRIVATE_KEY == ""
+
+
+def test_private_key_garbage_is_rejected():
+    with pytest.raises(ValidationError, match="must be a PEM private key"):
+        _make_settings(GITHUB_APP_PRIVATE_KEY="not base64 and not pem!!")
+
+
+def test_private_key_base64_of_non_pem_is_rejected():
+    encoded = base64.b64encode(b"just some bytes").decode()
+    with pytest.raises(ValidationError, match="is not a PEM private key"):
+        _make_settings(GITHUB_APP_PRIVATE_KEY=encoded)
+
+
+def test_production_requires_secrets():
+    with pytest.raises(ValidationError, match="Production environment requires"):
+        _make_settings(ENVIRONMENT="production")
+
+
+def test_production_accepts_complete_config():
+    s = _make_settings(
+        ENVIRONMENT="production",
+        SECRET_KEY="x" * 32,
+        ADMIN_PASSWORD="admin-password",
+        GITHUB_WEBHOOK_SECRET="webhook-secret",
+        GITHUB_APP_PRIVATE_KEY=PEM,
+        GITHUB_CLIENT_ID="client-id",
+        GITHUB_CLIENT_SECRET="client-secret",
+    )
+    assert s.ENVIRONMENT == "production"
+
+
+def test_production_error_lists_every_missing_secret():
+    """One boot, one complete list — an operator should not fix them one by one."""
+    with pytest.raises(ValidationError) as exc_info:
+        _make_settings(
+            ENVIRONMENT="production",
+            SECRET_KEY="too-short",
+            ADMIN_PASSWORD="",
+            GITHUB_WEBHOOK_SECRET="",
+            GITHUB_APP_PRIVATE_KEY="",
+            GITHUB_CLIENT_ID="",
+            GITHUB_CLIENT_SECRET="",
+        )
+    message = str(exc_info.value)
+    for expected in (
+        "ADMIN_PASSWORD",
+        "SECRET_KEY",
+        "GITHUB_WEBHOOK_SECRET",
+        "GITHUB_APP_PRIVATE_KEY",
+        "GITHUB_CLIENT_ID",
+        "GITHUB_CLIENT_SECRET",
+    ):
+        assert expected in message

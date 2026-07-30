@@ -1,5 +1,6 @@
 """Application configuration via pydantic-settings."""
 
+import base64
 from functools import lru_cache
 
 from pydantic import field_validator, model_validator
@@ -47,6 +48,33 @@ class Settings(BaseSettings):
 
     # Environment
     ENVIRONMENT: str = "development"
+
+    @field_validator("GITHUB_APP_PRIVATE_KEY")
+    @classmethod
+    def normalize_private_key(cls, v: str) -> str:
+        """Accept the App private key as raw PEM or base64-encoded PEM.
+
+        ``.env`` files cannot hold multi-line values, so operators base64 the
+        PEM; platforms with multi-line env vars (Coolify) paste it raw. Both
+        are normalized to raw PEM here so the rest of the code only ever sees
+        what ``jwt.encode`` expects.
+        """
+        v = v.strip()
+        if not v or v.startswith("-----BEGIN"):
+            return v
+
+        try:
+            decoded = base64.b64decode(v, validate=True).decode()
+        except (ValueError, UnicodeDecodeError) as e:
+            raise ValueError(
+                "GITHUB_APP_PRIVATE_KEY must be a PEM private key, either raw "
+                "(starting with '-----BEGIN') or base64-encoded. Generate with: "
+                "base64 -i your-app.private-key.pem | tr -d '\\n'"
+            ) from e
+
+        if not decoded.lstrip().startswith("-----BEGIN"):
+            raise ValueError("GITHUB_APP_PRIVATE_KEY decoded from base64 but is not a PEM private key")
+        return decoded
 
     @field_validator("FERNET_KEY")
     @classmethod
