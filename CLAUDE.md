@@ -104,6 +104,7 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 ## Gotchas
 
 - **CI coverage threshold**: `--cov-fail-under=70` (current coverage ~75%). Raising to 80% requires covering `admin/views.py`, `main.py` lifespan, and more router branches.
+- **Lost stats tests**: `tests/modules/identity/test_stats.py` (176 lines covering the user stats endpoint) was dropped in the #42 squash; it survives on local branch `feat/dashboard-activity-chart-impl` (62bf88e) — cherry-pick and adapt to boost coverage.
 - **Entrypoint parallel I/O**: clone, metadata (`gh pr view --json`), and diff (`gh pr diff`) run as background jobs with `wait`. The `-R` flag lets `gh` hit the API without a local `.git` dir. `set -e` does NOT propagate from background jobs — each `wait $pid` needs explicit `|| exit 1`. The claude-runner image includes `jq` for parsing the combined metadata JSON.
 - Always run `make lint` before pushing — ruff + eslint must pass
 - **Shiki in tests**: any test rendering session components must mock `./shiki` (highlighter, SHIKI_THEME, SUPPORTED_LANGS) to avoid loading real TextMate grammars in jsdom
@@ -146,4 +147,4 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 - **BYOK supports OAuth tokens**: `validate_claude_key()` accepts both API keys (`sk-ant-api03-...`) and OAuth tokens (`sk-ant-oat...`). OAuth tokens skip server-side validation (validated at runtime by Claude Code CLI). Frontend setup page guides users to `claude setup-token`.
 - **VITE_* build args**: `VITE_API_URL` and `VITE_GITHUB_APP_SLUG` are build-time variables — must be passed as `args` in the compose and declared as `ARG`/`ENV` in `Dockerfile.web`. They cannot be set at runtime.
 - **Human-facing docs**: `README.md`, `CONTRIBUTING.md`, `docs/self-hosting.md`, `docs/architecture.md`, `docs/creating-skills.md` -- keep in sync with CLAUDE.md when architecture changes. CLAUDE.md is for AI agents; those docs are for human self-hosters and contributors.
-- **Doc archival**: internal/debug docs go to `docs/.archive/`, not deleted. `PROJECT-STATUS.md` was removed (stale, duplicated by README + CLAUDE.md).
+- **No doc archive**: internal/debug notes are not tracked in the public repo (`docs/.archive/` was removed). Keep only the human-facing docs listed above; scratch notes stay local or in PRs.

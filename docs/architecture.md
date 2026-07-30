@@ -143,7 +143,6 @@ The SPA lives under `apps/web/src/`. Feature-first layout, one folder per featur
 | `features/dashboard/` | Installation list, installation detail, activity chart, session replay |
 | `features/installation/` | Per-install setup (`SetupView`) and settings (`SettingsView`) — BYOK form, suppression labels, post-results toggle |
 | `features/session/` | Live session UI: skill selector, SSE conversation view, progress tracker, scorecard display, markdown + syntax highlighting |
-| `features/demo/` | Placeholder (reserved for demo fixtures) |
 | `shared/api/` | Fetch client (`client.ts`) with credential handling |
 | `shared/components/` | Reusable UI: `AppShell`, `Button`, `Card`, `Chip`, `ErrorBoundary`, `Topbar`, etc. |
 
