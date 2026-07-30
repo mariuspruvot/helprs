@@ -16,7 +16,6 @@ npm-debug.log*
 
 # Build outputs
 apps/web/dist/
-site/
 
 # Environment
 .env
@@ -49,12 +48,5 @@ htmlcov/
 # Alembic
 apps/api/alembic/versions/*.pyc
 
-# BMAD planning & tooling (kept locally, not tracked in production repo)
-_bmad/
-_bmad-output/
+# Claude Code local config
 .claude/
-
-# Internal redesign artifacts & dev-only scratchpads (kept locally, not in public repo)
-redisign/
-docs/frontend-redesign.md
-scripts/qa-frontend-agent.md

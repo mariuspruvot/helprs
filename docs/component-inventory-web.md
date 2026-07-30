@@ -92,10 +92,6 @@ The live-session UI. Rendering pipeline: SSE → `StreamMessage[]` → `Conversa
 
 **Testing note:** any test that renders session components must mock `./shiki` to avoid loading real TextMate grammars in jsdom.
 
-## features/demo/
-
-Placeholder folder (only `.gitkeep`). Reserved for future demo fixtures.
-
 ## shared/
 
 | Path | Purpose |
