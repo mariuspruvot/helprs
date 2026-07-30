@@ -44,7 +44,7 @@ infra/
 
 ## Key Patterns
 
-- **App factory**: `helprs.main:create_app()` — lifespan manages DB engine
+- **App factory**: `helprs.main:create_app()` — module-level `_lifespan` owns the engine and background loops via `AsyncExitStack`: each resource registers its cleanup at acquisition, teardown runs LIFO (cancel loops → drain replay tasks → stop containers → clear factory → dispose engine)
 - **Flat modules** (identity, installation, webhook, container): `router.py`, `service.py`, `models.py`, `schemas.py`
 - **Container orchestration**: `container` module manages ephemeral Docker lifecycle, credential injection, result relay
 - **Skills as agents**: each skill is a self-contained folder with workflow definitions, mounted into containers
