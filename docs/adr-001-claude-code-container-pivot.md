@@ -4,7 +4,7 @@
 > **Date**: 2026-04-17
 > **Decision makers**: Marius Pruvot (Project Lead)
 > **Supersedes**: Current pydantic-ai agent architecture
-> **Backup branch**: `pre-pivot/v1`
+> **Backup**: pre-pivot code archived on a local branch
 
 ## Context
 
@@ -145,7 +145,7 @@ Community can contribute additional skills via the open-source repository.
 
 ## Implementation order
 
-1. Backup current state (`pre-pivot/v1` branch) -- **done**
+1. Backup current state on a local archive branch -- **done**
 2. This ADR -- **done**
 3. Clean project documentation (CLAUDE.md, docs/) to reflect new architecture
 4. Remove comprehension module and pydantic-ai dependency
@@ -159,3 +159,11 @@ Community can contribute additional skills via the open-source repository.
 
 - The project targets open-source release, designed for self-hosting with existing Claude licenses.
 - The skill-as-agent model means the repository itself must be "agent-ready" -- CLAUDE.md and docs must be precise enough for a fresh Claude Code instance to understand the project without prior context.
+
+## Retrospective (2026-07)
+
+Three months in, the decision has held up:
+
+- The container model works as designed -- sessions run end-to-end (clone, skill execution, SSE streaming, scorecard) with ~4-8s startup after parallel-fetch optimizations.
+- The skill lineup evolved with usage: `challenge-me` shipped as planned, but the catalog grew toward comprehension-oriented skills (`eli5`, `hot-seat`, `pair-debug`, `test-me`) rather than the review/audit skills sketched above.
+- Credential injection moved from `ANTHROPIC_API_KEY` to Claude OAuth tokens (`CLAUDE_CODE_OAUTH_TOKEN`, via `claude setup-token`), letting self-hosters run on their Claude subscription at zero marginal API cost.
