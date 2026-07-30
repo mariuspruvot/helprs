@@ -135,7 +135,7 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 
 ## Key Decisions
 
-- **Pre-pivot code**: preserved on branch `pre-pivot/v1`
+- **Pre-pivot code**: archived on a local-only branch (not on the public remote)
 - **No pydantic-ai**: AI orchestration handled by Claude Code CLI in containers, not Python agent code
 - **BYOK via dashboard**: Claude OAuth tokens (from `claude setup-token`) stored per installation, encrypted with Fernet, injected as `CLAUDE_CODE_OAUTH_TOKEN` env var into containers. Zero API cost (uses user's Claude subscription).
 - **Dashboard over SQLAdmin**: user-facing operations (installation list, session history, token config) go through the dashboard UI; SQLAdmin is the superadmin escape hatch
