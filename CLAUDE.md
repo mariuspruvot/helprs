@@ -104,6 +104,7 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 ## Gotchas
 
 - **CI coverage threshold**: `--cov-fail-under=70` (current coverage ~75%). Raising to 80% requires covering `admin/views.py`, `main.py` lifespan, and more router branches.
+- **Lost stats tests**: `tests/modules/identity/test_stats.py` (176 lines covering the user stats endpoint) was dropped in the #42 squash; it survives on local branch `feat/dashboard-activity-chart-impl` (62bf88e) — cherry-pick and adapt to boost coverage.
 - **Entrypoint parallel I/O**: clone, metadata (`gh pr view --json`), and diff (`gh pr diff`) run as background jobs with `wait`. The `-R` flag lets `gh` hit the API without a local `.git` dir. `set -e` does NOT propagate from background jobs — each `wait $pid` needs explicit `|| exit 1`. The claude-runner image includes `jq` for parsing the combined metadata JSON.
 - Always run `make lint` before pushing — ruff + eslint must pass
 - **Shiki in tests**: any test rendering session components must mock `./shiki` (highlighter, SHIKI_THEME, SUPPORTED_LANGS) to avoid loading real TextMate grammars in jsdom
