@@ -245,7 +245,9 @@ class TestMintInstallationToken:
 
         assert token == "ghs_xyz"
         mock_jwt.assert_called_once_with("12345", "-----BEGIN FAKE-----")
-        mock_get_token.assert_awaited_once_with(12345678, "fake.jwt.token")
+        # Unscoped by default: the API's own token keeps full installation
+        # scope. Narrowing is opt-in, for the runner container's token.
+        mock_get_token.assert_awaited_once_with(12345678, "fake.jwt.token", repositories=None, permissions=None)
 
 
 class TestPostPRComment:

@@ -1,7 +1,5 @@
 """Integration tests for BYOK and settings router endpoints."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -12,26 +10,14 @@ from helprs.core.security import create_access_token, fernet_encrypt
 from helprs.main import create_app
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import Installation
+from tests.github_double import serving_github
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
 
 
 def _mock_admin_permission():
-    """Context manager that mocks GitHub API to return admin role."""
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"role": "admin", "state": "active"}
-    mock_response.raise_for_status = MagicMock()
-    mock_response.status_code = 200
-
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_response
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    return patch(
-        "helprs.modules.installation.service.httpx.AsyncClient",
-        return_value=mock_client,
-    )
+    """Serve the GitHub calls the admin-gated routes make."""
+    return serving_github()
 
 
 @pytest.fixture
@@ -105,13 +91,7 @@ class TestPostByok:
     async def test_valid_key(self, authed_client):
         client, inst_id, _ = authed_client
 
-        with (
-            _mock_admin_permission(),
-            patch(
-                "helprs.modules.installation.service.validate_claude_key",
-                return_value=True,
-            ),
-        ):
+        with serving_github(claude_key_valid=True):
             response = await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
                 json={"api_key": "sk-ant-api03-testkey1234"},
@@ -126,13 +106,7 @@ class TestPostByok:
     async def test_invalid_key(self, authed_client):
         client, inst_id, _ = authed_client
 
-        with (
-            _mock_admin_permission(),
-            patch(
-                "helprs.modules.installation.service.validate_claude_key",
-                return_value=False,
-            ),
-        ):
+        with serving_github(claude_key_valid=False):
             response = await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
                 json={"api_key": "sk-ant-api03-badkey-invalid-12345"},
@@ -145,19 +119,7 @@ class TestPostByok:
     async def test_not_admin_returns_403(self, authed_client):
         client, inst_id, _ = authed_client
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"role": "member", "state": "active"}
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "helprs.modules.installation.service.httpx.AsyncClient",
-            return_value=mock_client,
-        ):
+        with serving_github(org_role="member"):
             response = await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
                 json={"api_key": "sk-ant-api03-testkey"},
@@ -183,13 +145,7 @@ class TestDeleteByok:
         client, inst_id, session_factory = authed_client
 
         # First create a BYOK config
-        with (
-            _mock_admin_permission(),
-            patch(
-                "helprs.modules.installation.service.validate_claude_key",
-                return_value=True,
-            ),
-        ):
+        with serving_github(claude_key_valid=True):
             await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
                 json={"api_key": "sk-ant-api03-deltest1"},
@@ -221,13 +177,7 @@ class TestGetInstallationIncludesByokStatus:
         client, inst_id, _ = authed_client
 
         # Configure BYOK first
-        with (
-            _mock_admin_permission(),
-            patch(
-                "helprs.modules.installation.service.validate_claude_key",
-                return_value=True,
-            ),
-        ):
+        with serving_github(claude_key_valid=True):
             await client.post(
                 f"/api/v1/installations/{inst_id}/byok",
                 json={"api_key": "sk-ant-api03-hintkey1"},

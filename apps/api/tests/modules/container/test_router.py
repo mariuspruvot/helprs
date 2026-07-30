@@ -21,6 +21,7 @@ from helprs.main import create_app
 from helprs.modules.container.models import ContainerSession, ContainerStatus
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import BYOKConfig, Installation
+from tests.github_double import serving_github
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
 
@@ -146,8 +147,11 @@ class TestCreateSession:
         (tmp_path / "challenge-me").mkdir()
         (tmp_path / "challenge-me" / "prompt.md").write_text("test")
 
-        # Patch the Docker client, mint_installation_token, and SKILLS_BASE_PATH
+        # GitHub repo-access check is served by the double; token minting is
+        # stubbed because signing needs a real PEM (its scoping is covered in
+        # tests/modules/installation/test_repo_access.py).
         with (
+            serving_github(),
             patch(
                 "helprs.modules.container.router._get_docker_client",
                 return_value=FakeDockerClientForRouter(),

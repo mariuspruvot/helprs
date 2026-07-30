@@ -44,7 +44,15 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+# RUF100 flags noqa directives that no longer suppress anything, so they
+# cannot silently accumulate. (Beware: `ruff check --select RUF100` on the
+# command line *replaces* this selection, which makes every noqa look dead.)
+select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF100"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic's env.py must configure the connection before importing the models
+# it auto-discovers.
+"alembic/env.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"

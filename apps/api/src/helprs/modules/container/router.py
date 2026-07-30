@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 from helprs.core.config import get_settings
 from helprs.core.database import get_db_context
-from helprs.core.dependencies import DbSession, GetSettings, get_current_user
+from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
 from helprs.core.security import fernet_decrypt
@@ -44,11 +44,13 @@ from helprs.modules.container.service import (
     stream_and_persist,
 )
 from helprs.modules.installation.service import (
+    RUNNER_TOKEN_PERMISSIONS,
     get_byok_config,
     get_installation_by_github_id,
     mint_installation_token,
     post_pr_comment_with_retry,
     verify_installation_access,
+    verify_repo_access,
     verify_session_access,
 )
 
@@ -69,7 +71,7 @@ async def create_container_session(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Create a container session and start the container.
 
@@ -81,8 +83,10 @@ async def create_container_session(
     if not installation:
         raise NotFoundError("Installation not found")
 
-    # Verify user has access to this installation
+    # Verify user has access to this installation, then to the specific repo:
+    # an installation can cover repos this user cannot read.
     await verify_installation_access(user, installation, settings)
+    await verify_repo_access(user, body.repo_full_name, settings)
 
     # Get stored Claude OAuth token (from claude setup-token)
     byok_config = await get_byok_config(db, installation.id)
@@ -91,8 +95,14 @@ async def create_container_session(
 
     claude_oauth_token = fernet_decrypt(byok_config.encrypted_api_key, settings.FERNET_KEY)
 
-    # Mint GitHub installation token
-    github_token = await mint_installation_token(installation.github_installation_id, settings)
+    # Mint a GitHub token narrowed to this repo with read-only scopes — it is
+    # handed to a container running Claude Code over untrusted PR content.
+    github_token = await mint_installation_token(
+        installation.github_installation_id,
+        settings,
+        repositories=[body.repo_full_name.split("/")[-1]],
+        permissions=RUNNER_TOKEN_PERMISSIONS,
+    )
 
     # Create session record
     cs = await create_session(
@@ -128,7 +138,7 @@ async def get_container_session(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Get the current status of a container session."""
     cs = await get_session_or_404(db, session_id)
@@ -144,7 +154,7 @@ async def stream_container_output(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
     offset: int = 0,
 ):
     """SSE endpoint streaming container stdout/stderr.
@@ -214,7 +224,7 @@ async def get_session_events_endpoint(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Retrieve persisted stream-json events for a session.
 
@@ -238,7 +248,7 @@ async def get_session_scorecard(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Get the parsed scorecard for a completed session."""
     cs = await get_session_or_404(db, session_id)
@@ -258,7 +268,7 @@ async def send_session_message(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Send a user message to a running container session.
 
@@ -288,7 +298,7 @@ async def stop_container_session(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Stop a running container session."""
     cs = await get_session_or_404(db, session_id)
@@ -314,7 +324,7 @@ async def delete_container_session(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user=Depends(get_current_user),  # noqa: B008
+    user: CurrentUser,
 ):
     """Delete a container session and its events."""
     cs = await get_session_or_404(db, session_id)
@@ -323,7 +333,7 @@ async def delete_container_session(
     return {"status": "deleted", "id": str(session_id)}
 
 
-async def _persist_scorecard(db: "AsyncSession", cs: ContainerSession) -> None:  # noqa: UP037
+async def _persist_scorecard(db: "AsyncSession", cs: ContainerSession) -> None:
     """Extract and persist the helprs-scorecard from session events (best-effort)."""
     from helprs.modules.container.scorecard import extract_scorecard
 

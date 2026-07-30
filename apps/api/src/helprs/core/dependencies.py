@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from helprs.core.config import Settings, get_settings
 from helprs.core.exceptions import UnauthorizedError
 from helprs.core.security import decode_access_token
+from helprs.modules.identity.models import GitHubUser
 
 # Re-export get_settings as a dependency
 GetSettings = Annotated[Settings, Depends(get_settings)]
@@ -36,7 +37,7 @@ async def get_current_user(
     request: Request,
     session: DbSession,
     settings: GetSettings,
-):
+) -> GitHubUser:
     """Extract and validate Bearer token, return authenticated GitHubUser.
 
     Token sources, in priority order:
@@ -51,8 +52,6 @@ async def get_current_user(
        which is acceptable for a 30-min JWT but not ideal — preferred
        long-term solution is fetch+ReadableStream (deferred).
     """
-    from helprs.modules.identity.models import GitHubUser
-
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.removeprefix("Bearer ")
@@ -84,3 +83,8 @@ async def get_current_user(
         raise UnauthorizedError("User not found")
 
     return user
+
+
+# Routes take `user: CurrentUser` rather than `user=Depends(get_current_user)`:
+# the Annotated form is a real type for the checker and does not trip B008.
+CurrentUser = Annotated[GitHubUser, Depends(get_current_user)]

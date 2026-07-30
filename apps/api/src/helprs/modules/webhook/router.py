@@ -6,6 +6,7 @@ lifespan replay job picks up anything left in ``pending``/``processing``.
 """
 
 import json
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
@@ -20,6 +21,9 @@ from helprs.modules.webhook.verification import verify_webhook_signature
 
 logger = structlog.get_logger()
 
+# The raw body, only after its HMAC signature checked out.
+VerifiedWebhookBody = Annotated[bytes, Depends(verify_webhook_signature)]
+
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
@@ -29,7 +33,7 @@ async def receive_github_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     session: DbSession,
-    body: bytes = Depends(verify_webhook_signature),  # noqa: B008
+    body: VerifiedWebhookBody,
 ) -> dict[str, object]:
     """Receive GitHub webhooks.
 
