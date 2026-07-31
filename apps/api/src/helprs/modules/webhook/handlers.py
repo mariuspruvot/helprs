@@ -4,7 +4,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.modules.installation.service import (
-    create_installation,
+    create_installation_from_webhook,
     get_installation_by_github_id,
     mint_installation_token,
     post_pr_comment_with_retry,
@@ -26,7 +26,7 @@ def _extract_installation_id(payload: dict) -> int:
 
 async def handle_installation_created(payload: dict, session: AsyncSession) -> None:
     """Handle installation.created webhook event."""
-    installation = await create_installation(session, payload)
+    installation = await create_installation_from_webhook(session, payload)
     await logger.ainfo(
         "webhook_installation_created",
         installation_id=str(installation.id),

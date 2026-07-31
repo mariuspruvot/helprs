@@ -11,11 +11,11 @@ import pytest
 from helprs.core.config import get_settings
 from helprs.core.exceptions import DomainValidationError, ExternalServiceError, ForbiddenError, UnauthorizedError
 from helprs.core.security import fernet_encrypt
-from helprs.modules.installation.service import (
+from helprs.modules.installation.github import (
     RUNNER_TOKEN_PERMISSIONS,
-    get_installation_access_token,
-    verify_repo_access,
+    create_installation_access_token,
 )
+from helprs.modules.installation.service import verify_repo_access
 
 
 class FakeUser:
@@ -92,14 +92,14 @@ async def test_runner_token_request_is_scoped_to_one_repo(monkeypatch):
     read-only scopes — it runs Claude Code over untrusted PR content."""
     seen = _route_through(lambda _: httpx.Response(201, json={"token": "ghs_scoped"}), monkeypatch)
 
-    token = await get_installation_access_token(
+    token = await create_installation_access_token(
         123,
         "app-jwt",
         repositories=["api"],
         permissions=RUNNER_TOKEN_PERMISSIONS,
     )
 
-    assert token["token"] == "ghs_scoped"
+    assert token.token == "ghs_scoped"
     import json
 
     body = json.loads(seen[0].content)
@@ -113,7 +113,7 @@ async def test_unscoped_token_request_sends_no_body(monkeypatch):
     scope, so no narrowing body is sent."""
     seen = _route_through(lambda _: httpx.Response(201, json={"token": "ghs_full"}), monkeypatch)
 
-    await get_installation_access_token(123, "app-jwt")
+    await create_installation_access_token(123, "app-jwt")
 
     assert seen[0].content in (b"", b"null")
 
@@ -124,4 +124,4 @@ async def test_repo_outside_installation_is_rejected(monkeypatch):
     _route_through(lambda _: httpx.Response(422), monkeypatch)
 
     with pytest.raises(DomainValidationError, match="not covered by this installation"):
-        await get_installation_access_token(123, "app-jwt", repositories=["not-mine"])
+        await create_installation_access_token(123, "app-jwt", repositories=["not-mine"])

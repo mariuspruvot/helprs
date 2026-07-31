@@ -85,6 +85,31 @@ async def count_per_day(
     return [DailyCount(day=row.day, count=row.count) for row in result.all()]
 
 
+async def list_for_installation(
+    session: AsyncSession,
+    installation_id: uuid.UUID,
+    *,
+    page: int,
+    per_page: int,
+    status: ContainerStatus | None = None,
+) -> tuple[list[ContainerSession], int]:
+    """One page of sessions, newest first, plus the unpaginated total."""
+    where = [ContainerSession.installation_id == installation_id]
+    if status is not None:
+        where.append(ContainerSession.status == status)
+
+    total = await session.scalar(select(func.count()).select_from(ContainerSession).where(*where))
+
+    result = await session.execute(
+        select(ContainerSession)
+        .where(*where)
+        .order_by(ContainerSession.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    return list(result.scalars().all()), total or 0
+
+
 async def count_grouped_by_installation(
     session: AsyncSession,
     installation_ids: list[uuid.UUID],

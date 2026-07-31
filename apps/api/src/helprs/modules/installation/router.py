@@ -1,10 +1,18 @@
-"""Installation API routes."""
+"""Installation API routes.
+
+Handlers resolve the installation, check authorization, call one use case and
+shape the response. Two tiers apply: reads need membership, mutations of
+credentials and settings need org-admin.
+"""
 
 from fastapi import APIRouter, Request, Response
 
 from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
 from helprs.core.exceptions import NotFoundError
 from helprs.core.middleware import limiter
+from helprs.modules.container import repository as sessions
+from helprs.modules.container.models import ContainerStatus
+from helprs.modules.installation.models import Installation
 from helprs.modules.installation.schemas import (
     BYOKConfigResponse,
     BYOKConfigureRequest,
@@ -23,8 +31,6 @@ from helprs.modules.installation.service import (
     delete_byok_config,
     get_installation_by_github_id,
     get_installations_for_user,
-    get_session_counts_for_installations,
-    get_sessions_for_installation,
     update_post_results_setting,
     update_suppression_labels,
     verify_admin_permission,
@@ -33,25 +39,14 @@ from helprs.modules.installation.service import (
 
 router = APIRouter(prefix="/installations", tags=["installations"])
 
+MAX_PAGE_SIZE = 100
 
-def _build_installation_response(installation) -> dict:
-    """Build installation response dict with BYOK status."""
-    data = {
-        "id": installation.id,
-        "github_installation_id": installation.github_installation_id,
-        "account_login": installation.account_login,
-        "account_type": installation.account_type,
-        "repository_selection": installation.repository_selection,
-        "suspended_at": installation.suspended_at,
-        "created_at": installation.created_at,
-        "suppression_labels": installation.suppression_labels or [],
-        "byok_configured": installation.byok_config is not None,
-        "byok_key_hint": installation.byok_config.key_hint if installation.byok_config else None,
-        "byok_key_status": installation.byok_config.key_status if installation.byok_config else None,
-        "byok_validated_at": installation.byok_config.validated_at if installation.byok_config else None,
-        "post_results_to_pr": installation.post_results_to_pr,
-    }
-    return data
+
+async def _installation_or_404(session, github_installation_id: int) -> Installation:
+    installation = await get_installation_by_github_id(session, github_installation_id)
+    if not installation:
+        raise NotFoundError("Installation not found")
+    return installation
 
 
 @router.get("", response_model=InstallationListResponse)
@@ -61,24 +56,15 @@ async def list_installations(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-):
+) -> InstallationListResponse:
     """List installations the current user has access to."""
     installations = await get_installations_for_user(session, user, settings)
-    # Eagerly load byok_config for each installation to avoid lazy-load crash
-    for inst in installations:
-        await session.refresh(inst, ["byok_config"])
+    counts = await sessions.count_grouped_by_installation(session, [i.id for i in installations])
 
-    # Batch-fetch session counts (single GROUP BY query, no N+1)
-    installation_ids = [inst.id for inst in installations]
-    count_map = await get_session_counts_for_installations(session, installation_ids)
-
-    items = []
-    for inst in installations:
-        data = _build_installation_response(inst)
-        data["session_count"] = count_map.get(inst.id, 0)
-        items.append(InstallationResponse(**data))
-
-    return InstallationListResponse(items=items, total=len(items))
+    return InstallationListResponse(
+        items=[InstallationResponse.from_model(i, session_count=counts.get(i.id, 0)) for i in installations],
+        total=len(installations),
+    )
 
 
 @router.get("/{installation_id}", response_model=InstallationDetailResponse)
@@ -89,18 +75,15 @@ async def get_installation(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-):
-    """Get installation details with BYOK status and suppression labels."""
-    installation = await get_installation_by_github_id(session, installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
-    # Read-only: any member who sees the install in the list can open it.
-    # Admin is reserved for the BYOK and settings routes below.
+) -> InstallationDetailResponse:
+    """Installation details with BYOK status and suppression labels."""
+    installation = await _installation_or_404(session, installation_id)
+    # Read-only: any member who sees it in the list can open it. Admin is
+    # reserved for the credential and settings routes below.
     await verify_installation_access(user, installation, settings)
-    # Eagerly load byok_config
     await session.refresh(installation, ["byok_config"])
-    data = _build_installation_response(installation)
-    return InstallationDetailResponse(**data)
+
+    return InstallationDetailResponse.from_model(installation)
 
 
 @router.post("/{installation_id}/byok", response_model=BYOKConfigResponse)
@@ -112,12 +95,11 @@ async def post_byok(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-):
-    """Configure BYOK API key for an installation."""
-    installation = await get_installation_by_github_id(session, installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
+) -> BYOKConfigResponse:
+    """Store a Claude credential for this installation."""
+    installation = await _installation_or_404(session, installation_id)
     await verify_admin_permission(user, installation, settings)
+
     config = await configure_byok(session, installation.id, body.api_key, settings.FERNET_KEY)
     return BYOKConfigResponse.model_validate(config)
 
@@ -130,20 +112,16 @@ async def delete_byok(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-):
-    """Remove BYOK API key for an installation."""
-    installation = await get_installation_by_github_id(session, installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
+) -> Response:
+    """Remove the stored Claude credential."""
+    installation = await _installation_or_404(session, installation_id)
     await verify_admin_permission(user, installation, settings)
+
     await delete_byok_config(session, installation.id)
     return Response(status_code=204)
 
 
-@router.put(
-    "/{installation_id}/suppression-labels",
-    response_model=SuppressionLabelsResponse,
-)
+@router.put("/{installation_id}/suppression-labels", response_model=SuppressionLabelsResponse)
 @limiter.limit("10/minute")
 async def put_suppression_labels(
     installation_id: int,
@@ -152,12 +130,11 @@ async def put_suppression_labels(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-):
-    """Update suppression labels for an installation."""
-    installation = await get_installation_by_github_id(session, installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
+) -> SuppressionLabelsResponse:
+    """Set the PR labels that suppress session creation."""
+    installation = await _installation_or_404(session, installation_id)
     await verify_admin_permission(user, installation, settings)
+
     updated = await update_suppression_labels(session, installation.id, body.labels)
     return SuppressionLabelsResponse(labels=updated.suppression_labels or [])
 
@@ -173,40 +150,32 @@ async def list_installation_sessions(
     page: int = 1,
     per_page: int = 20,
     status: str | None = None,
-):
-    """List sessions for an installation with pagination."""
-    installation = await get_installation_by_github_id(session, installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
+) -> PaginatedSessionsResponse:
+    """One page of session history for an installation, newest first."""
+    installation = await _installation_or_404(session, installation_id)
     await verify_installation_access(user, installation, settings)
 
-    if per_page > 100:
-        per_page = 100
-    if page < 1:
-        page = 1
+    page = max(page, 1)
+    per_page = min(per_page, MAX_PAGE_SIZE)
 
-    items, total = await get_sessions_for_installation(
+    items, total = await sessions.list_for_installation(
         session,
         installation.id,
         page=page,
         per_page=per_page,
-        status_filter=status,
+        status=ContainerStatus(status) if status else None,
     )
-    total_pages = (total + per_page - 1) // per_page if total > 0 else 0
 
     return PaginatedSessionsResponse(
         items=[SessionSummaryResponse.model_validate(s) for s in items],
         total=total,
         page=page,
         per_page=per_page,
-        total_pages=total_pages,
+        total_pages=(total + per_page - 1) // per_page if total else 0,
     )
 
 
-@router.put(
-    "/{installation_id}/post-results",
-    response_model=PostResultsSettingResponse,
-)
+@router.put("/{installation_id}/post-results", response_model=PostResultsSettingResponse)
 @limiter.limit("10/minute")
 async def put_post_results_setting(
     installation_id: int,
@@ -215,11 +184,10 @@ async def put_post_results_setting(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-):
-    """Enable or disable automatic posting of session results to PRs."""
-    installation = await get_installation_by_github_id(session, installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
+) -> PostResultsSettingResponse:
+    """Enable or disable posting session results back to the PR."""
+    installation = await _installation_or_404(session, installation_id)
     await verify_admin_permission(user, installation, settings)
+
     updated = await update_post_results_setting(session, installation.id, body.post_results_to_pr)
     return PostResultsSettingResponse(post_results_to_pr=updated.post_results_to_pr)
