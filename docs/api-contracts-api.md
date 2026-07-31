@@ -106,7 +106,7 @@ Remove the BYOK credential.
 
 ### `PUT /installations/{installation_id}/suppression-labels`
 
-Update the list of PR labels that cause helPRs to skip session creation.
+Update the list of PR labels that cause helPRs to skip session creation (matched case-insensitively when a PR is opened).
 
 - Request: `SuppressionLabelsRequest { labels: string[] }`.
 - **200** `SuppressionLabelsResponse { labels }`.

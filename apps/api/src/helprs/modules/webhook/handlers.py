@@ -3,6 +3,8 @@
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from helprs.core.config import get_settings
+from helprs.modules.container.service import create_session
 from helprs.modules.installation.service import (
     create_installation_from_webhook,
     get_installation_by_github_id,
@@ -14,6 +16,9 @@ from helprs.modules.installation.service import (
 )
 
 logger = structlog.get_logger()
+
+# Skill run for PRs that arrive through a webhook rather than a user choice.
+DEFAULT_SKILL = "challenge-me"
 
 
 def _extract_installation_id(payload: dict) -> int:
@@ -82,28 +87,22 @@ async def handle_installation_unsuspended(payload: dict, session: AsyncSession) 
         )
 
 
+def _pr_label_names(pr: dict) -> set[str]:
+    """Lowercased label names on the pull request."""
+    return {label["name"].lower() for label in pr.get("labels", []) if isinstance(label, dict) and label.get("name")}
+
+
 async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> None:
-    """Handle pull_request.opened webhook event.
-
-    Creates a container session with the default skill (challenge-me) and posts
-    a PR comment with a link to the session.
-    """
-    from helprs.core.config import get_settings
-    from helprs.modules.container.service import create_session
-
+    """Create a session for a newly opened PR and announce it in a comment."""
     github_id = _extract_installation_id(payload)
     installation = await get_installation_by_github_id(session, github_id)
     if installation is None:
-        await logger.awarning(
-            "webhook_pr_opened_installation_not_found",
-            github_installation_id=github_id,
-        )
+        await logger.awarning("webhook_pr_opened_installation_not_found", github_installation_id=github_id)
         return
 
     pr = payload.get("pull_request") or {}
     pr_number = pr.get("number")
-    repo = payload.get("repository") or {}
-    repo_full_name = repo.get("full_name")
+    repo_full_name = (payload.get("repository") or {}).get("full_name")
 
     if not pr_number or not repo_full_name:
         await logger.awarning(
@@ -113,38 +112,29 @@ async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> No
         )
         return
 
+    suppressed_by = _pr_label_names(pr) & {label.lower() for label in installation.suppression_labels or []}
+    if suppressed_by:
+        await logger.ainfo(
+            "webhook_pr_opened_suppressed",
+            github_installation_id=github_id,
+            repo=repo_full_name,
+            pr=pr_number,
+            labels=sorted(suppressed_by),
+        )
+        return
+
     cs = await create_session(
         db=session,
         installation_id=installation.id,
         pr_number=pr_number,
         repo_full_name=repo_full_name,
-        skill_name="challenge-me",
+        skill_name=DEFAULT_SKILL,
     )
 
-    settings = get_settings()
-    owner, repo_name = repo_full_name.split("/", 1)
-
-    try:
-        token = await mint_installation_token(installation.github_installation_id, settings)
-        session_path = f"/session/{installation.github_installation_id}/{repo_full_name}/{pr_number}"
-        comment_body = (
-            f"**helPRs** session created for this PR.\n\n"
-            f"Skill: `challenge-me` | "
-            f"[Open session]({settings.APP_BASE_URL}{session_path})"
-        )
-        await post_pr_comment_with_retry(
-            owner=owner,
-            repo=repo_name,
-            pr_number=pr_number,
-            body=comment_body,
-            installation_token=token,
-        )
-    except Exception:
-        # PR comment is best-effort — never block session creation.
-        await logger.aexception(
-            "webhook_pr_comment_failed",
-            session_id=str(cs.id),
-        )
+    # Commit before announcing. Posting the comment first would risk a public
+    # link to a session row that a later commit failure never created, and it
+    # would hold this connection open across up to ~40s of GitHub I/O.
+    await session.commit()
 
     await logger.ainfo(
         "webhook_pr_session_created",
@@ -152,3 +142,28 @@ async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> No
         repo=repo_full_name,
         pr=pr_number,
     )
+
+    await _announce_session(installation, cs.id, repo_full_name, pr_number)
+
+
+async def _announce_session(installation, session_id, repo_full_name: str, pr_number: int) -> None:
+    """Post the session link on the PR. Best effort: never fails the event."""
+    settings = get_settings()
+    owner, repo_name = repo_full_name.split("/", 1)
+    session_path = f"/session/{installation.github_installation_id}/{repo_full_name}/{pr_number}"
+
+    try:
+        token = await mint_installation_token(installation.github_installation_id, settings)
+        await post_pr_comment_with_retry(
+            owner=owner,
+            repo=repo_name,
+            pr_number=pr_number,
+            body=(
+                f"**helPRs** session created for this PR.\n\n"
+                f"Skill: `{DEFAULT_SKILL}` | "
+                f"[Open session]({settings.APP_BASE_URL}{session_path})"
+            ),
+            installation_token=token,
+        )
+    except Exception:
+        await logger.aexception("webhook_pr_comment_failed", session_id=str(session_id))

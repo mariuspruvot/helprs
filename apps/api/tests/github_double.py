@@ -32,6 +32,7 @@ class GitHubDouble:
         visible_repos: list[str] | None = None,
         installation_token: str = "ghs_test_token",
         claude_key_valid: bool = True,
+        fail_comments: bool = False,
     ) -> None:
         self.org_role = org_role
         self.org_state = org_state
@@ -39,6 +40,7 @@ class GitHubDouble:
         self.visible_repos = visible_repos
         self.installation_token = installation_token
         self.claude_key_valid = claude_key_valid
+        self.fail_comments = fail_comments
         self.requests: list[httpx.Request] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -67,6 +69,8 @@ class GitHubDouble:
             return httpx.Response(201, json={"token": self.installation_token})
 
         if "/issues/" in path and path.endswith("/comments"):
+            if self.fail_comments:
+                return httpx.Response(500, json={"message": "GitHub is having a bad day"})
             return httpx.Response(201, json={"id": 1})
 
         return httpx.Response(404, json={"message": f"Unhandled in double: {path}"})
