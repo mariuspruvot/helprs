@@ -198,10 +198,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 async def _handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Return a 500 the browser can actually read.
+
+    A handler registered for ``Exception`` runs inside Starlette's
+    ServerErrorMiddleware, which sits *outside* the user middleware stack — so
+    this response never passes through CORSMiddleware. Without the header
+    below, an unhandled error reaches the frontend as an opaque CORS failure
+    instead of the real status.
+    """
     logger.exception("unhandled_exception", path=request.url.path)
+
+    headers: dict[str, str] = {}
+    origin = request.headers.get("origin")
+    if origin and origin in get_settings().CORS_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
+
     return JSONResponse(
         status_code=500,
         content={"error": "internal_error", "message": "An unexpected error occurred"},
+        headers=headers,
     )
 
 

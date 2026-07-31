@@ -12,7 +12,7 @@ import structlog
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
-from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
+from helprs.core.dependencies import CurrentUser, DbSession, GetSettings, StreamUser
 from helprs.core.exceptions import ConflictError, NotFoundError
 from helprs.core.middleware import limiter
 from helprs.core.security import fernet_decrypt
@@ -153,7 +153,7 @@ async def stream_container_output(
     request: Request,
     db: DbSession,
     settings: GetSettings,
-    user: CurrentUser,
+    user: StreamUser,
     offset: int = 0,
 ) -> StreamingResponse:
     """Relay the container's output as Server-Sent Events."""

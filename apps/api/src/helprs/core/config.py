@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # Container orchestration
     CONTAINER_TTL_SECONDS: int = 900  # 15 minutes
 
+    # Database pool, per uvicorn worker. workers x (size + overflow) must stay
+    # below the server's max_connections.
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 5
+
     # Environment
     ENVIRONMENT: str = "development"
 

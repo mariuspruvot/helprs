@@ -6,7 +6,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from sqlalchemy import DateTime, func
-from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncAttrs,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from helprs.core.config import get_settings
@@ -85,15 +91,21 @@ class Base(AsyncAttrs, DeclarativeBase):
     )
 
 
-def create_engine():
-    """Create async SQLAlchemy engine from settings."""
+def create_engine() -> AsyncEngine:
+    """Create the async engine from settings.
+
+    Pool sizing is a per-worker budget: every uvicorn worker builds its own
+    engine, so ``workers x (pool_size + max_overflow)`` must stay under the
+    server's ``max_connections``. The defaults are sized for four workers
+    against a stock PostgreSQL (4 x 15 = 60 of 100).
+    """
     settings = get_settings()
     return create_async_engine(
         settings.DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
-        pool_size=20,
-        max_overflow=10,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
         pool_recycle=3600,
     )
 

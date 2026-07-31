@@ -33,33 +33,8 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
-async def get_current_user(
-    request: Request,
-    session: DbSession,
-    settings: GetSettings,
-) -> GitHubUser:
-    """Extract and validate Bearer token, return authenticated GitHubUser.
-
-    Token sources, in priority order:
-
-    1. ``Authorization: Bearer <token>`` header — preferred for all
-       normal API calls (apiFetch sets it).
-    2. ``?access_token=<token>`` query parameter — fallback used by SSE
-       endpoints. ``EventSource`` cannot set custom request headers, so
-       the SSE caller must put the JWT in the URL. The query-param path
-       was added 2026-04-11 alongside the Story 3-3 SSE manual-QA fix.
-       Trade-off: query params land in access logs and browser history,
-       which is acceptable for a 30-min JWT but not ideal — preferred
-       long-term solution is fetch+ReadableStream (deferred).
-    """
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.removeprefix("Bearer ")
-    else:
-        token = request.query_params.get("access_token") or ""
-        if not token:
-            raise UnauthorizedError("Missing or invalid Authorization header")
-
+async def _authenticate(request: Request, session: AsyncSession, settings: Settings, token: str) -> GitHubUser:
+    """Resolve a bearer token to the user it belongs to."""
     try:
         payload = decode_access_token(token, settings.SECRET_KEY)
     except JWTError as e:
@@ -85,6 +60,35 @@ async def get_current_user(
     return user
 
 
+def _bearer_token(request: Request) -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise UnauthorizedError("Missing or invalid Authorization header")
+    return auth_header.removeprefix("Bearer ")
+
+
+async def get_current_user(request: Request, session: DbSession, settings: GetSettings) -> GitHubUser:
+    """Authenticate from the ``Authorization`` header."""
+    return await _authenticate(request, session, settings, _bearer_token(request))
+
+
+async def get_current_user_for_stream(request: Request, session: DbSession, settings: GetSettings) -> GitHubUser:
+    """Authenticate an SSE request, allowing the token in the query string.
+
+    ``EventSource`` cannot set request headers, so a browser opening a stream
+    has nowhere else to put the JWT. The cost is real — query strings land in
+    proxy logs, browser history and ``Referer`` — so this is granted to the
+    streaming endpoints only, never to the whole API.
+    """
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ") or request.query_params.get(
+        "access_token", ""
+    )
+    if not token:
+        raise UnauthorizedError("Missing or invalid Authorization header")
+    return await _authenticate(request, session, settings, token)
+
+
 # Routes take `user: CurrentUser` rather than `user=Depends(get_current_user)`:
 # the Annotated form is a real type for the checker and does not trip B008.
 CurrentUser = Annotated[GitHubUser, Depends(get_current_user)]
+StreamUser = Annotated[GitHubUser, Depends(get_current_user_for_stream)]

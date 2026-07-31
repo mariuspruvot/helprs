@@ -8,10 +8,9 @@ Lightweight list of ideas and open design questions to discuss later. Not a road
 
 **Problem.** Right now every `pull_request.opened` webhook creates a session + posts a PR comment. That's too aggressive: dependabot bumps, drafts, 5-line typos, and massive refactors all get the same treatment, which dilutes the value of challenge-me and spams repos.
 
-**Current state (half-wired).**
-- `installation.suppression_labels` exists in DB.
-- `PUT /api/v1/installations/{id}/suppression-labels` + UI in `SettingsView.tsx` let users configure labels.
-- But `handle_pull_request_opened` in `apps/api/src/helprs/modules/webhook/handlers.py` never reads them → labels have zero effect today.
+**Current state.** Suppression labels are wired end to end: stored on the installation, editable via `PUT /api/v1/installations/{id}/suppression-labels` and `SettingsView.tsx`, and read by `handle_pull_request_opened` (case-insensitive) before any session is created.
+
+**Still open.** The label denylist is the only eligibility rule. Drafts, bot authors and PR size are not considered yet — see the options below.
 
 **Options on the table.**
 
