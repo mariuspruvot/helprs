@@ -13,7 +13,7 @@ from sqlalchemy import case, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.types import Date
 
-from helprs.modules.container.models import ContainerSession, ContainerStatus
+from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,47 @@ class DailyCount:
 
     day: date
     count: int
+
+
+UNFINISHED_STATUSES = (ContainerStatus.RUNNING, ContainerStatus.PENDING)
+
+
+async def get(session: AsyncSession, session_id: uuid.UUID) -> ContainerSession | None:
+    result = await session.execute(select(ContainerSession).where(ContainerSession.id == session_id))
+    return result.scalar_one_or_none()
+
+
+async def add(session: AsyncSession, container_session: ContainerSession) -> ContainerSession:
+    session.add(container_session)
+    await session.flush()
+    return container_session
+
+
+async def delete(session: AsyncSession, container_session: ContainerSession) -> None:
+    """Delete a session; its events go with it via ON DELETE CASCADE."""
+    await session.delete(container_session)
+    await session.flush()
+
+
+async def list_unfinished(
+    session: AsyncSession,
+    *,
+    created_before: datetime | None = None,
+) -> list[ContainerSession]:
+    """Sessions still marked RUNNING or PENDING, optionally older than a cutoff."""
+    query = select(ContainerSession).where(ContainerSession.status.in_(UNFINISHED_STATUSES))
+    if created_before is not None:
+        query = query.where(ContainerSession.created_at < created_before)
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
+async def list_events(session: AsyncSession, session_id: uuid.UUID) -> list[SessionEvent]:
+    """Every persisted event for a session, in arrival order."""
+    result = await session.execute(
+        select(SessionEvent).where(SessionEvent.session_id == session_id).order_by(SessionEvent.event_id)
+    )
+    return list(result.scalars().all())
 
 
 async def count_by_status(session: AsyncSession, installation_ids: list[uuid.UUID]) -> StatusCounts:
@@ -73,7 +114,8 @@ async def count_per_day(
     result = await session.execute(
         select(
             cast(ContainerSession.created_at, Date).label("day"),
-            func.count(ContainerSession.id).label("count"),
+            # Not labelled "count": that shadows Sequence.count on the Row.
+            func.count(ContainerSession.id).label("sessions"),
         )
         .where(
             ContainerSession.installation_id.in_(installation_ids),
@@ -82,7 +124,7 @@ async def count_per_day(
         .group_by("day")
         .order_by("day")
     )
-    return [DailyCount(day=row.day, count=row.count) for row in result.all()]
+    return [DailyCount(day=row.day, count=row.sessions) for row in result.all()]
 
 
 async def list_for_installation(

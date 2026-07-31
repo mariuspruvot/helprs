@@ -66,7 +66,7 @@ init_typed = true
 
 # Per-module overrides for third-party lib typing issues (aiodocker, SQLAlchemy, Starlette)
 [[tool.mypy.overrides]]
-module = ["helprs.modules.container.*", "helprs.main"]
+module = ["helprs.main"]
 disable_error_code = ["arg-type", "call-overload", "attr-defined"]
 
 [[tool.mypy.overrides]]

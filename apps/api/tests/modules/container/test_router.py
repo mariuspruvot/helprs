@@ -4,12 +4,14 @@ Uses test doubles for the service layer -- no real Docker or DB required
 for these endpoint tests (FastAPI integration tests with ASGI transport).
 """
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -454,114 +456,81 @@ class TestPostResultsComment:
             session.add(event)
             await session.commit()
 
-    async def test_posts_comment_when_enabled(self, seeded_app):
-        """With post_results_to_pr=True, a PR comment should be posted after completion."""
+    async def _stream_and_capture_github(self, seeded_app, session_id, docker, monkeypatch):
+        """Run the SSE stream to completion, serving GitHub from a double."""
         app = seeded_app["app"]
         token = seeded_app["access_token"]
 
-        session_id = await self._create_running_session(seeded_app, post_results=True)
-        await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
+        # Signing the App JWT needs a real RSA key, which the test env has not
+        # got; the mint request itself is served by the double.
+        monkeypatch.setattr(
+            "helprs.modules.installation.service.create_app_jwt",
+            lambda app_id, private_key: "signed.app.jwt",
+        )
 
-        fake_docker = FakeDockerClientForRouter()
-
-        with (
-            patch("helprs.modules.container.router._get_docker_client", return_value=fake_docker),
-            patch(
-                "helprs.modules.container.router.mint_installation_token",
-                new_callable=AsyncMock,
-                return_value="gho_fresh_token",
-            ),
-            patch(
-                "helprs.modules.container.router.post_pr_comment_with_retry",
-                new_callable=AsyncMock,
-            ) as mock_post,
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Build the ASGI client before the double swaps httpx.AsyncClient out.
+        real_client = httpx.AsyncClient
+        async with real_client(transport=ASGITransport(app=app), base_url="http://test") as client:
+            with (
+                patch("helprs.modules.container.router._get_docker_client", return_value=docker),
+                serving_github() as github,
+            ):
                 resp = await client.get(
                     f"/api/v1/containers/sessions/{session_id}/stream",
                     headers={"Authorization": f"Bearer {token}"},
                 )
+        return resp, github
 
-        assert resp.status_code == 200
-        mock_post.assert_called_once()
-        call_kwargs = mock_post.call_args.kwargs
-        assert call_kwargs["owner"] == "org"
-        assert call_kwargs["repo"] == "repo"
-        assert call_kwargs["pr_number"] == 99
-        assert "Score: 8 / 10" in call_kwargs["body"]
-        assert "helPRs Challenge-Me Results" in call_kwargs["body"]
+    @staticmethod
+    def _comment_requests(github):
+        return [r for r in github.requests if r.url.path.endswith("/comments")]
 
-    async def test_skips_comment_when_disabled(self, seeded_app):
-        """With post_results_to_pr=False (default), no comment should be posted."""
-        app = seeded_app["app"]
-        token = seeded_app["access_token"]
-
-        session_id = await self._create_running_session(seeded_app, post_results=False)
-        await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
-
-        fake_docker = FakeDockerClientForRouter()
-
-        with (
-            patch("helprs.modules.container.router._get_docker_client", return_value=fake_docker),
-            patch(
-                "helprs.modules.container.router.post_pr_comment_with_retry",
-                new_callable=AsyncMock,
-            ) as mock_post,
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.get(
-                    f"/api/v1/containers/sessions/{session_id}/stream",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-
-        mock_post.assert_not_called()
-
-    async def test_skips_comment_on_failed_session(self, seeded_app):
-        """When container exits with non-zero, no comment should be posted."""
-        app = seeded_app["app"]
-        token = seeded_app["access_token"]
-
+    async def test_posts_comment_when_enabled(self, seeded_app, monkeypatch):
+        """With post_results_to_pr enabled, the score card reaches the PR."""
         session_id = await self._create_running_session(seeded_app, post_results=True)
         await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
 
-        fake_docker = FakeDockerClientForRouter(exit_code=1)
+        resp, github = await self._stream_and_capture_github(
+            seeded_app, session_id, FakeDockerClientForRouter(), monkeypatch
+        )
 
-        with (
-            patch("helprs.modules.container.router._get_docker_client", return_value=fake_docker),
-            patch(
-                "helprs.modules.container.router.post_pr_comment_with_retry",
-                new_callable=AsyncMock,
-            ) as mock_post,
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.get(
-                    f"/api/v1/containers/sessions/{session_id}/stream",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
+        assert resp.status_code == 200
+        posted = self._comment_requests(github)
+        assert len(posted) == 1
+        assert posted[0].url.path == "/repos/org/repo/issues/99/comments"
+        body = json.loads(posted[0].content)["body"]
+        assert "Score: 8 / 10" in body
+        assert "helPRs Challenge-Me Results" in body
 
-        mock_post.assert_not_called()
+    async def test_skips_comment_when_disabled(self, seeded_app, monkeypatch):
+        """post_results_to_pr defaults to off; nothing is posted."""
+        session_id = await self._create_running_session(seeded_app, post_results=False)
+        await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
 
-    async def test_skips_comment_for_non_challenge_me_skill(self, seeded_app):
-        """When skill is not challenge-me, no comment should be posted."""
-        app = seeded_app["app"]
-        token = seeded_app["access_token"]
+        _, github = await self._stream_and_capture_github(
+            seeded_app, session_id, FakeDockerClientForRouter(), monkeypatch
+        )
 
+        assert self._comment_requests(github) == []
+
+    async def test_skips_comment_on_failed_session(self, seeded_app, monkeypatch):
+        """A non-zero exit means no score card to report."""
+        session_id = await self._create_running_session(seeded_app, post_results=True)
+        await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
+
+        _, github = await self._stream_and_capture_github(
+            seeded_app, session_id, FakeDockerClientForRouter(exit_code=1), monkeypatch
+        )
+
+        assert self._comment_requests(github) == []
+
+    async def test_skips_comment_for_non_challenge_me_skill(self, seeded_app, monkeypatch):
+        """Only challenge-me produces a score card worth posting."""
         session_id = await self._create_running_session(seeded_app, post_results=True, skill="code-review")
         await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
 
-        fake_docker = FakeDockerClientForRouter()
+        _, github = await self._stream_and_capture_github(
+            seeded_app, session_id, FakeDockerClientForRouter(), monkeypatch
+        )
 
-        with (
-            patch("helprs.modules.container.router._get_docker_client", return_value=fake_docker),
-            patch(
-                "helprs.modules.container.router.post_pr_comment_with_retry",
-                new_callable=AsyncMock,
-            ) as mock_post,
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.get(
-                    f"/api/v1/containers/sessions/{session_id}/stream",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-
-        mock_post.assert_not_called()
+        assert self._comment_requests(github) == []

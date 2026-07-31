@@ -10,10 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from helprs.core.database import Base, clear_session_factory, set_session_factory
+from helprs.modules.container.cleanup import cleanup_expired
 from helprs.modules.container.models import ContainerStatus, SessionEvent
 from helprs.modules.container.service import (
-    _DEFAULT_CONTAINER_TTL_SECONDS,
-    cleanup_expired,
     create_session,
     get_session,
     get_session_events,
@@ -22,13 +21,13 @@ from helprs.modules.container.service import (
     send_message,
     start_container,
     stop_container,
-    stream_and_persist,
-    stream_events,
-    stream_output,
 )
+from helprs.modules.container.streaming import stream_and_persist, stream_events, stream_output
 from helprs.modules.installation.models import Installation
 
 TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
+
+TEST_TTL_SECONDS = 15 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +344,7 @@ class TestStartContainer:
         docker: FakeDockerClient,
         skills_path: Path,
     ):
-        from helprs.core.exceptions import ExternalServiceError
+        from helprs.core.exceptions import ConflictError
 
         cs = await create_session(
             db=db,
@@ -357,7 +356,7 @@ class TestStartContainer:
         cs.status = ContainerStatus.RUNNING
         await db.flush()
 
-        with pytest.raises(ExternalServiceError, match="Cannot start session"):
+        with pytest.raises(ConflictError, match="Cannot start session"):
             await start_container(
                 db=db,
                 session_id=cs.id,
@@ -444,7 +443,7 @@ class TestStopContainer:
             skills_base_path=skills_path,
         )
         result = await stop_container(db=db, session_id=cs.id, docker=docker)
-        assert result.status == ContainerStatus.COMPLETED
+        assert result.status == ContainerStatus.CANCELLED
         assert result.completed_at is not None
 
     async def test_noop_for_completed_session(
@@ -485,7 +484,7 @@ class TestStopContainer:
         await db.flush()
 
         result = await stop_container(db=db, session_id=cs.id, docker=docker)
-        assert result.status == ContainerStatus.COMPLETED
+        assert result.status == ContainerStatus.CANCELLED
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +515,7 @@ class TestMarkCompleted:
             github_token="gho_test",
             skills_base_path=skills_path,
         )
-        result = await mark_completed(db=db, session_id=cs.id, docker=docker)
+        result = await mark_completed(db=db, session_id=cs.id, docker=docker, ttl_seconds=TEST_TTL_SECONDS)
         assert result.status == ContainerStatus.COMPLETED
         assert result.completed_at is not None
 
@@ -542,7 +541,7 @@ class TestMarkCompleted:
             github_token="gho_test",
             skills_base_path=skills_path,
         )
-        result = await mark_completed(db=db, session_id=cs.id, docker=docker)
+        result = await mark_completed(db=db, session_id=cs.id, docker=docker, ttl_seconds=TEST_TTL_SECONDS)
         assert result.status == ContainerStatus.FAILED
 
 
@@ -568,11 +567,11 @@ class TestCleanupExpired:
             skill_name="challenge-me",
         )
         # Backdate and set running via ORM so the session sees the update
-        cs.created_at = datetime.now(UTC) - timedelta(seconds=_DEFAULT_CONTAINER_TTL_SECONDS + 120)
+        cs.created_at = datetime.now(UTC) - timedelta(seconds=TEST_TTL_SECONDS + 120)
         cs.status = ContainerStatus.RUNNING
         await db.flush()
 
-        cleaned = await cleanup_expired(db=db, docker=docker)
+        cleaned = await cleanup_expired(db=db, docker=docker, ttl_seconds=TEST_TTL_SECONDS)
         assert cleaned == 1
 
     async def test_skips_completed_sessions(
@@ -591,7 +590,7 @@ class TestCleanupExpired:
         cs.status = ContainerStatus.COMPLETED
         await db.flush()
 
-        cleaned = await cleanup_expired(db=db, docker=docker)
+        cleaned = await cleanup_expired(db=db, docker=docker, ttl_seconds=TEST_TTL_SECONDS)
         assert cleaned == 0
 
 
@@ -773,12 +772,12 @@ class TestSendMessage:
         installation: Installation,
         docker: FakeDockerClient,
     ):
-        from helprs.core.exceptions import ExternalServiceError
+        from helprs.core.exceptions import ConflictError
 
         cs = await create_session(db, installation.id, 1, "org/repo", "challenge-me")
         # Session is still PENDING (no container started)
 
-        with pytest.raises(ExternalServiceError, match="Container is not running"):
+        with pytest.raises(ConflictError, match="Container is not running"):
             await send_message(db=db, session_id=cs.id, docker=docker, content="hello")
 
     async def test_raises_404_for_unknown_session(self, db: AsyncSession, docker: FakeDockerClient):

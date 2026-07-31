@@ -265,7 +265,8 @@ class TestContainerSessionLifecycle:
 
         # 4. Stop the container
         cs = await stop_container(db=db, session_id=cs.id, docker=_fake_docker)
-        assert cs.status == ContainerStatus.COMPLETED
+        # A user-requested stop is an abort, not a successful run.
+        assert cs.status == ContainerStatus.CANCELLED
         assert cs.completed_at is not None
 
         # 5. Verify Docker interactions happened in order
@@ -279,7 +280,7 @@ class TestContainerSessionLifecycle:
         installation: Installation,
     ):
         """Create a session in running state and verify SSE output format."""
-        from helprs.modules.container.service import stream_output
+        from helprs.modules.container.streaming import stream_output
 
         # Stream output from the fake Docker client
         events: list[str] = []

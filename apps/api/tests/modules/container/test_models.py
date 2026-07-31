@@ -17,7 +17,11 @@ class TestContainerStatus:
 
     def test_all_statuses_exist(self):
         statuses = {s.value for s in ContainerStatus}
-        assert statuses == {"pending", "running", "completed", "failed", "timeout"}
+        assert statuses == {"pending", "running", "completed", "failed", "timeout", "cancelled"}
+
+    def test_cancelled_is_distinct_from_completed(self):
+        """A user-requested stop must not be counted as a successful run."""
+        assert ContainerStatus.CANCELLED != ContainerStatus.COMPLETED
 
 
 class TestContainerSessionModel:

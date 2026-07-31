@@ -19,6 +19,10 @@ class ContainerStatus(enum.StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMEOUT = "timeout"
+    # A user pressed stop, or the API shut down: neither a success nor a
+    # failure of the skill. The column is a plain VARCHAR with no CHECK
+    # constraint, so adding a value needs no migration.
+    CANCELLED = "cancelled"
 
 
 class ContainerSession(Base):

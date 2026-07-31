@@ -1,177 +1,44 @@
-"""Container orchestration business logic.
+"""Container session use cases.
 
-Manages the lifecycle of ephemeral Docker containers that run Claude Code CLI
-skills against pull requests. Uses aiodocker for async Docker API interaction.
-
-Containers run in bidirectional stream-json mode: the initial skill prompt is
-sent as the first message, and subsequent user messages are written to the
-container's stdin via a FIFO. Output is streamed from stdout.
+Owns the session lifecycle: create, start, talk to, stop, finalize. Docker
+transport lives in ``docker_client``, SQL in ``repository``, the SSE pipeline
+in ``streaming``, and reaping in ``cleanup``.
 """
 
-from __future__ import annotations
-
 import asyncio
-import base64
 import contextlib
-import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from helprs.core.config import get_settings
 from helprs.core.database import get_db_context
-from helprs.core.exceptions import ExternalServiceError, NotFoundError
+from helprs.core.exceptions import ConflictError, ExternalServiceError, NotFoundError
+from helprs.modules.container import repository
+from helprs.modules.container.docker_client import CLAUDE_RUNNER_IMAGE, DockerClient
 from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
+from helprs.modules.container.pr_comment import build_session_url, extract_score_card, format_pr_comment
+from helprs.modules.container.scorecard import extract_scorecard
 
 logger = structlog.get_logger()
 
-# Default container TTL (overridden by Settings.CONTAINER_TTL_SECONDS)
-_DEFAULT_CONTAINER_TTL_SECONDS = 15 * 60
-
-# Base image for the claude-runner container
-CLAUDE_RUNNER_IMAGE = "claude-runner:latest"
-
-# Path where skills are located inside THIS container (for validation).
-# In Docker: /app/skills. Locally: repo root relative to this file.
+# Where skills live inside *this* process, used to validate the skill exists.
 _LOCAL_SKILLS_PATH = Path(__file__).resolve().parents[5] / "skills"
 _DOCKER_SKILLS_PATH = Path("/app/skills")
 SKILLS_BASE_PATH = _DOCKER_SKILLS_PATH if _DOCKER_SKILLS_PATH.exists() else _LOCAL_SKILLS_PATH
 
-# Host path for skills — needed for Docker-in-Docker volume mounts.
-# The API container can't use its own /app/skills path as a bind mount source
-# for child containers; Docker needs the HOST filesystem path.
+# Docker-in-Docker: a bind mount source must be a path on the *host*, not one
+# inside the API container.
 SKILLS_HOST_PATH = os.environ.get("SKILLS_HOST_PATH", str(SKILLS_BASE_PATH))
 
-
-class DockerClient(Protocol):
-    """Protocol for the Docker client used by the container service.
-
-    Abstracts the Docker SDK so tests can provide a simple test double.
-    """
-
-    async def create_container(
-        self,
-        image: str,
-        environment: dict[str, str],
-        volumes: list[str],
-        labels: dict[str, str],
-    ) -> str:
-        """Create a container with stdin enabled and return its ID."""
-        ...
-
-    async def start_container(self, container_id: str) -> None:
-        """Start a created container."""
-        ...
-
-    async def stop_container(self, container_id: str) -> None:
-        """Stop a running container."""
-        ...
-
-    async def remove_container(self, container_id: str, force: bool = False) -> None:
-        """Remove a container."""
-        ...
-
-    async def container_logs(self, container_id: str, follow: bool = False) -> AsyncIterator[str]:
-        """Stream container logs."""
-        ...
-
-    async def write_to_container(self, container_id: str, data: str) -> None:
-        """Write data to the container's FIFO via exec."""
-        ...
-
-    async def wait_container(self, container_id: str) -> int:
-        """Wait for a container to exit. Returns exit code."""
-        ...
+SCORECARD_SKILL = "challenge-me"
 
 
-class AioDockerClient:
-    """Production Docker client wrapping aiodocker."""
-
-    def __init__(self) -> None:
-        import aiodocker
-
-        self._docker = aiodocker.Docker()
-
-    async def create_container(
-        self,
-        image: str,
-        environment: dict[str, str],
-        volumes: list[str],
-        labels: dict[str, str],
-    ) -> str:
-        env_list = [f"{k}={v}" for k, v in environment.items()]
-        binds = volumes
-        config = {
-            "Image": image,
-            "Env": env_list,
-            "Labels": labels,
-            "OpenStdin": True,
-            "HostConfig": {
-                "Binds": binds,
-                "Memory": 512 * 1024 * 1024,  # 512MB
-                "NanoCPUs": 1_000_000_000,  # 1 CPU
-                "NetworkMode": "bridge",
-            },
-        }
-        container = await self._docker.containers.create(config)
-        return container.id
-
-    async def start_container(self, container_id: str) -> None:
-        container = await self._docker.containers.get(container_id)
-        await container.start()
-
-    async def stop_container(self, container_id: str) -> None:
-        container = await self._docker.containers.get(container_id)
-        await container.stop()
-
-    async def remove_container(self, container_id: str, force: bool = False) -> None:
-        container = await self._docker.containers.get(container_id)
-        await container.delete(force=force)
-
-    async def container_logs(self, container_id: str, follow: bool = False) -> AsyncIterator[str]:
-        container = await self._docker.containers.get(container_id)
-        # Only read stdout — Claude Code writes stream-json to stdout.
-        # stderr contains verbose/diagnostic output that duplicates events.
-        async for line in container.log(stdout=True, stderr=False, follow=follow):
-            yield line
-
-    async def write_to_container(self, container_id: str, data: str) -> None:
-        """Write data to the container's FIFO via docker exec.
-
-        The entrypoint reads newline-terminated lines from /tmp/claude-input.
-        Uses base64 encoding to safely pass arbitrary text through the shell
-        without risking interpretation of special characters ($, `, !, etc.).
-        A trailing newline is always appended so ``read`` in the entrypoint
-        loop receives a complete line.
-        """
-        container = await self._docker.containers.get(container_id)
-        encoded = base64.b64encode((data + "\n").encode()).decode()
-        exec_obj = await container.exec(
-            cmd=["sh", "-c", f"echo {encoded} | base64 -d > /tmp/claude-input"],
-        )
-        await exec_obj.start(detach=True)
-
-    async def wait_container(self, container_id: str) -> int:
-        container = await self._docker.containers.get(container_id)
-        result = await container.wait()
-        return result["StatusCode"]
-
-    async def close(self) -> None:
-        await self._docker.close()
-
-
-# ---------------------------------------------------------------------------
-# Session CRUD
-# ---------------------------------------------------------------------------
+# --- Session records -------------------------------------------------------
 
 
 async def create_session(
@@ -182,17 +49,18 @@ async def create_session(
     skill_name: str,
     user_id: UUID | None = None,
 ) -> ContainerSession:
-    """Create a new container session record in pending state."""
-    session = ContainerSession(
-        installation_id=installation_id,
-        user_id=user_id,
-        pr_number=pr_number,
-        repo_full_name=repo_full_name,
-        skill_name=skill_name,
-        status=ContainerStatus.PENDING,
+    """Record a session in PENDING state; no container exists yet."""
+    session = await repository.add(
+        db,
+        ContainerSession(
+            installation_id=installation_id,
+            user_id=user_id,
+            pr_number=pr_number,
+            repo_full_name=repo_full_name,
+            skill_name=skill_name,
+            status=ContainerStatus.PENDING,
+        ),
     )
-    db.add(session)
-    await db.flush()
     await logger.ainfo(
         "container_session_created",
         session_id=str(session.id),
@@ -204,22 +72,39 @@ async def create_session(
 
 
 async def get_session(db: AsyncSession, session_id: UUID) -> ContainerSession | None:
-    """Look up a container session by ID."""
-    result = await db.execute(select(ContainerSession).where(ContainerSession.id == session_id))
-    return result.scalar_one_or_none()
+    return await repository.get(db, session_id)
 
 
 async def get_session_or_404(db: AsyncSession, session_id: UUID) -> ContainerSession:
-    """Look up a container session by ID, raising NotFoundError if missing."""
-    session = await get_session(db, session_id)
+    session = await repository.get(db, session_id)
     if session is None:
         raise NotFoundError("Container session not found")
     return session
 
 
-# ---------------------------------------------------------------------------
-# Container lifecycle
-# ---------------------------------------------------------------------------
+async def get_session_events(db: AsyncSession, session_id: UUID) -> list[SessionEvent]:
+    await get_session_or_404(db, session_id)
+    return await repository.list_events(db, session_id)
+
+
+async def delete_session(db: AsyncSession, session_id: UUID) -> None:
+    await repository.delete(db, await get_session_or_404(db, session_id))
+
+
+# --- Container lifecycle ---------------------------------------------------
+
+
+def _resolve_skill_dir(skill_name: str, base: Path) -> Path:
+    """Resolve a skill directory, refusing anything outside ``base``.
+
+    The name reaches here from an API request and from the webhook path, which
+    skips request-schema validation entirely — so the check belongs at the
+    Docker boundary, where a traversal would become a host bind mount.
+    """
+    candidate = (base / skill_name).resolve()
+    if not candidate.is_relative_to(base.resolve()) or not candidate.is_dir():
+        raise NotFoundError(f"Skill '{skill_name}' not found")
+    return candidate
 
 
 async def start_container(
@@ -230,58 +115,41 @@ async def start_container(
     github_token: str,
     skills_base_path: Path | None = None,
 ) -> ContainerSession:
-    """Provision and start a Docker container for the given session.
-
-    Transitions the session from PENDING -> RUNNING.
-    """
+    """Provision the runner container and move the session PENDING -> RUNNING."""
     cs = await get_session_or_404(db, session_id)
-
     if cs.status != ContainerStatus.PENDING:
-        raise ExternalServiceError(f"Cannot start session in '{cs.status.value}' state")
+        raise ConflictError(f"Cannot start session in '{cs.status.value}' state")
 
-    resolved_base = skills_base_path if skills_base_path is not None else SKILLS_BASE_PATH
-    skill_path = resolved_base / cs.skill_name
-    if not skill_path.is_dir():
+    base = skills_base_path if skills_base_path is not None else SKILLS_BASE_PATH
+    try:
+        _resolve_skill_dir(cs.skill_name, base)
+    except NotFoundError:
         cs.status = ContainerStatus.FAILED
         await db.flush()
-        raise NotFoundError(f"Skill '{cs.skill_name}' not found")
-
-    environment = {
-        "CLAUDE_CODE_OAUTH_TOKEN": claude_oauth_token,
-        "GITHUB_TOKEN": github_token,
-        "SKILL_NAME": cs.skill_name,
-        "PR_NUMBER": str(cs.pr_number),
-        "REPO_FULL_NAME": cs.repo_full_name,
-    }
-
-    # Use HOST path for volume mount (Docker-in-Docker requires host paths)
-    host_skill_path = f"{SKILLS_HOST_PATH}/{cs.skill_name}"
-    volumes = [
-        f"{host_skill_path}:/skills/{cs.skill_name}:ro",
-    ]
-
-    labels = {
-        "helprs.session_id": str(cs.id),
-        "helprs.skill": cs.skill_name,
-        "helprs.repo": cs.repo_full_name,
-    }
+        raise
 
     try:
         container_id = await docker.create_container(
             image=CLAUDE_RUNNER_IMAGE,
-            environment=environment,
-            volumes=volumes,
-            labels=labels,
+            environment={
+                "CLAUDE_CODE_OAUTH_TOKEN": claude_oauth_token,
+                "GITHUB_TOKEN": github_token,
+                "SKILL_NAME": cs.skill_name,
+                "PR_NUMBER": str(cs.pr_number),
+                "REPO_FULL_NAME": cs.repo_full_name,
+            },
+            volumes=[f"{SKILLS_HOST_PATH}/{cs.skill_name}:/skills/{cs.skill_name}:ro"],
+            labels={
+                "helprs.session_id": str(cs.id),
+                "helprs.skill": cs.skill_name,
+                "helprs.repo": cs.repo_full_name,
+            },
         )
         await docker.start_container(container_id)
     except Exception as exc:
         cs.status = ContainerStatus.FAILED
         await db.flush()
-        await logger.aerror(
-            "container_start_failed",
-            session_id=str(session_id),
-            error=str(exc),
-        )
+        await logger.aerror("container_start_failed", session_id=str(session_id), error=str(exc))
         raise ExternalServiceError(f"Failed to start container: {exc}") from exc
 
     cs.container_id = container_id
@@ -289,241 +157,29 @@ async def start_container(
     cs.started_at = datetime.now(UTC)
     await db.flush()
 
-    await logger.ainfo(
-        "container_started",
-        session_id=str(session_id),
-        container_id=container_id,
-    )
+    await logger.ainfo("container_started", session_id=str(session_id), container_id=container_id)
     return cs
 
 
-async def stream_events(
-    docker: DockerClient,
-    container_id: str,
-) -> AsyncIterator[tuple[int, str]]:
-    """Yield ``(event_id, raw_line)`` tuples from container log stream.
-
-    Handles Docker log frame buffering (long lines split across chunks),
-    newline splitting, and keepalive signaling.
-
-    Yields ``(0, "")`` as a sentinel for keepalive intervals (no data
-    from container for 15 seconds — Claude is thinking).
-
-    IMPORTANT: We must NOT use ``asyncio.wait_for()`` on the log iterator.
-    aiodocker uses a multiplexed stream format (8-byte header + payload)
-    with ``readexactly()`` calls.  Cancelling a ``readexactly()`` mid-read
-    corrupts the stream position, causing all subsequent reads to
-    desynchronize and silently drop events.  Instead we keep the read task
-    alive across keepalive intervals using ``asyncio.wait()``.
-    """
-    keepalive_interval = 15.0
-    event_id = 0
-    buffer = ""
-
-    log_iter = docker.container_logs(container_id, follow=True).__aiter__()
-    read_task: asyncio.Task[str] | None = None
-    try:
-        while True:
-            if read_task is None:
-                read_task = asyncio.ensure_future(log_iter.__anext__())
-
-            done, _ = await asyncio.wait({read_task}, timeout=keepalive_interval)
-
-            if not done:
-                # Timeout — no data arrived, but keep the read task alive.
-                yield (0, "")
-                continue
-
-            try:
-                chunk = read_task.result()
-            except StopAsyncIteration:
-                read_task = None
-                break
-
-            read_task = None
-            buffer += chunk
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-                event_id += 1
-                yield (event_id, line)
-    finally:
-        if read_task is not None:
-            read_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
-                await read_task
-
-    # Flush any remaining content in the buffer (e.g. the final result
-    # event if Docker closed the stream before flushing the trailing \n).
-    if buffer:
-        line = buffer.strip()
-        if line:
-            event_id += 1
-            yield (event_id, line)
-
-
-async def stream_output(
-    docker: DockerClient,
-    container_id: str,
-    offset: int = 0,
-) -> AsyncIterator[str]:
-    """Yield SSE-formatted events without persistence.
-
-    Thin wrapper over :func:`stream_events` that formats tuples as SSE.
-    Used by tests and code paths that don't need DB persistence.
-    """
-    async for event_id, line in stream_events(docker, container_id):
-        if event_id == 0:
-            yield ": keepalive\n\n"
-            continue
-        if event_id <= offset:
-            continue
-        yield f"id: {event_id}\ndata: {line}\n\n"
-
-
-_PERSIST_BATCH_SIZE = 10
-
-
-async def stream_and_persist(
-    docker: DockerClient,
-    container_id: str,
-    session_id: UUID,
-    offset: int = 0,
-    batch_size: int = _PERSIST_BATCH_SIZE,
-) -> AsyncIterator[str]:
-    """Stream container output as SSE while persisting events to the DB.
-
-    Wraps :func:`stream_events`, yields the same SSE format as
-    :func:`stream_output`, but also batch-inserts events into the
-    ``session_events`` table via :func:`get_db_context`.
-
-    Events at or below *offset* are skipped for SSE output but still
-    persisted (they may not have been flushed before a prior disconnect).
-    Duplicate ``(session_id, event_id)`` pairs are silently ignored via
-    ``ON CONFLICT DO NOTHING``.
-    """
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    pending: list[tuple[int, dict]] = []
-
-    async def _flush() -> None:
-        if not pending:
-            return
-        batch = pending[:]
-        pending.clear()
-        try:
-            async with get_db_context() as db:
-                stmt = pg_insert(SessionEvent.__table__).values(
-                    [{"session_id": session_id, "event_id": eid, "data": data} for eid, data in batch]
-                )
-                stmt = stmt.on_conflict_do_nothing(
-                    constraint="uq_session_events_session_event",
-                )
-                await db.execute(stmt)
-        except Exception:
-            await logger.aexception(
-                "event_persist_failed",
-                session_id=str(session_id),
-                batch_size=len(batch),
-            )
-
-    async for event_id, line in stream_events(docker, container_id):
-        if event_id == 0:
-            # Keepalive — flush pending if any
-            await _flush()
-            yield ": keepalive\n\n"
-            continue
-
-        # Parse to JSONB-safe dict
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            parsed = {"_raw": line}
-
-        pending.append((event_id, parsed))
-
-        if len(pending) >= batch_size:
-            await _flush()
-
-        if event_id <= offset:
-            continue
-        yield f"id: {event_id}\ndata: {line}\n\n"
-
-    # Final flush for remaining events
-    await _flush()
-
-
-# ---------------------------------------------------------------------------
-# Session event retrieval
-# ---------------------------------------------------------------------------
-
-
-async def get_session_events(
-    db: AsyncSession,
-    session_id: UUID,
-) -> list[SessionEvent]:
-    """Return all persisted events for a session, ordered by event_id."""
-    await get_session_or_404(db, session_id)
-    result = await db.execute(
-        select(SessionEvent).where(SessionEvent.session_id == session_id).order_by(SessionEvent.event_id)
-    )
-    return list(result.scalars().all())
-
-
-async def delete_session(db: AsyncSession, session_id: UUID) -> None:
-    """Delete a container session and its events (CASCADE)."""
-    session = await get_session_or_404(db, session_id)
-    await db.delete(session)
-    await db.flush()
-
-
-async def send_message(
-    db: AsyncSession,
-    session_id: UUID,
-    docker: DockerClient,
-    content: str,
-) -> None:
-    """Send a user message to a running container session.
-
-    Writes the raw user content to the container's FIFO (newline-terminated).
-    The entrypoint reads each line and invokes ``claude -c -p`` to continue
-    the conversation.
-    """
+async def send_message(db: AsyncSession, session_id: UUID, docker: DockerClient, content: str) -> None:
+    """Hand a user message to the running container's read loop."""
     cs = await get_session_or_404(db, session_id)
-
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
-        raise ExternalServiceError("Container is not running")
+        raise ConflictError("Container is not running")
 
     try:
         await docker.write_to_container(cs.container_id, content)
     except Exception as exc:
-        await logger.aerror(
-            "container_message_failed",
-            session_id=str(session_id),
-            error=str(exc),
-        )
+        await logger.aerror("container_message_failed", session_id=str(session_id), error=str(exc))
         raise ExternalServiceError(f"Failed to send message to container: {exc}") from exc
 
-    await logger.ainfo(
-        "container_message_sent",
-        session_id=str(session_id),
-    )
+    await logger.ainfo("container_message_sent", session_id=str(session_id))
 
 
-async def stop_container(
-    db: AsyncSession,
-    session_id: UUID,
-    docker: DockerClient,
-) -> ContainerSession:
-    """Stop and remove the container for a session.
-
-    Transitions the session to COMPLETED (if running) or leaves it unchanged.
-    """
+async def stop_container(db: AsyncSession, session_id: UUID, docker: DockerClient) -> ContainerSession:
+    """Abort a session at the user's request."""
     cs = await get_session_or_404(db, session_id)
-
-    if cs.status not in (ContainerStatus.RUNNING, ContainerStatus.PENDING):
+    if cs.status not in repository.UNFINISHED_STATUSES:
         return cs
 
     if cs.container_id:
@@ -538,14 +194,13 @@ async def stop_container(
                 error=str(exc),
             )
 
-    cs.status = ContainerStatus.COMPLETED
+    # Not COMPLETED: the skill never finished, and reporting an abort as a
+    # success would corrupt every completion statistic.
+    cs.status = ContainerStatus.CANCELLED
     cs.completed_at = datetime.now(UTC)
     await db.flush()
 
-    await logger.ainfo(
-        "container_stopped",
-        session_id=str(session_id),
-    )
+    await logger.ainfo("container_stopped", session_id=str(session_id))
     return cs
 
 
@@ -553,19 +208,16 @@ async def mark_completed(
     db: AsyncSession,
     session_id: UUID,
     docker: DockerClient,
-    ttl_seconds: int = _DEFAULT_CONTAINER_TTL_SECONDS,
+    *,
+    ttl_seconds: int,
 ) -> ContainerSession:
-    """Wait for the container to finish, capture exit code, clean up."""
+    """Wait for the container to exit, record the outcome, remove it."""
     cs = await get_session_or_404(db, session_id)
-
     if cs.status != ContainerStatus.RUNNING or not cs.container_id:
         return cs
 
     try:
-        exit_code = await asyncio.wait_for(
-            docker.wait_container(cs.container_id),
-            timeout=ttl_seconds,
-        )
+        exit_code = await asyncio.wait_for(docker.wait_container(cs.container_id), timeout=ttl_seconds)
         cs.status = ContainerStatus.COMPLETED if exit_code == 0 else ContainerStatus.FAILED
     except TimeoutError:
         cs.status = ContainerStatus.TIMEOUT
@@ -580,102 +232,115 @@ async def mark_completed(
     return cs
 
 
-# ---------------------------------------------------------------------------
-# Cleanup
-# ---------------------------------------------------------------------------
+# --- Finalization ----------------------------------------------------------
 
 
-async def cleanup_expired(
-    db: AsyncSession,
-    docker: DockerClient,
-    ttl_seconds: int = _DEFAULT_CONTAINER_TTL_SECONDS,
-) -> int:
-    """Find sessions past TTL and destroy their containers.
+async def finalize_session(session_id: UUID, docker: DockerClient) -> ContainerStatus:
+    """Everything that must happen once a session's container exits.
 
-    Returns the number of sessions cleaned up.
+    Deliberately independent of the HTTP request that started the stream: a
+    browser closing its tab must not leave the session stuck RUNNING with its
+    scorecard unextracted and its PR comment unposted.
     """
-    cutoff = datetime.now(UTC).timestamp() - ttl_seconds
-    cutoff_dt = datetime.fromtimestamp(cutoff, tz=UTC)
+    settings = get_settings()
+    try:
+        async with get_db_context() as db:
+            completed = await mark_completed(
+                db,
+                session_id,
+                docker,
+                ttl_seconds=settings.CONTAINER_TTL_SECONDS,
+            )
+            status = completed.status
 
-    result = await db.execute(
-        select(ContainerSession).where(
-            ContainerSession.status.in_([ContainerStatus.RUNNING, ContainerStatus.PENDING]),
-            ContainerSession.created_at < cutoff_dt,
-        )
-    )
-    expired = list(result.scalars().all())
+            if status == ContainerStatus.COMPLETED:
+                await _persist_scorecard(db, completed)
+                await _post_results_comment(db, completed)
+    except Exception:
+        await logger.aexception("session_finalization_failed", session_id=str(session_id))
+        return ContainerStatus.FAILED
 
-    cleaned = 0
-    for cs in expired:
-        if cs.container_id:
-            try:
-                await docker.stop_container(cs.container_id)
-                await docker.remove_container(cs.container_id, force=True)
-            except Exception as exc:
-                await logger.awarning(
-                    "cleanup_container_failed",
-                    session_id=str(cs.id),
-                    error=str(exc),
-                )
-        cs.status = ContainerStatus.TIMEOUT
-        cs.completed_at = datetime.now(UTC)
-        cleaned += 1
-
-    if cleaned:
-        await db.flush()
-        await logger.ainfo("expired_sessions_cleaned", count=cleaned)
-
-    return cleaned
+    return status
 
 
-async def cleanup_all_running(
-    db: AsyncSession,
-    docker: DockerClient,
-) -> int:
-    """Stop ALL running/pending sessions. Used during graceful shutdown."""
-    result = await db.execute(
-        select(ContainerSession).where(
-            ContainerSession.status.in_([ContainerStatus.RUNNING, ContainerStatus.PENDING]),
-        )
-    )
-    sessions = list(result.scalars().all())
+def _last_scorecard_in(events: list[SessionEvent]) -> dict | None:
+    """Find the scorecard block in the most recent event that carries one.
 
-    cleaned = 0
-    for cs in sessions:
-        if cs.container_id:
-            with contextlib.suppress(Exception):
-                await docker.stop_container(cs.container_id)
-                await docker.remove_container(cs.container_id, force=True)
-        cs.status = ContainerStatus.COMPLETED
-        cs.completed_at = datetime.now(UTC)
-        cleaned += 1
-
-    if cleaned:
-        await db.flush()
-        await logger.ainfo("shutdown_sessions_stopped", count=cleaned)
-
-    return cleaned
-
-
-async def reconcile_stale_sessions(db: AsyncSession) -> int:
-    """Mark any RUNNING/PENDING sessions as FAILED on boot.
-
-    After a crash, containers are gone but DB records still show RUNNING.
-    This reconciles them immediately rather than waiting for TTL expiry.
+    Assistant text blocks are checked first (that is where the skill writes
+    it); the ``result`` event, which echoes the final text, is the fallback.
     """
-    result = await db.execute(
-        select(ContainerSession).where(
-            ContainerSession.status.in_([ContainerStatus.RUNNING, ContainerStatus.PENDING]),
-        )
-    )
-    stale = list(result.scalars().all())
+    for event in reversed(events):
+        message = event.data.get("message")
+        if event.data.get("type") == "assistant" and isinstance(message, dict):
+            for block in reversed(message.get("content", [])):
+                if block.get("type") == "text":
+                    scorecard = extract_scorecard(block.get("text", ""))
+                    if scorecard:
+                        return scorecard
 
-    for cs in stale:
-        cs.status = ContainerStatus.FAILED
-        cs.completed_at = datetime.now(UTC)
+    for event in reversed(events):
+        if event.data.get("type") == "result" and isinstance(event.data.get("result"), str):
+            scorecard = extract_scorecard(event.data["result"])
+            if scorecard:
+                return scorecard
+    return None
 
-    if stale:
+
+async def _persist_scorecard(db: AsyncSession, cs: ContainerSession) -> None:
+    """Store the skill's scorecard, if it emitted one."""
+    scorecard = _last_scorecard_in(await repository.list_events(db, cs.id))
+    if scorecard:
+        cs.scorecard = scorecard
         await db.flush()
-        await logger.ainfo("stale_sessions_reconciled", count=len(stale))
 
-    return len(stale)
+
+async def _post_results_comment(db: AsyncSession, cs: ContainerSession) -> None:
+    """Post the score card back to the PR, when the install opted in.
+
+    Best effort: a GitHub failure must not change the session's outcome. The
+    token is minted fresh because a long session can outlive the one used to
+    start it.
+    """
+    from helprs.modules.installation import repository as installation_repository
+    from helprs.modules.installation.service import mint_installation_token, post_pr_comment_with_retry
+
+    if cs.skill_name != SCORECARD_SKILL:
+        return
+
+    try:
+        installation = await installation_repository.get_by_id(db, cs.installation_id)
+        if not installation or not installation.post_results_to_pr:
+            return
+
+        score_card = await extract_score_card(cs.id, db)
+        if not score_card:
+            await logger.ainfo("post_results_no_score_card", session_id=str(cs.id))
+            return
+
+        settings = get_settings()
+        comment_body = format_pr_comment(
+            score_card,
+            build_session_url(
+                app_base_url=settings.APP_BASE_URL,
+                installation_id=cs.installation_id,
+                repo_full_name=cs.repo_full_name,
+                pr_number=cs.pr_number,
+            ),
+        )
+        owner, repo = cs.repo_full_name.split("/", 1)
+        token = await mint_installation_token(installation.github_installation_id, settings)
+        await post_pr_comment_with_retry(
+            owner=owner,
+            repo=repo,
+            pr_number=cs.pr_number,
+            body=comment_body,
+            installation_token=token,
+        )
+        await logger.ainfo(
+            "post_results_comment_posted",
+            session_id=str(cs.id),
+            pr_number=cs.pr_number,
+            repo=cs.repo_full_name,
+        )
+    except Exception:
+        await logger.aexception("post_results_comment_failed", session_id=str(cs.id))
