@@ -1,218 +1,208 @@
-"""Unit tests for identity service."""
+"""Unit tests for identity use cases.
 
+The GitHub boundary has its own tests (``test_github.py``); here the network
+is served by a double so these exercise orchestration and persistence.
+"""
+
+import uuid
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from helprs.core.exceptions import ExternalServiceError, UnauthorizedError
-from helprs.core.security import create_access_token, fernet_encrypt
+from helprs.core.exceptions import UnauthorizedError
+from helprs.core.security import create_access_token, decode_access_token, fernet_encrypt
+from helprs.modules.identity.github import GitHubUserProfile
+from helprs.modules.identity.models import GitHubUser
 from helprs.modules.identity.service import (
+    TokenPair,
+    authenticate_with_code,
     create_token_pair,
-    exchange_code_for_token,
-    fetch_github_user,
     get_decrypted_github_token,
-    get_or_create_user,
     refresh_tokens,
+    sync_user,
 )
 
 
-class TestExchangeCodeForToken:
-    async def test_success(self, settings):
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"access_token": "gho_abc123", "token_type": "bearer"}
-        mock_response.raise_for_status = MagicMock()
+class StoredUser:
+    """Stand-in for a GitHubUser row where no database is needed."""
 
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            result = await exchange_code_for_token("test_code", settings)
-            assert result["access_token"] == "gho_abc123"
-
-    async def test_github_returns_error(self, settings):
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"error": "bad_verification_code"}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            with pytest.raises(UnauthorizedError, match="bad_verification_code"):
-                await exchange_code_for_token("bad_code", settings)
-
-    async def test_timeout(self, settings):
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.side_effect = httpx.TimeoutException("timeout")
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            with pytest.raises(ExternalServiceError, match="temporarily unavailable"):
-                await exchange_code_for_token("code", settings)
-
-    async def test_http_error(self, settings):
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_resp = MagicMock()
-            mock_resp.status_code = 500
-            mock_client.post.side_effect = httpx.HTTPStatusError(
-                "Server Error", request=MagicMock(), response=mock_resp
-            )
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            with pytest.raises(ExternalServiceError):
-                await exchange_code_for_token("code", settings)
+    def __init__(self, *, encrypted_token: str = "", user_id: uuid.UUID | None = None) -> None:
+        self.id = user_id or uuid.uuid4()
+        self.github_login = "testuser"
+        self.github_access_token_enc = encrypted_token
 
 
-class TestFetchGithubUser:
-    async def test_success(self):
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"id": 123, "login": "octocat"}
-        mock_response.raise_for_status = MagicMock()
+def _serve_oauth(monkeypatch, *, profile_id: int = 99999999, login: str = "newuser") -> None:
+    """Serve both GitHub calls the login flow makes."""
 
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+    def _handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_token"):
+            return httpx.Response(200, json={"access_token": "gho_from_code", "token_type": "bearer"})
+        return httpx.Response(
+            200,
+            json={"id": profile_id, "login": login, "email": f"{login}@example.com", "avatar_url": None},
+        )
 
-            result = await fetch_github_user("gho_token")
-            assert result["login"] == "octocat"
+    original = httpx.AsyncClient
 
-    async def test_401_raises_unauthorized(self):
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_resp = MagicMock()
-            mock_resp.status_code = 401
-            mock_client.get.side_effect = httpx.HTTPStatusError("Unauthorized", request=MagicMock(), response=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+    def _client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(_handle)
+        return original(*args, **kwargs)
 
-            with pytest.raises(UnauthorizedError, match="invalid or revoked"):
-                await fetch_github_user("bad_token")
-
-    async def test_timeout_raises_external_service_error(self):
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.get.side_effect = httpx.TimeoutException("timeout")
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            with pytest.raises(ExternalServiceError, match="temporarily unavailable"):
-                await fetch_github_user("gho_token")
-
-    async def test_5xx_raises_external_service_error(self):
-        with patch("helprs.modules.identity.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_resp = MagicMock()
-            mock_resp.status_code = 503
-            mock_client.get.side_effect = httpx.HTTPStatusError(
-                "Service Unavailable", request=MagicMock(), response=mock_resp
-            )
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            with pytest.raises(ExternalServiceError, match="GitHub API error"):
-                await fetch_github_user("gho_token")
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
 
 
-class TestGetOrCreateUser:
+class TestAuthenticateWithCode:
+    async def test_creates_user_and_issues_tokens(self, db_session, settings, monkeypatch):
+        _serve_oauth(monkeypatch, profile_id=13579, login="freshuser")
+
+        user, tokens = await authenticate_with_code(db_session, "the-code", settings)
+
+        assert user.github_id == 13579
+        assert user.github_login == "freshuser"
+        assert isinstance(tokens, TokenPair)
+        assert decode_access_token(tokens.access_token, settings.SECRET_KEY)["sub"] == str(user.id)
+
+    async def test_stores_the_github_token_encrypted(self, db_session, settings, monkeypatch):
+        _serve_oauth(monkeypatch, profile_id=24680, login="encrypteduser")
+
+        user, _ = await authenticate_with_code(db_session, "the-code", settings)
+
+        assert user.github_access_token_enc != "gho_from_code"
+        assert get_decrypted_github_token(user, settings.FERNET_KEY) == "gho_from_code"
+
+
+class TestSyncUser:
     async def test_creates_new_user(self, db_session, settings):
-        github_data = {
-            "id": 99999999,
-            "login": "newuser",
-            "email": "new@example.com",
-            "avatar_url": "https://avatars.githubusercontent.com/u/99999999",
-        }
-        user = await get_or_create_user(db_session, github_data, "gho_new_token", settings)
+        profile = GitHubUserProfile(
+            id=99999999,
+            login="newuser",
+            email="new@example.com",
+            avatar_url="https://avatars.example/u/99999999",
+        )
+
+        user = await sync_user(db_session, profile, "gho_new_token", settings)
+
         assert user.github_id == 99999999
         assert user.github_login == "newuser"
         assert user.email == "new@example.com"
 
     async def test_updates_existing_user(self, db_session, settings, test_user):
         existing_user, _ = test_user
-        github_data = {
-            "id": existing_user.github_id,
-            "login": "updated_login",
-            "email": "updated@example.com",
-            "avatar_url": "https://avatars.githubusercontent.com/u/12345678",
-        }
-        user = await get_or_create_user(db_session, github_data, "gho_updated_token", settings)
+        profile = GitHubUserProfile(
+            id=existing_user.github_id,
+            login="updated_login",
+            email="updated@example.com",
+            avatar_url=None,
+        )
+
+        user = await sync_user(db_session, profile, "gho_updated_token", settings)
+
         assert user.id == existing_user.id
         assert user.github_login == "updated_login"
         assert user.email == "updated@example.com"
 
+    async def test_does_not_duplicate_on_repeated_login(self, db_session, settings):
+        profile = GitHubUserProfile(id=555000, login="repeat", email=None, avatar_url=None)
+
+        first = await sync_user(db_session, profile, "gho_1", settings)
+        second = await sync_user(db_session, profile, "gho_2", settings)
+
+        assert first.id == second.id
+
 
 class TestCreateTokenPair:
-    def test_returns_two_tokens(self, settings):
-        user = MagicMock()
-        user.id = "550e8400-e29b-41d4-a716-446655440000"
-        user.github_login = "testuser"
+    def test_access_and_refresh_differ_and_carry_the_right_claims(self, settings):
+        user = StoredUser()
 
-        access, refresh = create_token_pair(user, settings)
-        assert isinstance(access, str)
-        assert isinstance(refresh, str)
-        assert access != refresh
+        pair = create_token_pair(user, settings)
+
+        assert pair.access_token != pair.refresh_token
+        access_claims = decode_access_token(pair.access_token, settings.SECRET_KEY)
+        refresh_claims = decode_access_token(pair.refresh_token, settings.SECRET_KEY)
+        assert access_claims["github_login"] == "testuser"
+        assert "type" not in access_claims
+        assert refresh_claims["type"] == "refresh"
 
 
 class TestRefreshTokens:
-    async def test_valid_refresh(self, db_session, settings, test_user):
+    async def test_valid_refresh_returns_a_new_pair(self, db_session, settings, test_user):
         user, _ = test_user
         refresh_token = create_access_token(
             {"sub": str(user.id), "type": "refresh"},
             settings.SECRET_KEY,
             timedelta(days=7),
         )
-        new_access, new_refresh = await refresh_tokens(refresh_token, db_session, settings)
-        assert isinstance(new_access, str)
-        assert isinstance(new_refresh, str)
+
+        pair = await refresh_tokens(refresh_token, db_session, settings)
+
+        assert isinstance(pair, TokenPair)
+        assert decode_access_token(pair.access_token, settings.SECRET_KEY)["sub"] == str(user.id)
 
     async def test_invalid_refresh_token(self, db_session, settings):
         with pytest.raises(UnauthorizedError, match="Invalid or expired"):
             await refresh_tokens("invalid_token", db_session, settings)
 
-    async def test_non_refresh_token_rejected(self, db_session, settings, test_user):
-        _, access_token = test_user  # This is an access token, not refresh
+    async def test_access_token_is_not_accepted_as_refresh(self, db_session, settings, test_user):
+        _, access_token = test_user
+
         with pytest.raises(UnauthorizedError, match="not a refresh token"):
             await refresh_tokens(access_token, db_session, settings)
 
     async def test_user_not_found(self, db_session, settings):
-        import uuid
-
         refresh_token = create_access_token(
             {"sub": str(uuid.uuid4()), "type": "refresh"},
             settings.SECRET_KEY,
             timedelta(days=7),
         )
+
         with pytest.raises(UnauthorizedError, match="User not found"):
+            await refresh_tokens(refresh_token, db_session, settings)
+
+    async def test_non_uuid_subject_is_rejected(self, db_session, settings):
+        refresh_token = create_access_token(
+            {"sub": "not-a-uuid", "type": "refresh"},
+            settings.SECRET_KEY,
+            timedelta(days=7),
+        )
+
+        with pytest.raises(UnauthorizedError, match="Invalid refresh token payload"):
+            await refresh_tokens(refresh_token, db_session, settings)
+
+    async def test_missing_subject_is_rejected(self, db_session, settings):
+        refresh_token = create_access_token({"type": "refresh"}, settings.SECRET_KEY, timedelta(days=7))
+
+        with pytest.raises(UnauthorizedError, match="Invalid refresh token payload"):
             await refresh_tokens(refresh_token, db_session, settings)
 
 
 class TestGetDecryptedGithubToken:
     def test_valid_token(self, settings):
-        user = MagicMock()
-        user.github_access_token_enc = fernet_encrypt("gho_test", settings.FERNET_KEY)
-        result = get_decrypted_github_token(user, settings.FERNET_KEY)
-        assert result == "gho_test"
+        user = StoredUser(encrypted_token=fernet_encrypt("gho_test", settings.FERNET_KEY))
+
+        assert get_decrypted_github_token(user, settings.FERNET_KEY) == "gho_test"
 
     def test_corrupted_token(self, settings):
-        user = MagicMock()
-        user.github_access_token_enc = "corrupted_data"
+        user = StoredUser(encrypted_token="corrupted_data")
+
         with pytest.raises(UnauthorizedError, match="corrupted"):
             get_decrypted_github_token(user, settings.FERNET_KEY)
+
+
+class TestUserStats:
+    async def test_empty_when_user_has_no_installations(self, db_session, settings, monkeypatch):
+        from helprs.modules.identity import service
+
+        async def _no_installations(session, user, settings):
+            return []
+
+        monkeypatch.setattr(
+            "helprs.modules.installation.service.get_installations_for_user",
+            _no_installations,
+        )
+
+        stats = await service.get_user_stats(db_session, GitHubUser(github_id=1, github_login="x"), settings)
+
+        assert stats.totals.total == 0
+        assert stats.daily_counts == []

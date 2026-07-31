@@ -22,10 +22,6 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
-class RefreshRequest(BaseModel):
-    pass
-
-
 class DailyCount(BaseModel):
     date: datetime
     count: int
