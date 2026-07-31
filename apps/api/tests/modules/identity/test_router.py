@@ -1,8 +1,9 @@
 """Integration tests for identity auth endpoints."""
 
+import secrets
 from datetime import timedelta
-from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -85,42 +86,36 @@ class TestGithubLogin:
 
 
 class TestGithubCallback:
-    async def test_valid_callback(self, app_with_db):
-        mock_token_data = {"access_token": "gho_callback_token", "token_type": "bearer"}
-        mock_github_user = {
-            "id": 88888888,
-            "login": "callbackuser",
-            "email": "callback@test.com",
-            "avatar_url": None,
-        }
+    async def test_valid_callback(self, app_with_db, monkeypatch):
+        def _github(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/access_token"):
+                return httpx.Response(200, json={"access_token": "gho_callback_token", "token_type": "bearer"})
+            return httpx.Response(
+                200,
+                json={"id": 88888888, "login": "callbackuser", "email": "callback@test.com", "avatar_url": None},
+            )
 
-        with (
-            patch(
-                "helprs.modules.identity.router.exchange_code_for_token",
-                new_callable=AsyncMock,
-                return_value=mock_token_data,
-            ),
-            patch(
-                "helprs.modules.identity.router.fetch_github_user",
-                new_callable=AsyncMock,
-                return_value=mock_github_user,
-            ),
-        ):
-            import secrets
+        # Keep a handle on the real client: the ASGI transport below must not
+        # be swapped for the GitHub double.
+        real_client = httpx.AsyncClient
 
-            state = secrets.token_urlsafe(32)
+        def _client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(_github)
+            return real_client(*args, **kwargs)
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app_with_db),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                client.cookies.set("oauth_state", state)
-                resp = await client.get(f"/api/v1/auth/github/callback?code=test_code&state={state}")
-                assert resp.status_code == 307
-                location = resp.headers["location"]
-                assert "access_token=" in location
-                assert "refresh_token" in resp.headers.get("set-cookie", "")
+        state = secrets.token_urlsafe(32)
+        async with real_client(
+            transport=ASGITransport(app=app_with_db),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            client.cookies.set("oauth_state", state)
+            monkeypatch.setattr(httpx, "AsyncClient", _client)
+            resp = await client.get(f"/api/v1/auth/github/callback?code=test_code&state={state}")
+
+        assert resp.status_code == 307
+        assert "access_token=" in resp.headers["location"]
+        assert "refresh_token" in resp.headers.get("set-cookie", "")
 
     async def test_invalid_state(self, app_with_db):
         async with AsyncClient(
