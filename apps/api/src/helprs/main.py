@@ -21,7 +21,8 @@ from helprs.core.database import (
 )
 from helprs.core.exceptions import DomainError, domain_exception_handler
 from helprs.core.middleware import configure_logging, configure_sentry, setup_middleware
-from helprs.modules.container import service as containers
+from helprs.modules.container import cleanup as container_cleanup
+from helprs.modules.container.docker_client import AioDockerClient
 from helprs.modules.container.router import router as container_router
 from helprs.modules.identity.router import router as identity_router
 from helprs.modules.installation.router import router as installation_router
@@ -110,12 +111,16 @@ async def _run_container_cleanup(
         while True:
             await asyncio.sleep(interval_seconds)
             try:
-                docker = containers.AioDockerClient()
-                async with app.state.session_factory() as db:
-                    cleaned = await containers.cleanup_expired(db, docker, ttl_seconds=ttl)
-                    await db.commit()
-                    if cleaned:
-                        logger.info("container_cleanup_cycle", cleaned=cleaned)
+                docker = AioDockerClient()
+                try:
+                    async with app.state.session_factory() as db:
+                        cleaned = await container_cleanup.cleanup_expired(db, docker, ttl_seconds=ttl)
+                        await db.commit()
+                        if cleaned:
+                            logger.info("container_cleanup_cycle", cleaned=cleaned)
+                finally:
+                    # Without this the loop leaks one aiohttp session per tick.
+                    await docker.close()
             except Exception:
                 logger.exception("container_cleanup_cycle_failed")
     except asyncio.CancelledError:
@@ -127,7 +132,7 @@ async def _reconcile_stale_sessions(session_factory: SessionFactory) -> None:
     """Mark sessions left RUNNING/PENDING by a previous run as FAILED."""
     try:
         async with session_factory() as db:
-            await containers.reconcile_stale_sessions(db)
+            await container_cleanup.reconcile_stale_sessions(db)
             await db.commit()
     except Exception:
         logger.exception("session_reconciliation_failed")
@@ -136,9 +141,9 @@ async def _reconcile_stale_sessions(session_factory: SessionFactory) -> None:
 async def _stop_running_containers(session_factory: SessionFactory) -> None:
     """Stop every container still running before the engine goes away."""
     try:
-        docker = containers.AioDockerClient()
+        docker = AioDockerClient()
         async with session_factory() as db:
-            stopped = await containers.cleanup_all_running(db, docker)
+            stopped = await container_cleanup.cleanup_all_running(db, docker)
             await db.commit()
             if stopped:
                 logger.info("shutdown_containers_stopped", count=stopped)
