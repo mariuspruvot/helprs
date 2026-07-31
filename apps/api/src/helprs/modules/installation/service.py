@@ -1,28 +1,28 @@
-"""Installation business logic."""
+"""Installation use cases: lifecycle, access control, BYOK credentials.
 
-import asyncio
-import random
-import re
+Orchestration only — SQL lives in ``repository``, outbound calls in
+``github`` and ``anthropic``.
+"""
+
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
 import structlog
 from cryptography.fernet import InvalidToken
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.core.config import Settings
 from helprs.core.exceptions import (
     BYOKKeyInvalidError,
-    DomainValidationError,
-    ExternalServiceError,
+    ConflictError,
     ForbiddenError,
+    NotFoundError,
     UnauthorizedError,
 )
 from helprs.core.security import create_app_jwt, fernet_decrypt, fernet_encrypt
+from helprs.modules.installation import anthropic, github, repository
+from helprs.modules.installation.github import RUNNER_TOKEN_PERMISSIONS
 from helprs.modules.installation.models import BYOKConfig, Installation
 
 if TYPE_CHECKING:
@@ -31,50 +31,147 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-GITHUB_API_BASE = "https://api.github.com"
-ANTHROPIC_API_BASE = "https://api.anthropic.com"
+_NO_ACCESS = "You do not have access to this installation"
+_NO_ADMIN = "You do not have admin access to this installation"
+_NO_REPO = "You do not have access to this repository"
+
+__all__ = [
+    "RUNNER_TOKEN_PERMISSIONS",
+    "configure_byok",
+    "create_installation_from_webhook",
+    "decrypt_byok_key",
+    "delete_byok_config",
+    "get_byok_config",
+    "get_installation_by_github_id",
+    "get_installations_for_user",
+    "mint_installation_token",
+    "post_pr_comment_with_retry",
+    "soft_delete_installation",
+    "suspend_installation",
+    "unsuspend_installation",
+    "update_post_results_setting",
+    "update_suppression_labels",
+    "verify_admin_permission",
+    "verify_installation_access",
+    "verify_repo_access",
+]
+
+# Re-exported so callers that only need to post a comment do not have to know
+# which boundary module implements it.
+post_pr_comment_with_retry = github.post_pr_comment_with_retry
 
 
-async def get_installation_access_token(
-    installation_id: int,
-    app_jwt: str,
-    *,
-    repositories: list[str] | None = None,
-    permissions: dict[str, str] | None = None,
-) -> dict:
-    """Exchange an App JWT for an installation access token.
+# --- Lifecycle -------------------------------------------------------------
 
-    Without ``repositories``/``permissions`` GitHub returns a token carrying
-    every permission the App holds on every repo in the installation. Callers
-    handing the token to a less-trusted consumer must narrow it down.
+
+async def create_installation_from_webhook(session: AsyncSession, webhook_data: dict) -> Installation:
+    """Create an installation from an ``installation.created`` webhook.
+
+    Idempotent: a duplicate delivery, or a concurrent one racing us to the
+    unique index, resolves to the existing row.
     """
-    payload: dict[str, object] = {}
-    if repositories is not None:
-        payload["repositories"] = repositories
-    if permissions is not None:
-        payload["permissions"] = permissions
-
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens",
-                headers={
-                    "Authorization": f"Bearer {app_jwt}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                json=payload or None,
-            )
-            resp.raise_for_status()
-    except httpx.TimeoutException as e:
-        raise ExternalServiceError("GitHub is temporarily unavailable") from e
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise UnauthorizedError("GitHub App JWT is invalid or expired") from e
-        if e.response.status_code == 422:
-            raise DomainValidationError("Requested repository is not covered by this installation") from e
-        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
-    return resp.json()
+        inst_data = webhook_data["installation"]
+        account = inst_data["account"]
+        github_installation_id = inst_data["id"]
+    except (KeyError, TypeError) as e:
+        await logger.awarning("webhook_payload_malformed", error=str(e))
+        raise ValueError(f"Malformed webhook payload: missing {e}") from e
+
+    existing = await repository.get_by_github_id(session, github_installation_id)
+    if existing:
+        await logger.ainfo("installation_already_exists", github_installation_id=github_installation_id)
+        return existing
+
+    created = await repository.add(
+        session,
+        Installation(
+            github_installation_id=github_installation_id,
+            account_login=account["login"],
+            account_id=account["id"],
+            account_type=account["type"],
+            repository_selection=inst_data.get("repository_selection", "all"),
+            app_slug=inst_data.get("app_slug", ""),
+            target_type=inst_data.get("target_type", "Organization"),
+            permissions=inst_data.get("permissions"),
+            events=inst_data.get("events"),
+            suspended_at=None,
+        ),
+    )
+    if created is None:
+        # Lost the race — the winner's row is the one to use.
+        existing = await repository.get_by_github_id(session, github_installation_id)
+        if existing is None:
+            raise ConflictError(f"Could not persist installation {github_installation_id}")
+        return existing
+
+    await logger.ainfo(
+        "installation_created",
+        github_installation_id=github_installation_id,
+        account_login=account["login"],
+    )
+    return created
+
+
+async def get_installation_by_github_id(session: AsyncSession, github_installation_id: int) -> Installation | None:
+    """Look up an installation by GitHub id, excluding soft-deleted rows."""
+    return await repository.get_by_github_id(session, github_installation_id)
+
+
+async def _apply_lifecycle_change(
+    session: AsyncSession,
+    github_installation_id: int,
+    *,
+    event: str,
+    deleted_at: datetime | None = None,
+    suspended_at: datetime | None = None,
+    clear_suspension: bool = False,
+) -> Installation | None:
+    installation = await repository.get_by_github_id(session, github_installation_id)
+    if not installation:
+        return None
+
+    if deleted_at is not None:
+        installation.deleted_at = deleted_at
+    if suspended_at is not None:
+        installation.suspended_at = suspended_at
+    if clear_suspension:
+        installation.suspended_at = None
+
+    await session.flush()
+    await logger.ainfo(event, github_installation_id=github_installation_id)
+    return installation
+
+
+async def soft_delete_installation(session: AsyncSession, github_installation_id: int) -> Installation | None:
+    """Mark an installation deleted without dropping its history."""
+    return await _apply_lifecycle_change(
+        session,
+        github_installation_id,
+        event="installation_soft_deleted",
+        deleted_at=datetime.now(UTC),
+    )
+
+
+async def suspend_installation(session: AsyncSession, github_installation_id: int) -> Installation | None:
+    return await _apply_lifecycle_change(
+        session,
+        github_installation_id,
+        event="installation_suspended",
+        suspended_at=datetime.now(UTC),
+    )
+
+
+async def unsuspend_installation(session: AsyncSession, github_installation_id: int) -> Installation | None:
+    return await _apply_lifecycle_change(
+        session,
+        github_installation_id,
+        event="installation_unsuspended",
+        clear_suspension=True,
+    )
+
+
+# --- Tokens ----------------------------------------------------------------
 
 
 async def mint_installation_token(
@@ -84,446 +181,92 @@ async def mint_installation_token(
     repositories: list[str] | None = None,
     permissions: dict[str, str] | None = None,
 ) -> str:
-    """Mint an installation access token, optionally narrowed to one repo.
-
-    Thin orchestrator over ``create_app_jwt`` + ``get_installation_access_token``
-    that returns the bare token string — callers building an
-    ``Authorization: Bearer ...`` header do not need the metadata envelope.
-    """
+    """Mint an installation access token, optionally narrowed to one repo."""
     app_jwt = create_app_jwt(settings.GITHUB_APP_ID, settings.GITHUB_APP_PRIVATE_KEY)
-    response = await get_installation_access_token(
+    token = await github.create_installation_access_token(
         github_installation_id,
         app_jwt,
         repositories=repositories,
         permissions=permissions,
     )
-    return response["token"]
+    return token.token
 
 
-# A runner container executes Claude Code over attacker-controllable PR content
-# with network egress, so its token is narrowed to the single repo under review
-# and to read-only scopes. The API mints its own separate token when it needs
-# to write (posting the result comment).
-RUNNER_TOKEN_PERMISSIONS = {
-    "contents": "read",
-    "metadata": "read",
-    "pull_requests": "read",
-}
-
-
-async def post_pr_comment(
-    *,
-    owner: str,
-    repo: str,
-    pr_number: int,
-    body: str,
-    installation_token: str,
-) -> None:
-    """Post an issue comment on a pull request via the GitHub REST API.
-
-    Uses the ``/repos/{owner}/{repo}/issues/{pr_number}/comments`` endpoint
-    — PRs are issues in GitHub's data model, and that endpoint is the
-    correct one for general PR discussion comments (NOT
-    ``/pulls/{n}/reviews`` which is for review comments, or
-    ``/pulls/{n}/comments`` which is for inline code comments).
-    """
-    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/{pr_number}/comments"
-    headers = {
-        "Authorization": f"Bearer {installation_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(url, json={"body": body}, headers=headers)
-        resp.raise_for_status()
-
-
-# Inter-attempt sleeps for 3 total attempts — only 2 sleeps are needed
-# (after the 1st and 2nd failures). No sleep follows the final failure.
-_PR_COMMENT_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.0)
-
-
-async def post_pr_comment_with_retry(
-    *,
-    owner: str,
-    repo: str,
-    pr_number: int,
-    body: str,
-    installation_token: str,
-) -> None:
-    """Retry wrapper around ``post_pr_comment`` with exponential backoff.
-
-    Policy:
-    * 3 attempts total, with 0.5s / 1.0s sleeps between attempts plus up
-      to 0.25s jitter. No sleep after the final failure (avoids wasting
-      NFR1 budget and holding the outer DB transaction open longer than
-      needed).
-    * Retries only on ``httpx.TransportError`` and HTTP 5xx responses.
-      4xx (deleted PR, permission revoked, expired token) are permanent
-      failures for this invocation and are raised immediately.
-    * Final failure is wrapped in ``ExternalServiceError`` so the webhook
-      background task's ``mark_failed`` path catches it cleanly.
-
-    Uses a fresh ``httpx.AsyncClient`` per attempt (via ``post_pr_comment``)
-    so a poisoned connection pool from one failure cannot bleed into the
-    next attempt.
-    """
-    last_exc: Exception | None = None
-    for attempt in range(3):
-        try:
-            await post_pr_comment(
-                owner=owner,
-                repo=repo,
-                pr_number=pr_number,
-                body=body,
-                installation_token=installation_token,
-            )
-            return
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status < 500:
-                # 4xx is permanent for this invocation; surface immediately.
-                raise ExternalServiceError(f"GitHub rejected PR comment post with HTTP {status}") from exc
-            last_exc = exc
-        except httpx.TransportError as exc:
-            last_exc = exc
-
-        if attempt < len(_PR_COMMENT_RETRY_DELAYS):
-            delay = _PR_COMMENT_RETRY_DELAYS[attempt] + random.uniform(0, 0.25)
-            await asyncio.sleep(delay)
-
-    raise ExternalServiceError("Failed to post PR comment after 3 attempts") from last_exc
-
-
-async def post_commit_status(
-    *,
-    owner: str,
-    repo: str,
-    sha: str,
-    state: str,
-    description: str,
-    context: str,
-    installation_token: str,
-) -> None:
-    """Post a commit status on a SHA via the GitHub REST API.
-
-    Story 4.2: used to post the comprehension score as an informational
-    status check on the PR's head commit. Always ``state="success"`` —
-    never merge-blocking (FR14).
-
-    Fire-and-forget: callers wrap this in try/except so GitHub API
-    failures do not block session completion.
-    """
-    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/statuses/{sha}"
-    headers = {
-        "Authorization": f"Bearer {installation_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            url,
-            json={
-                "state": state,
-                "description": description[:140],
-                "context": context,
-            },
-            headers=headers,
-        )
-        resp.raise_for_status()
-
-
-async def create_installation(session: AsyncSession, webhook_data: dict) -> Installation:
-    """Create an installation record from an installation.created webhook payload.
-
-    Handles duplicate webhooks gracefully via upsert logic.
-    """
+def _user_github_token(user: "GitHubUser", settings: Settings) -> str:
     try:
-        inst_data = webhook_data["installation"]
-        github_installation_id = inst_data["id"]
-        account = inst_data["account"]
-        account_login = account["login"]
-        account_id = account["id"]
-        account_type = account["type"]
-    except (KeyError, TypeError) as e:
-        await logger.awarning("webhook_payload_malformed", error=str(e))
-        raise ValueError(f"Malformed webhook payload: missing {e}") from e
-
-    # Check for existing installation (idempotent handling of duplicate webhooks)
-    existing = await get_installation_by_github_id(session, github_installation_id)
-    if existing:
-        await logger.ainfo(
-            "installation_already_exists",
-            github_installation_id=github_installation_id,
-        )
-        return existing
-
-    installation = Installation(
-        github_installation_id=github_installation_id,
-        account_login=account_login,
-        account_id=account_id,
-        account_type=account_type,
-        repository_selection=inst_data.get("repository_selection", "all"),
-        app_slug=inst_data.get("app_slug", ""),
-        target_type=inst_data.get("target_type", "Organization"),
-        permissions=inst_data.get("permissions"),
-        events=inst_data.get("events"),
-        suspended_at=None,
-    )
-    session.add(installation)
-    try:
-        await session.flush()
-    except IntegrityError:
-        await session.rollback()
-        existing = await get_installation_by_github_id(session, github_installation_id)
-        if existing:
-            return existing
-        raise
-    await logger.ainfo(
-        "installation_created",
-        github_installation_id=github_installation_id,
-        account_login=account_login,
-    )
-    return installation
-
-
-async def soft_delete_installation(session: AsyncSession, github_installation_id: int) -> Installation | None:
-    """Soft-delete an installation by setting deleted_at. Returns None if not found."""
-    result = await session.execute(
-        select(Installation).where(
-            Installation.github_installation_id == github_installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
-    if not installation:
-        return None
-    installation.deleted_at = datetime.now(UTC)
-    await session.flush()
-    await logger.ainfo(
-        "installation_soft_deleted",
-        github_installation_id=github_installation_id,
-    )
-    return installation
-
-
-async def suspend_installation(session: AsyncSession, github_installation_id: int) -> Installation | None:
-    """Set suspended_at on an installation."""
-    result = await session.execute(
-        select(Installation).where(
-            Installation.github_installation_id == github_installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
-    if not installation:
-        return None
-    installation.suspended_at = datetime.now(UTC)
-    await session.flush()
-    await logger.ainfo(
-        "installation_suspended",
-        github_installation_id=github_installation_id,
-    )
-    return installation
-
-
-async def unsuspend_installation(session: AsyncSession, github_installation_id: int) -> Installation | None:
-    """Clear suspended_at on an installation."""
-    result = await session.execute(
-        select(Installation).where(
-            Installation.github_installation_id == github_installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
-    if not installation:
-        return None
-    installation.suspended_at = None
-    await session.flush()
-    await logger.ainfo(
-        "installation_unsuspended",
-        github_installation_id=github_installation_id,
-    )
-    return installation
-
-
-async def get_installation_by_github_id(session: AsyncSession, github_installation_id: int) -> Installation | None:
-    """Lookup installation by GitHub ID, excluding soft-deleted records."""
-    result = await session.execute(
-        select(Installation).where(
-            Installation.github_installation_id == github_installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    return result.scalar_one_or_none()
-
-
-async def _get_user_org_logins(user: "GitHubUser", settings: Settings) -> set[str]:
-    """Fetch the GitHub orgs the user belongs to, returned as lowercased logins.
-
-    Uses the user's stored GitHub token to call ``GET /user/orgs``.
-    Requires the ``read:org`` scope on the OAuth App.
-    """
-    try:
-        github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
+        return fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
     except InvalidToken as e:
         raise UnauthorizedError("Stored GitHub token is corrupted") from e
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{GITHUB_API_BASE}/user/orgs",
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            resp.raise_for_status()
-    except httpx.TimeoutException as e:
-        raise ExternalServiceError("GitHub is temporarily unavailable") from e
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise UnauthorizedError("GitHub token is invalid or revoked") from e
-        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
 
-    return {org["login"].lower() for org in resp.json() if isinstance(org, dict) and org.get("login")}
+# --- Access control --------------------------------------------------------
 
 
-async def get_installations_for_user(session: AsyncSession, user, settings: Settings) -> list[Installation]:
-    """Get installations the user has access to.
+async def get_installations_for_user(
+    session: AsyncSession,
+    user: "GitHubUser",
+    settings: Settings,
+) -> list[Installation]:
+    """Installations the user can see.
 
     GitHub's ``GET /user/installations`` only works with tokens issued by a
-    GitHub App's user-authorization OAuth flow — it 403s for tokens issued
-    by a separate OAuth App, even when the user owns the install. We use
-    an OAuth App for login (see ``identity/router.py``), so we cannot rely
-    on that endpoint. Instead we replicate the access semantics locally:
-
-    * **User-type installs**: the user has access iff
-      ``installation.account_id == user.github_id`` (they own the account
-      the App is installed on). No outbound call needed.
-    * **Org-type installs**: the user has access iff they're a member of
-      the org. We check via ``GET /user/orgs`` (requires ``read:org`` scope
-      in the OAuth App's authorization). The call is skipped entirely if
-      no Org-type installs exist in the DB.
-
-    Discovered as a P0 regression during Story 3-3 manual QA on 2026-04-11
-    — Epic 1's ``/user/installations`` design was never end-to-end tested
-    because the manual-QA gate had been bypassed for stories 1-3, 1-4,
-    and 1-5.
+    GitHub App's user-authorization flow; it 403s for our OAuth App tokens
+    even when the user owns the install. So access is derived locally: User
+    installs match on account id, Org installs on membership from
+    ``GET /user/orgs`` — a call skipped entirely when no Org install exists.
     """
-    result = await session.execute(select(Installation).where(Installation.deleted_at.is_(None)))
-    all_installs = list(result.scalars().all())
-    if not all_installs:
-        return []
+    org_logins: set[str] = set()
+    if await repository.has_organization_installs(session):
+        org_logins = await github.fetch_user_org_logins(_user_github_token(user, settings))
 
-    user_installs = [i for i in all_installs if i.account_type == "User" and i.account_id == user.github_id]
-    org_installs = [i for i in all_installs if i.account_type == "Organization"]
-
-    if not org_installs:
-        return user_installs
-
-    user_org_logins = await _get_user_org_logins(user, settings)
-    accessible_org_installs = [i for i in org_installs if i.account_login.lower() in user_org_logins]
-    return user_installs + accessible_org_installs
-
-
-async def verify_admin_permission(user, installation: Installation, settings: Settings) -> bool:
-    """Verify user has admin permission on the installation's org/repo."""
-    try:
-        github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
-    except InvalidToken as e:
-        raise UnauthorizedError("Stored GitHub token is corrupted") from e
-
-    if installation.account_type == "User":
-        if user.github_id == installation.account_id:
-            return True
-        raise ForbiddenError("You do not have admin access to this installation")
-
-    # Organization: check membership role
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{GITHUB_API_BASE}/orgs/{installation.account_login}/memberships/{user.github_login}",
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            resp.raise_for_status()
-    except httpx.TimeoutException as e:
-        raise ExternalServiceError("GitHub is temporarily unavailable") from e
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise UnauthorizedError("GitHub token is invalid or revoked") from e
-        if e.response.status_code in (403, 404):
-            raise ForbiddenError("You do not have admin access to this installation") from e
-        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
-
-    membership = resp.json()
-    if membership.get("role") != "admin" or membership.get("state") != "active":
-        raise ForbiddenError("You do not have admin access to this installation")
-    return True
+    return await repository.list_visible_to(
+        session,
+        user_github_id=user.github_id,
+        org_logins=org_logins,
+    )
 
 
 async def verify_installation_access(user: "GitHubUser", installation: Installation, settings: Settings) -> bool:
-    """Verify user has member-level access to the installation.
-
-    * **User-type**: access iff ``user.github_id == installation.account_id``.
-    * **Org-type**: access iff the user is an org member (via ``GET /user/orgs``).
-
-    Raises ``ForbiddenError`` when the user has no access.
-    """
+    """Member-level access: owner of a User install, or member of the org."""
     if installation.account_type == "User":
         if user.github_id == installation.account_id:
             return True
-        raise ForbiddenError("You do not have access to this installation")
+        raise ForbiddenError(_NO_ACCESS)
 
-    # Organization: check membership via /user/orgs
-    user_org_logins = await _get_user_org_logins(user, settings)
-    if installation.account_login.lower() in user_org_logins:
+    org_logins = await github.fetch_user_org_logins(_user_github_token(user, settings))
+    if installation.account_login.lower() in org_logins:
         return True
-    raise ForbiddenError("You do not have access to this installation")
+    raise ForbiddenError(_NO_ACCESS)
+
+
+async def verify_admin_permission(user: "GitHubUser", installation: Installation, settings: Settings) -> bool:
+    """Admin-level access: owner of a User install, or active org admin."""
+    token = _user_github_token(user, settings)
+
+    if installation.account_type == "User":
+        if user.github_id == installation.account_id:
+            return True
+        raise ForbiddenError(_NO_ADMIN)
+
+    membership = await github.fetch_org_membership(
+        installation.account_login,
+        user.github_login,
+        token,
+        denial=_NO_ADMIN,
+    )
+    if not membership.is_active_admin:
+        raise ForbiddenError(_NO_ADMIN)
+    return True
 
 
 async def verify_repo_access(user: "GitHubUser", repo_full_name: str, settings: Settings) -> bool:
-    """Verify the user can read ``owner/repo`` with their own GitHub token.
+    """Verify the caller can read ``owner/repo`` with their own GitHub token.
 
     Installation-level access is not enough: an installation may cover repos
     the caller cannot read, and a session clones the repo and streams its diff
-    back to that caller. Asking GitHub with the *user's* token — not the
-    installation token — is what keeps per-repo permissions authoritative.
-
-    Raises ``ForbiddenError`` when the repo is invisible to the user.
+    back to that caller.
     """
-    try:
-        github_token = fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
-    except InvalidToken as e:
-        raise UnauthorizedError("Stored GitHub token is corrupted") from e
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{GITHUB_API_BASE}/repos/{repo_full_name}",
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            resp.raise_for_status()
-    except httpx.TimeoutException as e:
-        raise ExternalServiceError("GitHub is temporarily unavailable") from e
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise UnauthorizedError("GitHub token is invalid or revoked") from e
-        # GitHub returns 404 (not 403) for repos the token cannot see, so both
-        # mean the same thing here: no access.
-        if e.response.status_code in (403, 404):
-            raise ForbiddenError("You do not have access to this repository") from e
-        raise ExternalServiceError(f"GitHub API error: {e.response.status_code}") from e
-
+    await github.assert_repo_visible(repo_full_name, _user_github_token(user, settings), denial=_NO_REPO)
     return True
 
 
@@ -533,67 +276,18 @@ async def verify_session_access(
     db: AsyncSession,
     settings: Settings,
 ) -> bool:
-    """Verify user can access a container session.
-
-    Fast path: session owner (``user_id`` matches) skips any GitHub API call.
-    Fallback: check member-level access on the session's installation.
-    """
+    """Session owners get in without a GitHub round-trip; others must be members."""
     if container_session.user_id is not None and container_session.user_id == user.id:
         return True
 
-    result = await db.execute(
-        select(Installation).where(
-            Installation.id == container_session.installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
+    installation = await repository.get_by_id(db, container_session.installation_id)
     if not installation:
         raise ForbiddenError("Installation not found or deleted")
 
     return await verify_installation_access(user, installation, settings)
 
 
-# --- BYOK Services ---
-
-
-def is_oauth_token(key: str) -> bool:
-    """Check if the key is a Claude OAuth token (sk-ant-oat...)."""
-    return key.startswith("sk-ant-oat")
-
-
-async def validate_claude_key(api_key: str) -> bool:
-    """Validate a Claude credential (API key or OAuth token).
-
-    OAuth tokens (sk-ant-oat...) are accepted without server-side validation
-    because the Anthropic REST API does not accept them — they are validated
-    when the Claude Code CLI uses them inside the container.
-    API keys (sk-ant-api...) are validated against the Anthropic models endpoint.
-    """
-    if is_oauth_token(api_key):
-        return True
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{ANTHROPIC_API_BASE}/v1/models",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                },
-            )
-            if response.status_code == 200:
-                return True
-            if response.status_code in (401, 403):
-                return False
-            response.raise_for_status()
-            return False
-    except httpx.TimeoutException as e:
-        raise ExternalServiceError("Anthropic API is temporarily unavailable") from e
-    except httpx.HTTPStatusError as e:
-        raise ExternalServiceError(f"Anthropic API error: {e.response.status_code}") from e
-    except httpx.TransportError as e:
-        raise ExternalServiceError("Anthropic API is temporarily unavailable") from e
+# --- BYOK credentials ------------------------------------------------------
 
 
 async def configure_byok(
@@ -602,17 +296,15 @@ async def configure_byok(
     api_key: str,
     fernet_key: str,
 ) -> BYOKConfig:
-    """Configure BYOK key for an installation. Validates, encrypts, and upserts."""
-    is_valid = await validate_claude_key(api_key)
-    if not is_valid:
+    """Validate a Claude credential, then store it encrypted."""
+    if not await anthropic.is_credential_valid(api_key):
         raise BYOKKeyInvalidError("API key validation failed -- check your key and try again")
 
     encrypted_key = fernet_encrypt(api_key, fernet_key)
     key_hint = f"...{api_key[-4:]}"
     now = datetime.now(UTC)
 
-    # Upsert: check if config already exists
-    existing = await get_byok_config(session, installation_id)
+    existing = await repository.get_byok_config(session, installation_id)
     if existing:
         existing.encrypted_api_key = encrypted_key
         existing.key_status = "valid"
@@ -622,27 +314,26 @@ async def configure_byok(
         await logger.ainfo("byok_config_updated", installation_id=str(installation_id))
         return existing
 
-    config = BYOKConfig(
-        installation_id=installation_id,
-        encrypted_api_key=encrypted_key,
-        key_status="valid",
-        validated_at=now,
-        key_hint=key_hint,
+    config = await repository.add_byok_config(
+        session,
+        BYOKConfig(
+            installation_id=installation_id,
+            encrypted_api_key=encrypted_key,
+            key_status="valid",
+            validated_at=now,
+            key_hint=key_hint,
+        ),
     )
-    session.add(config)
-    await session.flush()
     await logger.ainfo("byok_config_created", installation_id=str(installation_id))
     return config
 
 
 async def get_byok_config(session: AsyncSession, installation_id: uuid.UUID) -> BYOKConfig | None:
-    """Get BYOK config for an installation."""
-    result = await session.execute(select(BYOKConfig).where(BYOKConfig.installation_id == installation_id))
-    return result.scalar_one_or_none()
+    return await repository.get_byok_config(session, installation_id)
 
 
 def decrypt_byok_key(byok_config: BYOKConfig, fernet_key: str) -> str:
-    """Decrypt the stored BYOK API key."""
+    """Decrypt the stored Claude credential."""
     try:
         return fernet_decrypt(byok_config.encrypted_api_key, fernet_key)
     except InvalidToken as e:
@@ -650,110 +341,35 @@ def decrypt_byok_key(byok_config: BYOKConfig, fernet_key: str) -> str:
 
 
 async def delete_byok_config(session: AsyncSession, installation_id: uuid.UUID) -> bool:
-    """Hard delete BYOK config for an installation."""
-    config = await get_byok_config(session, installation_id)
+    config = await repository.get_byok_config(session, installation_id)
     if not config:
         return False
-    await session.delete(config)
-    await session.flush()
+    await repository.delete_byok_config(session, config)
     await logger.ainfo("byok_config_deleted", installation_id=str(installation_id))
     return True
 
 
-# --- Session Query Services ---
+# --- Settings --------------------------------------------------------------
 
 
-async def get_sessions_for_installation(
-    session: AsyncSession,
-    installation_id: uuid.UUID,
-    page: int = 1,
-    per_page: int = 20,
-    status_filter: str | None = None,
-) -> tuple[list, int]:
-    """Return paginated sessions for an installation, newest first."""
-    from sqlalchemy import func
-
-    from helprs.modules.container.models import ContainerSession, ContainerStatus
-
-    base_filter = ContainerSession.installation_id == installation_id
-    query = select(ContainerSession).where(base_filter)
-    count_query = select(func.count()).select_from(ContainerSession).where(base_filter)
-
-    if status_filter:
-        status_enum = ContainerStatus(status_filter)
-        query = query.where(ContainerSession.status == status_enum)
-        count_query = count_query.where(ContainerSession.status == status_enum)
-
-    total_result = await session.execute(count_query)
-    total = total_result.scalar_one()
-
-    query = query.order_by(ContainerSession.created_at.desc())
-    query = query.offset((page - 1) * per_page).limit(per_page)
-    result = await session.execute(query)
-    items = list(result.scalars().all())
-
-    return items, total
-
-
-async def get_session_counts_for_installations(
-    session: AsyncSession,
-    installation_ids: list[uuid.UUID],
-) -> dict[uuid.UUID, int]:
-    """Batch-fetch session counts for multiple installations."""
-    if not installation_ids:
-        return {}
-
-    from sqlalchemy import func
-
-    from helprs.modules.container.models import ContainerSession
-
-    result = await session.execute(
-        select(
-            ContainerSession.installation_id,
-            func.count(ContainerSession.id),
-        )
-        .where(ContainerSession.installation_id.in_(installation_ids))
-        .group_by(ContainerSession.installation_id)
-    )
-    return dict(result.all())
-
-
-# --- Suppression Labels Services ---
-
-LABEL_PATTERN = re.compile(r"^[a-zA-Z0-9\-]+$")
-
-
-def get_default_suppression_labels() -> list[str]:
-    """Return default suppression labels."""
-    return ["hotfix", "urgent", "trivial"]
+async def _get_active_or_404(session: AsyncSession, installation_id: uuid.UUID) -> Installation:
+    installation = await repository.get_by_id(session, installation_id)
+    if not installation:
+        raise NotFoundError("Installation not found")
+    return installation
 
 
 async def update_suppression_labels(
-    session: AsyncSession, installation_id: uuid.UUID, labels: list[str]
+    session: AsyncSession,
+    installation_id: uuid.UUID,
+    labels: list[str],
 ) -> Installation:
-    """Update suppression labels for an installation."""
-    if len(labels) > 20:
-        raise DomainValidationError("Maximum 20 suppression labels allowed")
-    for label in labels:
-        if len(label) > 50:
-            raise DomainValidationError(f"Label '{label}' exceeds maximum length of 50 characters")
-        if not LABEL_PATTERN.match(label):
-            raise DomainValidationError(
-                f"Label '{label}' contains invalid characters. Only alphanumeric and hyphens allowed"
-            )
+    """Set the labels that suppress session creation.
 
-    result = await session.execute(
-        select(Installation).where(
-            Installation.id == installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
-    if not installation:
-        from helprs.core.exceptions import NotFoundError
-
-        raise NotFoundError("Installation not found")
-
+    The label rules (count, length, charset) are enforced by
+    ``SuppressionLabelsRequest``, which runs before any handler is entered.
+    """
+    installation = await _get_active_or_404(session, installation_id)
     installation.suppression_labels = labels
     await session.flush()
     await logger.ainfo(
@@ -764,23 +380,13 @@ async def update_suppression_labels(
     return installation
 
 
-# --- Post Results Setting ---
-
-
-async def update_post_results_setting(session: AsyncSession, installation_id: uuid.UUID, enabled: bool) -> Installation:
-    """Enable or disable automatic posting of session results to PRs."""
-    result = await session.execute(
-        select(Installation).where(
-            Installation.id == installation_id,
-            Installation.deleted_at.is_(None),
-        )
-    )
-    installation = result.scalar_one_or_none()
-    if not installation:
-        from helprs.core.exceptions import NotFoundError
-
-        raise NotFoundError("Installation not found")
-
+async def update_post_results_setting(
+    session: AsyncSession,
+    installation_id: uuid.UUID,
+    enabled: bool,
+) -> Installation:
+    """Enable or disable posting session results back to the PR."""
+    installation = await _get_active_or_404(session, installation_id)
     installation.post_results_to_pr = enabled
     await session.flush()
     await logger.ainfo(

@@ -1,7 +1,5 @@
 """Integration tests for installation router."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -89,21 +87,9 @@ class TestListInstallations:
     async def test_returns_user_installations(self, authed_client_with_installation):
         client, installation = authed_client_with_installation
 
-        # The fixture's installation is Org-type ("test-org"), so the
-        # refactored ``get_installations_for_user`` will call ``/user/orgs``
-        # to verify membership. Mock that endpoint to claim the test user
-        # belongs to the org.
-        mock_response = MagicMock()
-        mock_response.json.return_value = [{"login": "test-org"}]
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
+        # The fixture's installation is Org-type ("test-org"), so discovery
+        # calls /user/orgs to verify membership.
+        with serving_github(user_orgs=["test-org"]):
             response = await client.get("/api/v1/installations")
 
         assert response.status_code == 200
@@ -147,17 +133,7 @@ class TestPutPostResultsSetting:
     async def test_updates_flag(self, authed_client_with_installation):
         client, installation = authed_client_with_installation
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"role": "admin", "state": "active"}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("helprs.modules.installation.service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
+        with serving_github():
             response = await client.put(
                 f"/api/v1/installations/{installation.github_installation_id}/post-results",
                 json={"post_results_to_pr": True},

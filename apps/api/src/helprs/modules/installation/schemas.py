@@ -76,6 +76,30 @@ class InstallationResponse(BaseModel):
     session_count: int = 0
     post_results_to_pr: bool = False
 
+    @classmethod
+    def from_model(cls, installation, *, session_count: int = 0):
+        """Flatten an installation and its BYOK config into the wire shape.
+
+        ``byok_config`` must already be loaded; the repository eager-loads it.
+        """
+        byok = installation.byok_config
+        return cls(
+            id=installation.id,
+            github_installation_id=installation.github_installation_id,
+            account_login=installation.account_login,
+            account_type=installation.account_type,
+            repository_selection=installation.repository_selection,
+            suspended_at=installation.suspended_at,
+            created_at=installation.created_at,
+            byok_configured=byok is not None,
+            byok_key_hint=byok.key_hint if byok else None,
+            byok_key_status=byok.key_status if byok else None,
+            byok_validated_at=byok.validated_at if byok else None,
+            suppression_labels=installation.suppression_labels or [],
+            session_count=session_count,
+            post_results_to_pr=installation.post_results_to_pr,
+        )
+
 
 class InstallationDetailResponse(InstallationResponse):
     pass
