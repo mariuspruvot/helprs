@@ -108,6 +108,9 @@ Key additions for production: `ENVIRONMENT=production`, `ADMIN_PASSWORD`, `CORS_
 
 ## Gotchas
 
+- **Bumping the Claude Code CLI is a deliberate act**: `CLAUDE_CODE_VERSION` is pinned in `infra/docker/claude-runner/Dockerfile`. The SSE pipeline parses that CLI's stream-json output, so an upstream format change breaks production at image-rebuild time with no code change and no CI signal. To bump: raise the ARG, rebuild, run a session end to end, and check the five event types still arrive.
+
+
 - **CI coverage threshold**: `--cov-fail-under=70` (current coverage ~75%). Raising to 80% requires covering `admin/views.py`, `main.py` lifespan, and more router branches.
 - **Lost stats tests**: `tests/modules/identity/test_stats.py` (176 lines covering the user stats endpoint) was dropped in the #42 squash; it survives on local branch `feat/dashboard-activity-chart-impl` (62bf88e) — cherry-pick and adapt to boost coverage.
 - **Entrypoint parallel I/O**: clone, metadata (`gh pr view --json`), and diff (`gh pr diff`) run as background jobs with `wait`. The `-R` flag lets `gh` hit the API without a local `.git` dir. `set -e` does NOT propagate from background jobs — each `wait $pid` needs explicit `|| exit 1`. The claude-runner image includes `jq` for parsing the combined metadata JSON.
