@@ -63,8 +63,15 @@ class ExternalServiceError(DomainError):
         super().__init__("external_service_error", message, 502, detail)
 
 
-async def domain_exception_handler(request: Request, exc: DomainError) -> JSONResponse:
-    """Global exception handler for DomainError subclasses."""
+async def domain_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Global exception handler for DomainError subclasses.
+
+    Typed as ``Exception`` because that is the signature Starlette's
+    ``add_exception_handler`` declares; it dispatches on the registered class,
+    so the narrowing below never actually fails.
+    """
+    if not isinstance(exc, DomainError):
+        raise exc
     return JSONResponse(
         status_code=exc.http_status,
         content={"error": exc.error_code, "message": exc.message, "detail": exc.detail},

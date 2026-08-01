@@ -5,8 +5,8 @@ import hmac
 import time
 from datetime import UTC, datetime, timedelta
 
+import jwt
 from cryptography.fernet import Fernet
-from jose import jwt
 
 
 def fernet_encrypt(plaintext: str, fernet_key: str) -> str:
@@ -36,12 +36,13 @@ def create_app_jwt(app_id: str, private_key: str) -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
-def verify_github_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
+def verify_github_webhook_signature(payload: bytes, signature: str | None, secret: str) -> bool:
     """Verify GitHub webhook HMAC SHA-256 signature.
 
     Args:
         payload: Raw request body bytes.
-        signature: The X-Hub-Signature-256 header value (e.g., "sha256=...").
+        signature: The X-Hub-Signature-256 header value (e.g., "sha256=..."),
+            or None when the header is absent, which is a rejection.
         secret: The webhook secret configured in GitHub.
     """
     if not signature or not signature.startswith("sha256="):
@@ -69,5 +70,5 @@ def create_access_token(
 
 
 def decode_access_token(token: str, secret_key: str) -> dict:
-    """Decode and verify a JWT access token. Raises JWTError on failure."""
+    """Decode and verify a JWT access token. Raises PyJWTError on failure."""
     return jwt.decode(token, secret_key, algorithms=["HS256"])

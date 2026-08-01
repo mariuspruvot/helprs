@@ -3,7 +3,7 @@ name = "helprs"
 version = "0.1.0"
 description = "helPRs API — Socratic comprehension sessions for pull requests"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 
 dependencies = [
     "fastapi[standard]>=0.115.0",
@@ -12,7 +12,7 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "asyncpg>=0.30.0",
     "sqladmin>=0.20.0",
-    "python-jose[cryptography]>=3.3.0",
+    "pyjwt[crypto]>=2.10.0",
     "cryptography>=44.0.0",
     "httpx>=0.28.0",
     "structlog>=24.4.0",
@@ -44,7 +44,7 @@ build-backend = "hatchling.build"
 packages = ["src/helprs"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 120
 
 [tool.ruff.lint]
@@ -59,7 +59,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF100"]
 "alembic/env.py" = ["E402"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 warn_unused_configs = true
 ignore_missing_imports = true
 plugins = ["pydantic.mypy"]
@@ -67,23 +67,6 @@ plugins = ["pydantic.mypy"]
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
-
-# Per-module overrides for third-party lib typing issues (aiodocker, SQLAlchemy, Starlette)
-[[tool.mypy.overrides]]
-module = ["helprs.main"]
-disable_error_code = ["arg-type", "call-overload", "attr-defined"]
-
-[[tool.mypy.overrides]]
-module = ["helprs.core.middleware"]
-disable_error_code = ["arg-type"]
-
-[[tool.mypy.overrides]]
-module = ["helprs.modules.webhook.repository", "helprs.modules.webhook.verification"]
-disable_error_code = ["attr-defined", "arg-type"]
-
-[[tool.mypy.overrides]]
-module = ["helprs.modules.installation.service"]
-disable_error_code = ["arg-type"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

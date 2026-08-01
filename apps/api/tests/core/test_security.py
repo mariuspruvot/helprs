@@ -5,7 +5,7 @@ import hmac
 
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
-from jose import JWTError
+from jwt import PyJWTError
 
 from helprs.core.security import (
     create_access_token,
@@ -16,7 +16,7 @@ from helprs.core.security import (
 )
 
 FERNET_KEY = Fernet.generate_key().decode()
-SECRET_KEY = "test-jwt-secret"
+SECRET_KEY = "test-jwt-secret-at-least-32-bytes"
 
 
 # --- Fernet encrypt/decrypt ---
@@ -74,11 +74,11 @@ def test_jwt_expired_token_rejected():
     from datetime import timedelta
 
     token = create_access_token({"sub": "user-1"}, SECRET_KEY, expires_delta=timedelta(seconds=-1))
-    with pytest.raises(JWTError):
+    with pytest.raises(PyJWTError):
         decode_access_token(token, SECRET_KEY)
 
 
 def test_jwt_wrong_secret_rejected():
     token = create_access_token({"sub": "user-1"}, SECRET_KEY)
-    with pytest.raises(JWTError):
-        decode_access_token(token, "wrong-secret")
+    with pytest.raises(PyJWTError):
+        decode_access_token(token, "a-different-secret-of-adequate-length")

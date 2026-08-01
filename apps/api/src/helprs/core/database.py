@@ -117,7 +117,7 @@ def create_session_factory(engine) -> async_sessionmaker[AsyncSession]:
 
 async def get_db_session(
     session_factory: async_sessionmaker[AsyncSession],
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Async context manager dependency for database sessions."""
     async with session_factory() as session:
         try:

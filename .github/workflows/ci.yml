@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only by default; no job here writes to the repository.
+permissions:
+  contents: read
+
+# A push to a PR branch matches both triggers, so every job used to run twice;
+# superseded runs are now cancelled instead of finishing pointlessly.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
 jobs:
   # The runner entrypoint executes untrusted PR content and was the only code
   # in the repo with no linter over it. A shell injection lived there
@@ -24,6 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
       - run: uv sync --frozen
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
@@ -51,13 +63,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
       - run: uv sync --frozen
+      # Tests build the schema with metadata create_all, so a broken revision
+      # chain would otherwise only surface as a crash loop on deploy --
+      # production runs `alembic upgrade head` in the container CMD.
+      - run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test
       - run: uv run pytest --cov=helprs --cov-report=term-missing --cov-fail-under=70
         env:
           # Test-only values. The ephemeral CI database is destroyed after each run
           # and nothing it encrypts ever leaves the job. Do not reuse anywhere else.
           DATABASE_URL: postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test
-          SECRET_KEY: ci-test-secret-key
+          SECRET_KEY: ci-test-secret-key-at-least-32-bytes
           FERNET_KEY: "-fB7lL74GHGbXnRClRQTaBP9_flqSUHFC9_c2n3Tvbo="
           GITHUB_APP_ID: "000000"
           ENVIRONMENT: test

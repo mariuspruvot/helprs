@@ -22,10 +22,11 @@ Concurrency model (Story 2.1 post-review)
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import CursorResult, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -146,7 +147,11 @@ async def mark_processing(
         .values(status="processing", updated_at=func.now())
         .execution_options(synchronize_session=False)
     )
-    result = await session.execute(stmt)
+    # AsyncSession.execute is typed as returning Result; an UPDATE returns a
+    # CursorResult, which is where rowcount lives. The claim is decided by
+    # whether this process won the conditional UPDATE, so rowcount is the
+    # signal, not a convenience.
+    result = cast("CursorResult", await session.execute(stmt))
     await session.commit()
     return (result.rowcount or 0) == 1
 

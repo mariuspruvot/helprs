@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import Depends, Request
-from jose import JWTError
+from jwt import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.core.config import Settings, get_settings
@@ -18,7 +18,7 @@ from helprs.modules.identity.models import GitHubUser
 GetSettings = Annotated[Settings, Depends(get_settings)]
 
 
-async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
     """Database session dependency wired to app.state.session_factory."""
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -43,7 +43,7 @@ async def authenticate_token(session: AsyncSession, settings: Settings, token: s
     """
     try:
         payload = decode_access_token(token, settings.SECRET_KEY.get_secret_value())
-    except JWTError as e:
+    except PyJWTError as e:
         raise UnauthorizedError("Invalid or expired token") from e
 
     if payload.get("type") == "refresh":

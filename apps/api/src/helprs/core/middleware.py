@@ -88,6 +88,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def _handle_rate_limit_exceeded(request: Request, exc: Exception) -> Response:
+    """Adapter around slowapi's handler.
+
+    slowapi declares its handler as taking ``RateLimitExceeded``, while
+    Starlette types every handler as taking ``Exception``. Dispatch is by
+    registered class, so the narrowing never fails in practice.
+    """
+    if not isinstance(exc, RateLimitExceeded):
+        raise exc
+    return _rate_limit_exceeded_handler(request, exc)
+
+
 def setup_middleware(app: FastAPI, settings: Settings) -> None:
     """Register all middleware on the app.
 
@@ -107,7 +119,7 @@ def setup_middleware(app: FastAPI, settings: Settings) -> None:
     """
     # Innermost: rate limiting.
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, _handle_rate_limit_exceeded)
     app.add_middleware(SlowAPIMiddleware)
 
     # Then request logging, so rate-limited requests get logged too.
