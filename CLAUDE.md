@@ -13,7 +13,7 @@ make typecheck                   # mypy (API only)
 Monorepo with two apps, skills, and shared infra. See [ADR-001](docs/adr-001-claude-code-container-pivot.md) for the pivot decision.
 
 ```
-apps/api/          — FastAPI backend (Python 3.12, uv)
+apps/api/          — FastAPI backend (Python 3.13, uv)
   src/helprs/
     core/          — config, database, dependencies, exceptions, middleware, security
     modules/       — domain modules: identity, installation, webhook, container
@@ -45,7 +45,7 @@ infra/
 ## Key Patterns
 
 - **App factory**: `helprs.main:create_app()` — module-level `_lifespan` owns the engine and background loops via `AsyncExitStack`: each resource registers its cleanup at acquisition, teardown runs LIFO (cancel loops → drain replay tasks → stop containers → clear factory → dispose engine)
-- **Layered modules**: each domain module is `router.py` (thin — validate, call one use case, shape the response) → `service.py` (use cases, no SQL, no HTTP) → `repository.py` (every query, including the soft-delete predicate) → boundary modules for external systems (`github.py`, `anthropic.py`, `docker_client.py`), all returning typed objects rather than dicts. `container` additionally splits `streaming.py` (SSE pipeline) and `cleanup.py` (reaping) out of the service.
+- **Layered modules**: each domain module is `router.py` (thin — validate, call one use case, shape the response) → `service.py` (use cases, no SQL, no HTTP) → `repository.py` (every query, including the soft-delete predicate) → boundary modules for external systems (`github.py`, `anthropic.py`, `docker_client.py`), all returning typed objects rather than dicts. `container` additionally splits `streaming.py` (SSE pipeline) and `cleanup.py` (reaping) out of the service. Every module now has this layering, `webhook` included.
 - **Container orchestration**: `container` module manages ephemeral Docker lifecycle, credential injection, result relay. `finalize_session()` (mark completed → scorecard → PR comment) is deliberately detached from the HTTP request, so a client disconnect cannot leave a session stuck RUNNING.
 - **Skills as agents**: each skill is a self-contained folder with workflow definitions, mounted into containers
 - **SSE passthrough**: backend relays container output to frontend (no AI response generation in backend)
@@ -59,6 +59,10 @@ infra/
 - **Dashboard**: user-facing installation management at `/installations` -- installation list, session history, session replay. Authenticated users redirect from `/` to `/installations`. SQLAdmin remains at `/admin` as superadmin escape hatch.
 - **Cross-module queries**: a module never writes SQL over another module's tables. `container/repository.py` owns every `ContainerSession` query, including the aggregates the identity dashboard and the installation router consume.
 - **Auth on all REST routes**: identity and installation routers use `Depends(get_current_user)`, container router uses it too. The webhook handler bypasses REST routes entirely — it calls `create_session()` directly (DB record only, no container start). Container start happens when the authenticated frontend calls the REST endpoint.
+- **No module `__init__` imports**: the four `modules/*/__init__.py` are docstring-only. Re-exporting a router there pulled the whole router graph back through `core.dependencies` (which imports `identity.models`), so `import helprs.core.dependencies` failed on its own and startup depended on `main.py`'s import order. `tests/test_import_graph.py` guards this.
+- **JWT**: PyJWT, not python-jose (unmaintained since 2021, and the source of an unfixable `ecdsa` advisory). `PyJWTError` is the failure type.
+- **Secrets are `SecretStr`**: read them with `.get_secret_value()`. `SecretStr` defines `__len__`, so truthiness checks work unchanged. `repr(Settings())` used to print every credential, and Sentry uploads locals on any unhandled 500.
+- **SSE takes no DB dependency**: FastAPI tears yield-dependencies down only after the streaming body ends, so `Depends(get_db)` — including one behind an auth dependency — pins a pooled connection for the whole stream. The SSE route calls `authenticate_token`/`stream_token` inside a short `get_db_context()` instead.
 - **Production env validation**: `Settings` has a `model_validator` that enforces non-empty secrets when `ENVIRONMENT=production`. Tests use `ENVIRONMENT=test` to skip this.
 - **Graceful lifecycle**: lifespan reconciles stale RUNNING/PENDING sessions on boot (marks FAILED), and stops all running containers on shutdown. Periodic cleanup uses configurable `CONTAINER_TTL_SECONDS` from settings.
 
@@ -76,9 +80,9 @@ Skills are pluggable Claude Code agent definitions in `skills/`. See `skills/SKI
 
 ## Code Style
 
-- Python: ruff with `line-length = 120`, target Python 3.12
+- Python: ruff with `line-length = 120`, target Python 3.13
 - Lint rules: E, F, I, N, UP, B, A, SIM, TCH
-- mypy: non-strict with pydantic plugin, per-module overrides for third-party lib typing issues (see `pyproject.toml`)
+- mypy: non-strict with pydantic plugin, **no per-module overrides** — the five that existed were hiding four real errors, all since fixed
 - `asyncio_mode = "auto"` in pytest — no need for `@pytest.mark.asyncio`
 
 ## Testing

@@ -7,14 +7,16 @@ is served by ``GitHubDouble`` so these exercise orchestration and SQL.
 import uuid
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from helprs.core.exceptions import ForbiddenError, UnauthorizedError
 from helprs.core.security import fernet_encrypt
 from helprs.modules.container.models import ContainerSession, ContainerStatus
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.installation.models import Installation
+from helprs.modules.installation.schemas import InstallationPayload
 from helprs.modules.installation.service import (
-    create_installation_from_webhook,
+    create_installation,
     get_installation_by_github_id,
     get_installations_for_user,
     mint_installation_token,
@@ -83,23 +85,29 @@ async def _make_session(db_session, installation, *, owner_id: uuid.UUID | None)
     return container_session
 
 
-class TestCreateInstallationFromWebhook:
+def _payload() -> InstallationPayload:
+    return InstallationPayload.model_validate(WEBHOOK_PAYLOAD["installation"])
+
+
+class TestCreateInstallation:
     async def test_creates_from_payload(self, db_session):
-        installation = await create_installation_from_webhook(db_session, WEBHOOK_PAYLOAD)
+        installation = await create_installation(db_session, _payload())
 
         assert installation.github_installation_id == 12341234
         assert installation.account_login == "acme"
         assert installation.account_type == "Organization"
 
     async def test_duplicate_delivery_is_idempotent(self, db_session):
-        first = await create_installation_from_webhook(db_session, WEBHOOK_PAYLOAD)
-        second = await create_installation_from_webhook(db_session, WEBHOOK_PAYLOAD)
+        first = await create_installation(db_session, _payload())
+        second = await create_installation(db_session, _payload())
 
         assert first.id == second.id
 
-    async def test_malformed_payload_raises(self, db_session):
-        with pytest.raises(ValueError, match="Malformed webhook payload"):
-            await create_installation_from_webhook(db_session, {"installation": {"id": 1}})
+    async def test_malformed_payload_is_rejected_at_the_boundary(self):
+        """The use case takes a validated model, so a missing account is a
+        ValidationError at parse time rather than a KeyError mid-use-case."""
+        with pytest.raises(PydanticValidationError):
+            InstallationPayload.model_validate({"id": 1})
 
 
 class TestLifecycle:

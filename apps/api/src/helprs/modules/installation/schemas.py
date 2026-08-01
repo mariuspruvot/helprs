@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class BYOKConfigureRequest(BaseModel):
@@ -129,3 +129,32 @@ class PaginatedSessionsResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+# --- Inbound: the GitHub App installation object -----------------------------
+#
+# Modelled here rather than in the webhook module so the dependency runs
+# webhook -> installation. Only the fields helPRs reads are declared; the rest
+# of GitHub's payload is ignored.
+
+
+class InstallationAccount(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    account_id: int = Field(alias="id")
+    login: str
+    account_type: str = Field(alias="type")
+
+
+class InstallationPayload(BaseModel):
+    """The ``installation`` object GitHub sends with App lifecycle events."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    github_installation_id: int = Field(alias="id")
+    account: InstallationAccount
+    app_slug: str = ""
+    target_type: str = ""
+    repository_selection: str = "all"
+    permissions: dict[str, str] = Field(default_factory=dict)
+    events: list[str] = Field(default_factory=list)
