@@ -114,7 +114,12 @@ class TestGithubCallback:
             resp = await client.get(f"/api/v1/auth/github/callback?code=test_code&state={state}")
 
         assert resp.status_code == 307
-        assert "access_token=" in resp.headers["location"]
+        # The token is deliberately NOT in the URL: a redirect target lands in
+        # browser history, in the next request's Referer, and in proxy logs.
+        assert "access_token=" not in resp.headers["location"]
+        assert resp.headers["location"].endswith("/auth/callback")
+        # It is reachable instead by trading the httpOnly cookie set here.
+        assert "refresh_token=" in resp.headers.get("set-cookie", "")
         assert "refresh_token" in resp.headers.get("set-cookie", "")
 
     async def test_invalid_state(self, app_with_db):
@@ -160,7 +165,7 @@ class TestRefresh:
         settings = get_settings()
 
         refresh_token = create_access_token(
-            {"sub": str(user_id), "type": "refresh"},
+            {"sub": str(user_id), "type": "refresh", "ver": 0},
             settings.SECRET_KEY.get_secret_value(),
             timedelta(days=7),
         )
@@ -185,11 +190,23 @@ class TestRefresh:
 
 
 class TestLogout:
-    async def test_clears_cookie(self, app_with_db):
+    async def test_requires_authentication(self, app_with_db):
+        """Revocation has to know whose tokens to invalidate."""
         async with AsyncClient(
             transport=ASGITransport(app=app_with_db),
             base_url="http://test",
         ) as client:
             resp = await client.post("/api/v1/auth/logout")
-            assert resp.status_code == 200
-            assert resp.json() == {"status": "ok"}
+            assert resp.status_code == 401
+
+    async def test_clears_cookie_and_revokes(self, app_with_db, authed_client):
+        client, user_id = authed_client
+
+        resp = await client.post("/api/v1/auth/logout")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        async with app_with_db.state.session_factory() as session:
+            refreshed = await session.get(GitHubUser, user_id)
+        # Every refresh token minted under version 0 is now dead.
+        assert refreshed.token_version == 1

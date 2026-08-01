@@ -3,21 +3,29 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 // Mock react-router before any imports that use it
 const mockNavigate = vi.fn()
-let mockSearchParams = new URLSearchParams()
 vi.mock('react-router', () => ({
   useNavigate: () => mockNavigate,
-  useSearchParams: () => [mockSearchParams],
 }))
 
-// Mock apiFetch
 const mockApiFetch = vi.fn()
+const mockRefreshToken = vi.fn()
 vi.mock('../../shared/api/client', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+  refreshToken: () => mockRefreshToken(),
 }))
 
 // Import after mocks
 import OAuthCallback from './OAuthCallback'
 import { useAuthStore } from './store'
+
+const FAKE_USER = {
+  id: '1',
+  github_id: 123,
+  github_login: 'testuser',
+  email: null,
+  avatar_url: null,
+  created_at: '2026-01-01',
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -35,46 +43,50 @@ afterEach(() => {
 })
 
 describe('OAuthCallback', () => {
-  test('redirects to / when no access_token in params', () => {
-    mockSearchParams = new URLSearchParams()
-    render(<OAuthCallback />)
-
-    expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true })
-  })
-
   test('shows authenticating message', () => {
-    mockSearchParams = new URLSearchParams('access_token=test-token')
-    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ id: '1', github_login: 'testuser' }) })
+    mockRefreshToken.mockResolvedValue('test-token')
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(FAKE_USER) })
+
     render(<OAuthCallback />)
 
     expect(screen.getByText('Authenticating...')).toBeTruthy()
   })
 
-  test('calls login and fetches user on valid token', async () => {
-    mockSearchParams = new URLSearchParams('access_token=test-token')
-    const fakeUser = { id: '1', github_id: 123, github_login: 'testuser', email: null, avatar_url: null, created_at: '2026-01-01' }
-    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(fakeUser) })
+  test('trades the refresh cookie for a token, then fetches the user', async () => {
+    // The backend no longer puts the access token in the redirect URL, where
+    // it landed in browser history, Referer and proxy logs.
+    mockRefreshToken.mockResolvedValue('test-token')
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(FAKE_USER) })
 
     render(<OAuthCallback />)
 
-    // Wait for async effects
     await vi.waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/auth/me')
     })
-
     await vi.waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true })
     })
 
+    expect(mockRefreshToken).toHaveBeenCalled()
     expect(useAuthStore.getState().isAuthenticated).toBe(true)
     expect(useAuthStore.getState().accessToken).toBe('test-token')
   })
 
+  test('the token comes from the cookie exchange, not the URL', async () => {
+    mockRefreshToken.mockResolvedValue('cookie-token')
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(FAKE_USER) })
+
+    render(<OAuthCallback />)
+
+    await vi.waitFor(() => {
+      expect(useAuthStore.getState().accessToken).toBe('cookie-token')
+    })
+  })
+
   test('navigates to returnUrl from sessionStorage after login', async () => {
     sessionStorage.setItem('helprs.returnUrl', '/installations/123/settings')
-    mockSearchParams = new URLSearchParams('access_token=test-token')
-    const fakeUser = { id: '1', github_id: 123, github_login: 'testuser', email: null, avatar_url: null, created_at: '2026-01-01' }
-    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(fakeUser) })
+    mockRefreshToken.mockResolvedValue('test-token')
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(FAKE_USER) })
 
     render(<OAuthCallback />)
 
@@ -83,8 +95,19 @@ describe('OAuthCallback', () => {
     })
   })
 
+  test('redirects to / when there is no session to trade', async () => {
+    mockRefreshToken.mockResolvedValue(null)
+
+    render(<OAuthCallback />)
+
+    await vi.waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true })
+    })
+    expect(mockApiFetch).not.toHaveBeenCalled()
+  })
+
   test('redirects to / on fetch failure', async () => {
-    mockSearchParams = new URLSearchParams('access_token=bad-token')
+    mockRefreshToken.mockResolvedValue('test-token')
     mockApiFetch.mockResolvedValue({ ok: false })
 
     render(<OAuthCallback />)
@@ -95,8 +118,7 @@ describe('OAuthCallback', () => {
   })
 
   test('redirects to / on network error', async () => {
-    mockSearchParams = new URLSearchParams('access_token=test-token')
-    mockApiFetch.mockRejectedValue(new Error('Network error'))
+    mockRefreshToken.mockRejectedValue(new Error('Network error'))
 
     render(<OAuthCallback />)
 
