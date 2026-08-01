@@ -14,9 +14,8 @@ from fastapi.responses import StreamingResponse
 
 from helprs.core.database import get_db_context
 from helprs.core.dependencies import CurrentUser, DbSession, GetSettings, authenticate_token, stream_token
-from helprs.core.exceptions import ConflictError, NotFoundError
+from helprs.core.exceptions import ConflictError
 from helprs.core.middleware import limiter
-from helprs.core.security import fernet_decrypt
 from helprs.modules.container.docker_client import AioDockerClient, DockerClient
 from helprs.modules.container.models import ContainerStatus
 from helprs.modules.container.schemas import (
@@ -30,23 +29,16 @@ from helprs.modules.container.schemas import (
     StopSessionResponse,
 )
 from helprs.modules.container.service import (
-    create_session,
     delete_session,
     finalize_session,
     get_session_events,
     get_session_or_404,
+    open_session,
     send_message,
-    start_container,
     stop_container,
 )
 from helprs.modules.container.streaming import spawn_detached, stream_and_persist
-from helprs.modules.installation.github import RUNNER_TOKEN_PERMISSIONS
 from helprs.modules.installation.service import (
-    get_byok_config,
-    get_installation_by_github_id,
-    mint_installation_token,
-    verify_installation_access,
-    verify_repo_access,
     verify_session_access,
 )
 
@@ -70,53 +62,17 @@ async def create_container_session(
     user: CurrentUser,
 ) -> ContainerSessionResponse:
     """Create a session and start its container."""
-    installation = await get_installation_by_github_id(db, body.installation_id)
-    if not installation:
-        raise NotFoundError("Installation not found")
-
-    # Installation membership is not enough: an installation can cover repos
-    # this user cannot read, and the session streams the diff back to them.
-    await verify_installation_access(user, installation, settings)
-    await verify_repo_access(user, body.repo_full_name, settings)
-
-    byok_config = await get_byok_config(db, installation.id)
-    if not byok_config:
-        raise NotFoundError("No Claude token configured for this installation")
-
-    claude_oauth_token = fernet_decrypt(byok_config.encrypted_api_key, settings.fernet_keys)
-
-    # Narrowed to this repo, read-only: the container runs Claude Code over
-    # untrusted PR content with network egress.
-    github_token = await mint_installation_token(
-        installation.github_installation_id,
-        settings,
-        repositories=[body.repo_full_name.split("/")[-1]],
-        permissions=RUNNER_TOKEN_PERMISSIONS,
-    )
-
-    cs = await create_session(
-        db=db,
-        installation_id=installation.id,
-        pr_number=body.pr_number,
-        repo_full_name=body.repo_full_name,
-        skill_name=body.skill_name,
-        user_id=user.id,
-    )
-    # Committed before the container is touched. start_container marks the row
-    # FAILED on error and then raises, but that exception unwinds through
-    # get_db, which rolls back -- discarding the FAILED status *and* the row
-    # itself. A failed start left the user with a 502 and a dashboard showing
-    # that nothing had ever happened.
-    await db.commit()
-
     docker = _get_docker_client()
     try:
-        cs = await start_container(
-            db=db,
-            session_id=cs.id,
-            docker=docker,
-            claude_oauth_token=claude_oauth_token,
-            github_token=github_token,
+        cs = await open_session(
+            db,
+            docker,
+            user=user,
+            installation_github_id=body.installation_id,
+            pr_number=body.pr_number,
+            repo_full_name=body.repo_full_name,
+            skill_name=body.skill_name,
+            settings=settings,
         )
     finally:
         await docker.close()

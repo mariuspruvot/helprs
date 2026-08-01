@@ -28,11 +28,11 @@ Some text after.
 def test_extract_valid_scorecard():
     result = extract_scorecard(VALID_SCORECARD)
     assert result is not None
-    assert result["skill"] == "challenge-me"
-    assert result["version"] == 1
-    assert result["dimensions"] == {"depth": 8, "clarity": 7, "rigor": 6}
-    assert result["summary"] == "Strong understanding of failure modes."
-    assert result["highlights"] == ["Good instinct on idempotency"]
+    assert result.skill == "challenge-me"
+    assert result.version == 1
+    assert result.dimensions == {"depth": 8, "clarity": 7, "rigor": 6}
+    assert result.summary == "Strong understanding of failure modes."
+    assert result.highlights == ["Good instinct on idempotency"]
 
 
 def test_extract_returns_none_when_no_block():
@@ -96,7 +96,7 @@ def test_extract_handles_float_scores():
 ```"""
     result = extract_scorecard(text)
     assert result is not None
-    assert result["dimensions"]["accuracy"] == 7.5
+    assert result.dimensions["accuracy"] == 7.5
 
 
 def test_extract_handles_different_skill_dimensions():
@@ -110,5 +110,5 @@ def test_extract_handles_different_skill_dimensions():
 ```"""
     result = extract_scorecard(text)
     assert result is not None
-    assert result["skill"] == "pair-debug"
-    assert set(result["dimensions"].keys()) == {"detection", "methodology", "speed"}
+    assert result.skill == "pair-debug"
+    assert set(result.dimensions.keys()) == {"detection", "methodology", "speed"}

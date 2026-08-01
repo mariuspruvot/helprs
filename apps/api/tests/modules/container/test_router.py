@@ -165,7 +165,7 @@ class TestCreateSession:
                 return_value=FakeDockerClientForRouter(),
             ),
             patch(
-                "helprs.modules.container.router.mint_installation_token",
+                "helprs.modules.installation.service.mint_installation_token",
                 new_callable=AsyncMock,
                 return_value="gho_minted_token",
             ),
@@ -265,10 +265,19 @@ class TestStopSession:
         assert resp.status_code == 404
 
 
+# What a skill actually emits: markdown for the human watching the stream,
+# then the JSON block everything machine-readable consumes. The comment is
+# rendered from the JSON, so a fixture carrying only the markdown was
+# modelling half the contract.
 SAMPLE_RESULT_WITH_SCORE = (
     "Some text\n\n---\n\n## Results\n\n**Questions:** 3\n\n"
     "### Score: 8 / 10  ████████░░ Strong\n\n"
-    "### Verdict\nReady for review.\n\n---"
+    "### Verdict\nReady for review.\n\n---\n\n"
+    "```helprs-scorecard\n"
+    '{"skill": "challenge-me", "version": 1, '
+    '"dimensions": {"depth": 8, "clarity": 7, "rigor": 6}, '
+    '"summary": "Ready for review."}\n'
+    "```"
 )
 
 
@@ -505,8 +514,27 @@ class TestPostResultsComment:
         assert len(posted) == 1
         assert posted[0].url.path == "/repos/org/repo/issues/99/comments"
         body = json.loads(posted[0].content)["body"]
-        assert "Score: 8 / 10" in body
         assert "helPRs Challenge-Me Results" in body
+        # Computed from the validated dimensions (8, 7, 6), not from the
+        # skill's prose "Score: 8" -- a number the skill could write
+        # inconsistently with the dimensions it reported alongside it.
+        assert "**Score: 7.0 / 10**" in body
+        assert "| Depth | 8 / 10 |" in body
+
+    async def test_the_session_records_its_scorecard_and_xp(self, seeded_app, monkeypatch):
+        """xp_earned was declared on the model, surfaced in two response
+        schemas and read by the frontend, and never once written."""
+        session_id = await self._create_running_session(seeded_app, post_results=True)
+        await self._create_result_event(seeded_app, session_id, SAMPLE_RESULT_WITH_SCORE)
+
+        await self._stream_and_capture_github(seeded_app, session_id, FakeDockerClientForRouter(), monkeypatch)
+
+        async with seeded_app["app"].state.session_factory() as session:
+            cs = await session.get(ContainerSession, session_id)
+
+        assert cs.scorecard["dimensions"] == {"depth": 8, "clarity": 7, "rigor": 6}
+        # Mean of the dimensions on a 0-100 scale.
+        assert cs.xp_earned == 70
 
     async def test_skips_comment_when_disabled(self, seeded_app, monkeypatch):
         """post_results_to_pr defaults to off; nothing is posted."""

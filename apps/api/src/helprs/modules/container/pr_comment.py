@@ -1,68 +1,62 @@
-"""Score card extraction and PR comment formatting for challenge-me sessions."""
+"""Rendering a finished session as a GitHub PR comment.
 
-import re
+Built from the validated ``Scorecard``, not from the markdown the skill
+writes for the live stream. Two extractors used to coexist -- a validated
+JSON parser feeding the dashboard and an unvalidated regex over the markdown
+feeding this comment -- so one session could be scored in one place and
+silently uncommented in the other. There is one machine-readable source now,
+and this module no longer runs its own SQL over the events table.
+"""
+
 from uuid import UUID
 
-import structlog
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from helprs.modules.container.scorecard import MAX_DIMENSION_SCORE, Scorecard
 
-from helprs.modules.container.models import SessionEvent
-
-logger = structlog.get_logger()
-
-_RESULTS_PATTERN = re.compile(
-    r"---\s*\n\s*\n##\s+Results\b(.*?)^---\s*$",
-    re.DOTALL | re.MULTILINE,
-)
+_BAR_WIDTH = 10
 
 
-async def extract_score_card(session_id: UUID, db: AsyncSession) -> str | None:
-    """Extract the score card markdown from persisted session events.
+def _score_bar(score: float) -> str:
+    filled = round(score * _BAR_WIDTH / MAX_DIMENSION_SCORE)
+    return "█" * filled + "░" * (_BAR_WIDTH - filled)
 
-    Queries the last ``result`` event for the session and extracts the
-    ``## Results`` section delimited by ``---`` markers (as defined in
-    ``skills/challenge-me/CLAUDE.md``).
-    """
-    result = await db.execute(
-        select(SessionEvent.data)
-        .where(
-            SessionEvent.session_id == session_id,
-            SessionEvent.data["type"].astext == "result",
-        )
-        .order_by(SessionEvent.event_id.desc())
-        .limit(1)
+
+def _dimensions_table(scorecard: Scorecard) -> str:
+    rows = "\n".join(
+        f"| {name.replace('_', ' ').title()} | {score:g} / {MAX_DIMENSION_SCORE} |"
+        for name, score in scorecard.dimensions.items()
     )
-    row = result.scalar_one_or_none()
-    if row is None:
-        return None
-
-    result_text = row.get("result")
-    if not result_text or not isinstance(result_text, str):
-        return None
-
-    match = _RESULTS_PATTERN.search(result_text)
-    if not match:
-        return None
-
-    return f"## Results{match.group(1).rstrip()}"
+    return f"| Dimension | Score |\n|-----------|-------|\n{rows}"
 
 
-def format_pr_comment(
-    score_card: str,
-    session_url: str,
-) -> str:
-    """Format the score card as a GitHub PR comment."""
-    return (
-        f"### helPRs Challenge-Me Results\n\n"
-        f"{score_card}\n\n"
-        f"<details>\n"
-        f"<summary>View session</summary>\n\n"
-        f"[Open full Q&A session]({session_url})\n\n"
-        f"---\n"
-        f"*Posted by [helPRs](https://github.com/apps/helprs)*\n"
-        f"</details>\n"
-    )
+def format_pr_comment(scorecard: Scorecard, session_url: str) -> str:
+    """Render the scorecard as the comment body."""
+    overall = scorecard.overall_score
+    sections = [
+        "### helPRs Challenge-Me Results",
+        "",
+        f"**Score: {overall:.1f} / {MAX_DIMENSION_SCORE}**  {_score_bar(overall)}",
+        "",
+        _dimensions_table(scorecard),
+        "",
+        scorecard.summary,
+    ]
+
+    if scorecard.highlights:
+        sections += ["", "**Highlights**", *(f"- {item}" for item in scorecard.highlights)]
+
+    sections += [
+        "",
+        "<details>",
+        "<summary>View session</summary>",
+        "",
+        f"[Open full Q&A session]({session_url})",
+        "",
+        "---",
+        "*Posted by [helPRs](https://github.com/apps/helprs)*",
+        "</details>",
+        "",
+    ]
+    return "\n".join(sections)
 
 
 def build_session_url(

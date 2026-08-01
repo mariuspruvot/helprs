@@ -1,205 +1,98 @@
-"""Tests for score card extraction and PR comment formatting."""
+"""Tests for rendering a session's scorecard as a PR comment.
 
-import uuid
+The comment used to be regex-scraped out of the markdown a skill writes for
+the live stream, with no validation, by a module that ran its own SQL over
+the events table. It is rendered from the validated ``Scorecard`` now — the
+same object the dashboard reads — so the two cannot disagree about a session.
+"""
+
+from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from helprs.core.config import get_settings
-from helprs.core.database import Base, clear_session_factory, set_session_factory
-from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
-from helprs.modules.container.pr_comment import build_session_url, extract_score_card, format_pr_comment
-from helprs.modules.installation.models import Installation
-
-TEST_DATABASE_URL = "postgresql+asyncpg://helprs:helprs@localhost:5432/helprs_test"
-
-SAMPLE_SCORE_CARD = """\
-Some conversation text here.
-
----
-
-## Results
-
-**Questions:** 4
-
-### Score: 7.5 / 10  ████████░░ Strong
-
-### Dimensions
-
-| Dimension | Rating |
-|-----------|--------|
-| Depth | High |
-| Accuracy | High |
-| Completeness | Medium |
-| Insight | Medium |
-
-### Strengths
-- Good understanding of the caching layer
-
-### Areas to Improve
-- Review edge cases in error handling
-
-### Verdict
-Ready for review -- you have a strong command of this PR.
-
----"""
+from helprs.modules.container.pr_comment import build_session_url, format_pr_comment
+from helprs.modules.container.scorecard import Scorecard
 
 
-@pytest.fixture
-async def db_with_session():
-    """Provide a database session with a pre-seeded container session."""
-    get_settings.cache_clear()
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    set_session_factory(session_factory)
-
-    async with session_factory() as session:
-        installation = Installation(
-            github_installation_id=11111111,
-            account_login="test-org",
-            account_id=22222222,
-            account_type="User",
-            repository_selection="all",
-            app_slug="helprs",
-            target_type="User",
-        )
-        session.add(installation)
-        await session.flush()
-
-        cs = ContainerSession(
-            installation_id=installation.id,
-            pr_number=42,
-            repo_full_name="org/repo",
-            skill_name="challenge-me",
-            status=ContainerStatus.COMPLETED,
-            container_id="fake-container",
-        )
-        session.add(cs)
-        await session.commit()
-
-        yield session, cs
-
-    clear_session_factory()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
-
-
-class TestExtractScoreCard:
-    async def test_extracts_score_card_from_result_event(self, db_with_session):
-        session, cs = db_with_session
-
-        event = SessionEvent(
-            session_id=cs.id,
-            event_id=1,
-            data={"type": "result", "result": SAMPLE_SCORE_CARD},
-        )
-        session.add(event)
-        await session.flush()
-
-        result = await extract_score_card(cs.id, session)
-        assert result is not None
-        assert result.startswith("## Results")
-        assert "Score: 7.5 / 10" in result
-        assert "Ready for review" in result
-
-    async def test_returns_none_when_no_result_event(self, db_with_session):
-        session, cs = db_with_session
-
-        event = SessionEvent(
-            session_id=cs.id,
-            event_id=1,
-            data={"type": "assistant", "message": {"content": "Hello"}},
-        )
-        session.add(event)
-        await session.flush()
-
-        result = await extract_score_card(cs.id, session)
-        assert result is None
-
-    async def test_returns_none_when_no_results_heading(self, db_with_session):
-        session, cs = db_with_session
-
-        event = SessionEvent(
-            session_id=cs.id,
-            event_id=1,
-            data={"type": "result", "result": "Just some text without a score card"},
-        )
-        session.add(event)
-        await session.flush()
-
-        result = await extract_score_card(cs.id, session)
-        assert result is None
-
-    async def test_returns_none_when_result_field_missing(self, db_with_session):
-        session, cs = db_with_session
-
-        event = SessionEvent(
-            session_id=cs.id,
-            event_id=1,
-            data={"type": "result", "subtype": "done"},
-        )
-        session.add(event)
-        await session.flush()
-
-        result = await extract_score_card(cs.id, session)
-        assert result is None
-
-    async def test_uses_last_result_event(self, db_with_session):
-        """When multiple result events exist (multi-turn), use the last one."""
-        session, cs = db_with_session
-
-        event1 = SessionEvent(
-            session_id=cs.id,
-            event_id=1,
-            data={"type": "result", "result": "First turn result without score card"},
-        )
-        event2 = SessionEvent(
-            session_id=cs.id,
-            event_id=2,
-            data={"type": "result", "result": SAMPLE_SCORE_CARD},
-        )
-        session.add_all([event1, event2])
-        await session.flush()
-
-        result = await extract_score_card(cs.id, session)
-        assert result is not None
-        assert "Score: 7.5 / 10" in result
+def _scorecard(**overrides) -> Scorecard:
+    data = {
+        "skill": "challenge-me",
+        "version": 1,
+        "questions_asked": 3,
+        "questions_answered": 3,
+        "dimensions": {"depth": 8, "clarity": 7, "rigor": 6},
+        "summary": "Strong on failure modes, thinner on edge cases.",
+        "highlights": ["Spotted the architectural trade-off"],
+    }
+    data.update(overrides)
+    return Scorecard.model_validate(data)
 
 
 class TestFormatPrComment:
-    def test_includes_score_card(self):
-        score_card = "## Results\n\n**Questions:** 3\n\n### Score: 8 / 10"
-        result = format_pr_comment(score_card, "http://test.local/session/abc/org/repo/1")
+    def test_shows_the_overall_score(self):
+        body = format_pr_comment(_scorecard(), "https://helprs.tech/session/x")
 
-        assert "### helPRs Challenge-Me Results" in result
-        assert score_card in result
+        # (8 + 7 + 6) / 3
+        assert "**Score: 7.0 / 10**" in body
 
-    def test_includes_session_link(self):
-        url = "http://test.local/session/abc/org/repo/42"
-        result = format_pr_comment("## Results\n\nScore: 8", url)
+    def test_lists_every_dimension(self):
+        body = format_pr_comment(_scorecard(), "https://helprs.tech/session/x")
 
-        assert f"[Open full Q&A session]({url})" in result
+        for label, score in (("Depth", 8), ("Clarity", 7), ("Rigor", 6)):
+            assert f"| {label} | {score} / 10 |" in body
 
-    def test_includes_collapsible_details(self):
-        result = format_pr_comment("## Results", "http://test.local/session/abc/org/repo/1")
+    def test_includes_the_summary_and_highlights(self):
+        body = format_pr_comment(_scorecard(), "https://helprs.tech/session/x")
 
-        assert "<details>" in result
-        assert "</details>" in result
-        assert "View session" in result
+        assert "Strong on failure modes" in body
+        assert "- Spotted the architectural trade-off" in body
+
+    def test_highlights_are_omitted_when_the_skill_sent_none(self):
+        body = format_pr_comment(_scorecard(highlights=[]), "https://helprs.tech/session/x")
+
+        assert "**Highlights**" not in body
+
+    def test_includes_the_session_link_in_a_collapsed_block(self):
+        url = "https://helprs.tech/session/abc/org/repo/42"
+        body = format_pr_comment(_scorecard(), url)
+
+        assert url in body
+        assert "<details>" in body
+        assert "</details>" in body
+
+    def test_the_bar_tracks_the_score(self):
+        top = format_pr_comment(_scorecard(dimensions={"a": 10, "b": 10, "c": 10}), "u")
+        bottom = format_pr_comment(_scorecard(dimensions={"a": 0, "b": 0, "c": 0}), "u")
+
+        assert "█" * 10 in top
+        assert "░" * 10 in bottom
+
+
+class TestScorecardValidation:
+    """The gate that now decides whether a comment gets posted at all."""
+
+    def test_a_score_outside_the_scale_is_rejected(self):
+        with pytest.raises(ValueError, match="outside 0-10"):
+            _scorecard(dimensions={"depth": 11, "clarity": 7, "rigor": 6})
+
+    def test_the_wrong_number_of_dimensions_is_rejected(self):
+        with pytest.raises(ValueError, match="exactly 3 dimensions"):
+            _scorecard(dimensions={"depth": 8, "clarity": 7})
+
+    def test_extra_fields_a_skill_reports_are_kept(self):
+        """The declared fields are the contract, not the ceiling."""
+        card = _scorecard(mood="cheerful")
+
+        assert card.model_dump()["mood"] == "cheerful"
+
+    def test_overall_score_is_the_mean(self):
+        assert _scorecard(dimensions={"a": 3, "b": 4, "c": 5}).overall_score == 4
 
 
 class TestBuildSessionUrl:
     def test_builds_correct_url(self):
-        result = build_session_url(
-            app_base_url="https://app.helprs.dev",
-            installation_id=uuid.UUID("12345678-1234-1234-1234-123456789abc"),
-            repo_full_name="org/repo",
-            pr_number=42,
-        )
+        installation_id = uuid4()
 
-        assert result == "https://app.helprs.dev/session/12345678-1234-1234-1234-123456789abc/org/repo/42"
+        url = build_session_url("https://helprs.tech", installation_id, "org/repo", 42)
+
+        assert url == f"https://helprs.tech/session/{installation_id}/org/repo/42"

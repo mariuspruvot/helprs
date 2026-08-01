@@ -10,12 +10,13 @@ import contextlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from helprs.core.config import get_settings
+from helprs.core.config import Settings, get_settings
 from helprs.core.database import get_db_context
 from helprs.core.exceptions import ConflictError, ExternalServiceError, NotFoundError
 from helprs.modules.container import repository
@@ -26,10 +27,14 @@ from helprs.modules.container.docker_client import (
     DockerClient,
 )
 from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
-from helprs.modules.container.pr_comment import build_session_url, extract_score_card, format_pr_comment
-from helprs.modules.container.scorecard import extract_scorecard
+from helprs.modules.container.pr_comment import build_session_url, format_pr_comment
+from helprs.modules.container.scorecard import Scorecard, extract_scorecard
 from helprs.modules.installation import repository as installation_repository
+from helprs.modules.installation import service as installation_service
 from helprs.modules.installation.service import mint_installation_token, post_pr_comment_with_retry
+
+if TYPE_CHECKING:
+    from helprs.modules.identity.models import GitHubUser
 
 logger = structlog.get_logger()
 
@@ -198,6 +203,72 @@ async def start_container(
     return cs
 
 
+async def open_session(
+    db: AsyncSession,
+    docker: DockerClient,
+    *,
+    user: "GitHubUser",
+    installation_github_id: int,
+    pr_number: int,
+    repo_full_name: str,
+    skill_name: str,
+    settings: Settings,
+) -> ContainerSession:
+    """Authorize, provision credentials, record the session and start it.
+
+    Lives here rather than in the route handler it came from: it decrypts a
+    stored credential and mints a scoped GitHub token, which are not
+    transport concerns, and the webhook path could never have reused it while
+    it was spelled out inside an HTTP endpoint.
+    """
+    installation = await installation_service.get_installation_by_github_id(db, installation_github_id)
+    if not installation:
+        raise NotFoundError("Installation not found")
+
+    # Installation membership is not enough: an installation can cover repos
+    # this user cannot read, and the session streams the diff back to them.
+    await installation_service.verify_installation_access(user, installation, settings)
+    await installation_service.verify_repo_access(user, repo_full_name, settings)
+
+    byok_config = await installation_service.get_byok_config(db, installation.id)
+    if not byok_config:
+        raise NotFoundError("No Claude token configured for this installation")
+
+    claude_oauth_token = installation_service.decrypt_byok_key(byok_config, settings.fernet_keys)
+
+    # Narrowed to this repo, read-only: the container runs Claude Code over
+    # untrusted PR content with network egress.
+    github_token = await installation_service.mint_installation_token(
+        installation.github_installation_id,
+        settings,
+        repositories=[repo_full_name.split("/")[-1]],
+        permissions=installation_service.RUNNER_TOKEN_PERMISSIONS,
+    )
+
+    cs = await create_session(
+        db=db,
+        installation_id=installation.id,
+        pr_number=pr_number,
+        repo_full_name=repo_full_name,
+        skill_name=skill_name,
+        user_id=user.id,
+    )
+    # Committed before the container is touched. start_container marks the row
+    # FAILED on error and then raises, but that exception unwinds through
+    # get_db, which rolls back -- discarding the FAILED status *and* the row
+    # itself. A failed start left the user with a 502 and a dashboard showing
+    # that nothing had ever happened.
+    await db.commit()
+
+    return await start_container(
+        db=db,
+        session_id=cs.id,
+        docker=docker,
+        claude_oauth_token=claude_oauth_token,
+        github_token=github_token,
+    )
+
+
 async def send_message(db: AsyncSession, session_id: UUID, docker: DockerClient, content: str) -> None:
     """Hand a user message to the running container's read loop."""
     cs = await get_session_or_404(db, session_id)
@@ -295,8 +366,9 @@ async def finalize_session(session_id: UUID, docker: DockerClient) -> ContainerS
         async with get_db_context() as db:
             completed = await mark_completed(db, session_id, status)
             if status == ContainerStatus.COMPLETED:
-                await _persist_scorecard(db, completed)
-                await _post_results_comment(db, completed)
+                scorecard = await _persist_scorecard(db, completed)
+                if scorecard is not None:
+                    await _post_results_comment(db, completed, scorecard)
     except Exception:
         # The container's own outcome is known and already recorded by this
         # point in every path but an early one; reporting FAILED for a
@@ -308,7 +380,7 @@ async def finalize_session(session_id: UUID, docker: DockerClient) -> ContainerS
     return status
 
 
-def _last_scorecard_in(events: list[SessionEvent]) -> dict | None:
+def _last_scorecard_in(events: list[SessionEvent]) -> Scorecard | None:
     """Find the scorecard block in the most recent event that carries one.
 
     Assistant text blocks are checked first (that is where the skill writes
@@ -331,15 +403,27 @@ def _last_scorecard_in(events: list[SessionEvent]) -> dict | None:
     return None
 
 
-async def _persist_scorecard(db: AsyncSession, cs: ContainerSession) -> None:
-    """Store the skill's scorecard, if it emitted one."""
+async def _persist_scorecard(db: AsyncSession, cs: ContainerSession) -> Scorecard | None:
+    """Store the skill's scorecard, if it emitted one, and return it.
+
+    Returned rather than re-read downstream: the PR comment is rendered from
+    this same object, which is what keeps the dashboard and the comment from
+    disagreeing about a session.
+    """
     scorecard = _last_scorecard_in(await repository.list_events(db, cs.id))
-    if scorecard:
-        cs.scorecard = scorecard
-        await db.flush()
+    if scorecard is None:
+        return None
+
+    cs.scorecard = scorecard.model_dump()
+    # The XP a session was worth: the mean of the dimensions on a 0-100 scale.
+    # The column existed, was surfaced in two response schemas and consumed by
+    # the frontend, and was never once written.
+    cs.xp_earned = round(scorecard.overall_score * 10)
+    await db.flush()
+    return scorecard
 
 
-async def _post_results_comment(db: AsyncSession, cs: ContainerSession) -> None:
+async def _post_results_comment(db: AsyncSession, cs: ContainerSession, scorecard: Scorecard) -> None:
     """Post the score card back to the PR, when the install opted in.
 
     Best effort: a GitHub failure must not change the session's outcome. The
@@ -354,14 +438,9 @@ async def _post_results_comment(db: AsyncSession, cs: ContainerSession) -> None:
         if not installation or not installation.post_results_to_pr:
             return
 
-        score_card = await extract_score_card(cs.id, db)
-        if not score_card:
-            await logger.ainfo("post_results_no_score_card", session_id=str(cs.id))
-            return
-
         settings = get_settings()
         comment_body = format_pr_comment(
-            score_card,
+            scorecard,
             build_session_url(
                 app_base_url=settings.APP_BASE_URL,
                 installation_id=cs.installation_id,
