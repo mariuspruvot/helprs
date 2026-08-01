@@ -23,6 +23,8 @@ from helprs.modules.container.docker_client import CLAUDE_RUNNER_IMAGE, DockerCl
 from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
 from helprs.modules.container.pr_comment import build_session_url, extract_score_card, format_pr_comment
 from helprs.modules.container.scorecard import extract_scorecard
+from helprs.modules.installation import repository as installation_repository
+from helprs.modules.installation.service import mint_installation_token, post_pr_comment_with_retry
 
 logger = structlog.get_logger()
 
@@ -124,8 +126,13 @@ async def start_container(
     try:
         _resolve_skill_dir(cs.skill_name, base)
     except NotFoundError:
+        # Committed, not flushed: the raise below unwinds through get_db,
+        # which rolls back, so a flush here would be discarded along with the
+        # status it just recorded. The caller commits the row before calling
+        # this, so there is a row to update.
         cs.status = ContainerStatus.FAILED
-        await db.flush()
+        cs.completed_at = datetime.now(UTC)
+        await db.commit()
         raise
 
     try:
@@ -148,7 +155,8 @@ async def start_container(
         await docker.start_container(container_id)
     except Exception as exc:
         cs.status = ContainerStatus.FAILED
-        await db.flush()
+        cs.completed_at = datetime.now(UTC)
+        await db.commit()
         await logger.aerror("container_start_failed", session_id=str(session_id), error=str(exc))
         raise ExternalServiceError(f"Failed to start container: {exc}") from exc
 
@@ -204,31 +212,31 @@ async def stop_container(db: AsyncSession, session_id: UUID, docker: DockerClien
     return cs
 
 
-async def mark_completed(
-    db: AsyncSession,
-    session_id: UUID,
-    docker: DockerClient,
-    *,
-    ttl_seconds: int,
-) -> ContainerSession:
-    """Wait for the container to exit, record the outcome, remove it."""
+async def await_exit_status(docker: DockerClient, container_id: str, *, ttl_seconds: int) -> ContainerStatus:
+    """Block until the container exits and map that to a session status.
+
+    Takes no database session on purpose. This wait lasts as long as the skill
+    runs -- up to the full TTL -- and holding a pooled connection, plus a lock
+    on the session row, across it would starve the pool from a handful of
+    abandoned sessions.
+    """
+    try:
+        exit_code = await asyncio.wait_for(docker.wait_container(container_id), timeout=ttl_seconds)
+        return ContainerStatus.COMPLETED if exit_code == 0 else ContainerStatus.FAILED
+    except TimeoutError:
+        await logger.awarning("container_timeout", container_id=container_id)
+        return ContainerStatus.TIMEOUT
+
+
+async def mark_completed(db: AsyncSession, session_id: UUID, status: ContainerStatus) -> ContainerSession:
+    """Record a terminal status against a session. Write-only, no waiting."""
     cs = await get_session_or_404(db, session_id)
-    if cs.status != ContainerStatus.RUNNING or not cs.container_id:
+    if cs.status != ContainerStatus.RUNNING:
         return cs
 
-    try:
-        exit_code = await asyncio.wait_for(docker.wait_container(cs.container_id), timeout=ttl_seconds)
-        cs.status = ContainerStatus.COMPLETED if exit_code == 0 else ContainerStatus.FAILED
-    except TimeoutError:
-        cs.status = ContainerStatus.TIMEOUT
-        await logger.awarning("container_timeout", session_id=str(session_id))
-    finally:
-        cs.completed_at = datetime.now(UTC)
-        if cs.container_id:
-            with contextlib.suppress(Exception):
-                await docker.remove_container(cs.container_id, force=True)
-        await db.flush()
-
+    cs.status = status
+    cs.completed_at = datetime.now(UTC)
+    await db.flush()
     return cs
 
 
@@ -244,19 +252,27 @@ async def finalize_session(session_id: UUID, docker: DockerClient) -> ContainerS
     """
     settings = get_settings()
     try:
+        # Three phases, so no database connection is held across the wait.
         async with get_db_context() as db:
-            completed = await mark_completed(
-                db,
-                session_id,
-                docker,
-                ttl_seconds=settings.CONTAINER_TTL_SECONDS,
-            )
-            status = completed.status
+            cs = await get_session_or_404(db, session_id)
+            if cs.status != ContainerStatus.RUNNING or not cs.container_id:
+                return cs.status
+            container_id = cs.container_id
 
+        status = await await_exit_status(docker, container_id, ttl_seconds=settings.CONTAINER_TTL_SECONDS)
+        with contextlib.suppress(Exception):
+            await docker.remove_container(container_id, force=True)
+
+        async with get_db_context() as db:
+            completed = await mark_completed(db, session_id, status)
             if status == ContainerStatus.COMPLETED:
                 await _persist_scorecard(db, completed)
                 await _post_results_comment(db, completed)
     except Exception:
+        # The container's own outcome is known and already recorded by this
+        # point in every path but an early one; reporting FAILED for a
+        # bookkeeping error would tell the user their skill run failed when
+        # it did not.
         await logger.aexception("session_finalization_failed", session_id=str(session_id))
         return ContainerStatus.FAILED
 
@@ -301,9 +317,6 @@ async def _post_results_comment(db: AsyncSession, cs: ContainerSession) -> None:
     token is minted fresh because a long session can outlive the one used to
     start it.
     """
-    from helprs.modules.installation import repository as installation_repository
-    from helprs.modules.installation.service import mint_installation_token, post_pr_comment_with_retry
-
     if cs.skill_name != SCORECARD_SKILL:
         return
 

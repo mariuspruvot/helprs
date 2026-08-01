@@ -12,7 +12,8 @@ import structlog
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
-from helprs.core.dependencies import CurrentUser, DbSession, GetSettings, StreamUser
+from helprs.core.database import get_db_context
+from helprs.core.dependencies import CurrentUser, DbSession, GetSettings, authenticate_token, stream_token
 from helprs.core.exceptions import ConflictError, NotFoundError
 from helprs.core.middleware import limiter
 from helprs.core.security import fernet_decrypt
@@ -101,6 +102,12 @@ async def create_container_session(
         skill_name=body.skill_name,
         user_id=user.id,
     )
+    # Committed before the container is touched. start_container marks the row
+    # FAILED on error and then raises, but that exception unwinds through
+    # get_db, which rolls back -- discarding the FAILED status *and* the row
+    # itself. A failed start left the user with a 502 and a dashboard showing
+    # that nothing had ever happened.
+    await db.commit()
 
     docker = _get_docker_client()
     try:
@@ -151,19 +158,31 @@ def _resume_offset(request: Request, offset: int) -> int:
 async def stream_container_output(
     session_id: UUID,
     request: Request,
-    db: DbSession,
     settings: GetSettings,
-    user: StreamUser,
     offset: int = 0,
 ) -> StreamingResponse:
-    """Relay the container's output as Server-Sent Events."""
-    cs = await get_session_or_404(db, session_id)
-    await verify_session_access(user, cs, db, settings)
+    """Relay the container's output as Server-Sent Events.
 
-    if cs.status != ContainerStatus.RUNNING or not cs.container_id:
-        raise ConflictError("Container is not running")
+    Deliberately takes no ``DbSession`` and no user dependency. FastAPI tears
+    yield-dependencies down only once the streaming body completes, so any
+    ``Depends(get_db)`` here -- including the one behind an authentication
+    dependency -- would keep a pooled connection, and an open transaction,
+    checked out for the life of the stream: up to CONTAINER_TTL_SECONDS. The
+    pool is DB_POOL_SIZE + DB_MAX_OVERFLOW per worker, so a handful of
+    viewers would starve every other request on that worker, and each
+    idle-in-transaction backend blocks VACUUM. Authentication and
+    authorization run in a short session that closes before streaming starts.
+    """
+    async with get_db_context() as db:
+        user = await authenticate_token(db, settings, stream_token(request))
+        cs = await get_session_or_404(db, session_id)
+        await verify_session_access(user, cs, db, settings)
 
-    container_id = cs.container_id
+        if cs.status != ContainerStatus.RUNNING or not cs.container_id:
+            raise ConflictError("Container is not running")
+
+        container_id = cs.container_id
+
     resume_from = _resume_offset(request, offset)
     docker = _get_docker_client()
 
@@ -177,13 +196,23 @@ async def stream_container_output(
             status = await finalize_session(session_id, docker)
             finalized = True
             yield _done_event(status)
+        except Exception:
+            # The response has already started, so there is no status code
+            # left to change. Without a frame here the client just sees a
+            # truncated body, and native EventSource silently reconnects
+            # into the same failure.
+            logger.exception("sse_stream_failed", session_id=str(session_id))
+            yield _error_event("Streaming failed. The session will be finalized in the background.")
         finally:
             if not finalized:
-                # The client hung up mid-stream. Finalization must still run,
-                # detached from this request — otherwise the session stays
-                # RUNNING until the reaper mislabels it TIMEOUT, with its
-                # scorecard unextracted and its PR comment never posted.
-                spawn_detached(_finalize_and_close(session_id, docker))
+                # The client hung up, or the stream broke, mid-session. Both
+                # the drain and the finalization have to continue detached
+                # from this request. Detaching only the finalization -- as
+                # this did before -- stops the drain the moment the tab
+                # closes, so finalize_session then builds its scorecard from
+                # a truncated event history and posts that to the PR, quietly
+                # defeating the thing detaching was meant to protect.
+                spawn_detached(_drain_and_finalize(session_id, container_id, docker))
             else:
                 await docker.close()
 
@@ -208,9 +237,24 @@ def _done_event(status: ContainerStatus) -> str:
     return f"event: done\ndata: {json.dumps({'message': message, 'status': status.value})}\n\n"
 
 
-async def _finalize_and_close(session_id: UUID, docker: DockerClient) -> None:
+def _error_event(message: str) -> str:
+    return f"event: error\ndata: {json.dumps({'message': message})}\n\n"
+
+
+async def _drain_and_finalize(session_id: UUID, container_id: str, docker: DockerClient) -> None:
+    """Finish the session with no client attached.
+
+    Keeps consuming the container's output until it exits, then finalizes.
+    Re-reading the log from the start is deliberate and cheap: ``_persist``
+    is idempotent through ``ON CONFLICT DO NOTHING``, and nothing is being
+    yielded to anyone, so the offset does not matter here.
+    """
     try:
+        async for _ in stream_and_persist(docker, container_id, session_id=session_id):
+            pass
         await finalize_session(session_id, docker)
+    except Exception:
+        await logger.aexception("detached_finalize_failed", session_id=str(session_id))
     finally:
         await docker.close()
 

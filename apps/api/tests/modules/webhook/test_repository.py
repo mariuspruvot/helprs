@@ -187,9 +187,16 @@ class TestStatusTransitions:
 
 class TestGetReplayableEvents:
     async def _backdate(self, db_session, event_id, seconds: int):
-        """Shift created_at into the past so the grace-period filter applies."""
+        """Age an event so the grace-period filter applies.
+
+        Both timestamps: the filter measures idleness from ``updated_at`` so a
+        retried event waits between attempts, while ordering still uses
+        ``created_at``.
+        """
         past = datetime.now(UTC) - timedelta(seconds=seconds)
-        await db_session.execute(update(WebhookEvent).where(WebhookEvent.id == event_id).values(created_at=past))
+        await db_session.execute(
+            update(WebhookEvent).where(WebhookEvent.id == event_id).values(created_at=past, updated_at=past)
+        )
         await db_session.commit()
 
     async def test_returns_old_pending_events(self, db_session):
@@ -205,6 +212,60 @@ class TestGetReplayableEvents:
 
         events = await repository.get_replayable_events(db_session, older_than_seconds=30)
         assert any(e.id == event.id for e in events)
+
+    async def test_failed_events_are_retried(self, db_session):
+        """Regression: mark_failed wrote "failed" and this query only looked at
+        "pending"/"processing", so nothing ever moved a failed row back. One
+        handler exception dropped the delivery for good, retry_count could
+        never pass 1, and the abandoned transition was unreachable."""
+        event = await repository.create_event(
+            db_session,
+            delivery_id="d-replay-failed",
+            event_type="pull_request",
+            action="opened",
+            github_installation_id=1,
+            payload={},
+        )
+        await repository.mark_failed(db_session, event.id, "handler blew up")
+        await self._backdate(db_session, event.id, 60)
+
+        events = await repository.get_replayable_events(db_session, older_than_seconds=30)
+        assert any(e.id == event.id for e in events)
+
+    async def test_a_failed_event_can_be_claimed_again(self, db_session):
+        """Selecting it is not enough — mark_processing has to accept it too,
+        or the reaper picks the same rows forever without progressing."""
+        event = await repository.create_event(
+            db_session,
+            delivery_id="d-reclaim-failed",
+            event_type="pull_request",
+            action="opened",
+            github_installation_id=1,
+            payload={},
+        )
+        await repository.mark_failed(db_session, event.id, "transient")
+        await self._backdate(db_session, event.id, 60)
+
+        assert await repository.mark_processing(db_session, event.id) is True
+
+    async def test_abandoned_events_are_never_retried(self, db_session):
+        event = await repository.create_event(
+            db_session,
+            delivery_id="d-abandoned-never-retried",
+            event_type="pull_request",
+            action="opened",
+            github_installation_id=1,
+            payload={},
+        )
+        for _ in range(repository.MAX_RETRY_COUNT):
+            await repository.mark_failed(db_session, event.id, "still broken")
+        await self._backdate(db_session, event.id, 60)
+
+        await db_session.refresh(event)
+        assert event.status == "abandoned"
+        events = await repository.get_replayable_events(db_session, older_than_seconds=30)
+        assert all(e.id != event.id for e in events)
+        assert await repository.mark_processing(db_session, event.id) is False
 
     async def test_excludes_fresh_events(self, db_session):
         event = await repository.create_event(

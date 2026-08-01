@@ -116,19 +116,27 @@ async def mark_processing(
         UPDATE webhook_events
            SET status='processing', updated_at = now()
          WHERE id = :id
-           AND (status = 'pending'
+           AND retry_count < :max_retries
+           AND (status IN ('pending', 'failed')
                 OR (status = 'processing'
                     AND updated_at < now() - interval ':stale_after s'))
 
     The ``interval`` value is bound as a parameter to avoid SQL injection.
+
+    ``failed`` is claimable so a retry can actually happen -- it is what
+    ``mark_failed`` writes, and leaving it out here would let the reaper keep
+    selecting rows it could never claim. ``abandoned`` and ``processed``
+    remain terminal, and the ``retry_count`` guard makes abandonment stick
+    even if a caller passes an abandoned id directly.
     """
     stale_cutoff = func.now() - timedelta(seconds=stale_after_seconds)
     stmt = (
         update(WebhookEvent)
         .where(
             WebhookEvent.id == event_id,
+            WebhookEvent.retry_count < MAX_RETRY_COUNT,
             or_(
-                WebhookEvent.status == "pending",
+                WebhookEvent.status.in_(("pending", "failed")),
                 and_(
                     WebhookEvent.status == "processing",
                     WebhookEvent.updated_at < stale_cutoff,
@@ -198,10 +206,20 @@ async def get_replayable_events(
 ) -> list[WebhookEvent]:
     """Return events eligible for crash-replay / periodic reaping.
 
-    Selects rows still in ``pending`` or ``processing`` older than the grace
-    period, with ``retry_count < MAX_RETRY_COUNT`` to skip permanently
-    abandoned payloads. The cutoff uses DB-side ``now()`` to avoid
+    Selects rows in ``pending``, ``processing`` or ``failed`` that have been
+    idle for the grace period, with ``retry_count < MAX_RETRY_COUNT`` to skip
+    permanently abandoned payloads. The cutoff uses DB-side ``now()`` to avoid
     Python-vs-DB clock-skew blackholes.
+
+    ``failed`` belongs in that set and used to be missing, which made the
+    documented retry policy fiction: ``mark_failed`` moved a row to ``failed``
+    and nothing ever moved it back, so one handler exception dropped the
+    delivery permanently, ``retry_count`` could never exceed 1, and both
+    ``MAX_RETRY_COUNT`` and the ``abandoned`` transition were unreachable.
+
+    Idleness is measured from ``updated_at`` rather than ``created_at``, so a
+    retried event waits a full grace period between attempts instead of being
+    re-picked on every reaper tick.
 
     The query is capped by ``limit`` (default ``200``) so a backlog after an
     outage cannot fan out to tens of thousands of concurrent tasks on the
@@ -211,8 +229,8 @@ async def get_replayable_events(
     stmt = (
         select(WebhookEvent)
         .where(
-            WebhookEvent.status.in_(("pending", "processing")),
-            WebhookEvent.created_at < grace_cutoff,
+            WebhookEvent.status.in_(("pending", "processing", "failed")),
+            WebhookEvent.updated_at < grace_cutoff,
             WebhookEvent.retry_count < MAX_RETRY_COUNT,
         )
         .order_by(WebhookEvent.created_at.asc())

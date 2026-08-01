@@ -23,6 +23,7 @@ from helprs.modules.identity import github, repository
 from helprs.modules.identity.github import GitHubUserProfile
 from helprs.modules.identity.models import GitHubUser
 from helprs.modules.identity.schemas import DailyCount, StatusTotals, UserStatsResponse
+from helprs.modules.installation.service import get_installations_for_user
 
 REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 STATS_WINDOW = timedelta(days=30)
@@ -126,10 +127,6 @@ def _parse_subject(subject: object) -> uuid_mod.UUID:
 
 async def get_user_stats(session: AsyncSession, user: GitHubUser, settings: Settings) -> UserStatsResponse:
     """Session activity across every installation the user can reach."""
-    # Circular: installation.service imports this module's models via the
-    # container router chain; deferred to break the cycle at import time.
-    from helprs.modules.installation.service import get_installations_for_user
-
     installations = await get_installations_for_user(session, user, settings)
     installation_ids = [i.id for i in installations]
 

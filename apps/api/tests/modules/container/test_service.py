@@ -10,9 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from helprs.core.database import Base, clear_session_factory, set_session_factory
+from helprs.core.exceptions import ExternalServiceError, NotFoundError
 from helprs.modules.container.cleanup import cleanup_expired
 from helprs.modules.container.models import ContainerStatus, SessionEvent
 from helprs.modules.container.service import (
+    await_exit_status,
     create_session,
     get_session,
     get_session_events,
@@ -213,8 +215,6 @@ class TestGetSession:
 
 class TestGetSessionOr404:
     async def test_raises_not_found(self, db: AsyncSession):
-        from helprs.core.exceptions import NotFoundError
-
         with pytest.raises(NotFoundError):
             await get_session_or_404(db, uuid.uuid4())
 
@@ -288,8 +288,6 @@ class TestStartContainer:
         installation: Installation,
         skills_path: Path,
     ):
-        from helprs.core.exceptions import ExternalServiceError
-
         failing_docker = FakeDockerClient(fail_on_create=True)
         cs = await create_session(
             db=db,
@@ -312,14 +310,53 @@ class TestStartContainer:
         assert refreshed is not None
         assert refreshed.status == ContainerStatus.FAILED
 
+    async def test_the_failed_status_survives_the_request_rollback(
+        self,
+        db: AsyncSession,
+        installation: Installation,
+        skills_path: Path,
+    ):
+        """start_container used to flush the FAILED status and then raise.
+
+        The exception unwinds through get_db, whose except branch rolls back —
+        discarding both the FAILED status and the session row created earlier
+        in the same request. The user got a 502 and a dashboard showing that
+        nothing had ever happened. The status is committed now, so the
+        rollback below is a no-op rather than a data loss.
+        """
+        failing_docker = FakeDockerClient(fail_on_create=True)
+        cs = await create_session(
+            db=db,
+            installation_id=installation.id,
+            pr_number=1,
+            repo_full_name="org/repo",
+            skill_name="challenge-me",
+        )
+        await db.commit()
+
+        with pytest.raises(ExternalServiceError):
+            await start_container(
+                db=db,
+                session_id=cs.id,
+                docker=failing_docker,
+                claude_oauth_token="test-oauth-token",
+                github_token="gho_test",
+                skills_base_path=skills_path,
+            )
+
+        # What get_db does on the way out.
+        await db.rollback()
+
+        survivor = await get_session(db, cs.id)
+        assert survivor is not None, "the session row was rolled away"
+        assert survivor.status == ContainerStatus.FAILED
+
     async def test_fails_on_missing_skill(
         self,
         db: AsyncSession,
         installation: Installation,
         skills_path: Path,
     ):
-        from helprs.core.exceptions import NotFoundError
-
         cs = await create_session(
             db=db,
             installation_id=installation.id,
@@ -488,7 +525,7 @@ class TestStopContainer:
 
 
 # ---------------------------------------------------------------------------
-# Tests: mark_completed
+# Tests: await_exit_status + mark_completed
 # ---------------------------------------------------------------------------
 
 
@@ -515,7 +552,8 @@ class TestMarkCompleted:
             github_token="gho_test",
             skills_base_path=skills_path,
         )
-        result = await mark_completed(db=db, session_id=cs.id, docker=docker, ttl_seconds=TEST_TTL_SECONDS)
+        status = await await_exit_status(docker, cs.container_id, ttl_seconds=TEST_TTL_SECONDS)
+        result = await mark_completed(db, cs.id, status)
         assert result.status == ContainerStatus.COMPLETED
         assert result.completed_at is not None
 
@@ -541,7 +579,8 @@ class TestMarkCompleted:
             github_token="gho_test",
             skills_base_path=skills_path,
         )
-        result = await mark_completed(db=db, session_id=cs.id, docker=docker, ttl_seconds=TEST_TTL_SECONDS)
+        status = await await_exit_status(docker, cs.container_id, ttl_seconds=TEST_TTL_SECONDS)
+        result = await mark_completed(db, cs.id, status)
         assert result.status == ContainerStatus.FAILED
 
 
@@ -736,8 +775,6 @@ class TestGetSessionEvents:
         assert events == []
 
     async def test_raises_404_for_unknown_session(self, db: AsyncSession):
-        from helprs.core.exceptions import NotFoundError
-
         with pytest.raises(NotFoundError):
             await get_session_events(db, uuid.uuid4())
 
@@ -781,7 +818,5 @@ class TestSendMessage:
             await send_message(db=db, session_id=cs.id, docker=docker, content="hello")
 
     async def test_raises_404_for_unknown_session(self, db: AsyncSession, docker: FakeDockerClient):
-        from helprs.core.exceptions import NotFoundError
-
         with pytest.raises(NotFoundError):
             await send_message(db=db, session_id=uuid.uuid4(), docker=docker, content="hello")

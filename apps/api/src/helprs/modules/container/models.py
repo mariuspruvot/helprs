@@ -45,7 +45,19 @@ class ContainerSession(Base):
     skill_name: Mapped[str] = mapped_column(String(100), nullable=False)
     container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[ContainerStatus] = mapped_column(
-        Enum(ContainerStatus, name="container_status", native_enum=False, length=20),
+        # values_callable is load-bearing: without it SQLAlchemy persists the
+        # member NAME ("RUNNING"), while this column's server_default is the
+        # value ("pending") and the API returns the value too. Any row created
+        # without an explicit status -- the DB default, raw SQL, a bulk import
+        # -- was then unreadable through the ORM:
+        #   LookupError: 'running' is not among the defined enum values
+        Enum(
+            ContainerStatus,
+            name="container_status",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum: [member.value for member in enum],
+        ),
         nullable=False,
         default=ContainerStatus.PENDING,
         index=True,
