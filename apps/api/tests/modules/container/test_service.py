@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from helprs.core.database import Base, clear_session_factory, set_session_factory
 from helprs.core.exceptions import ExternalServiceError, NotFoundError
 from helprs.modules.container.cleanup import cleanup_expired
+from helprs.modules.container.docker_client import RunnerContainer
 from helprs.modules.container.models import ContainerStatus, SessionEvent
 from helprs.modules.container.service import (
     await_exit_status,
@@ -91,6 +92,12 @@ class FakeDockerClient:
 
     async def wait_container(self, container_id: str) -> int:
         return self._exit_code
+
+    async def container_is_running(self, container_id: str) -> bool:
+        return container_id in self.started and container_id not in self.removed
+
+    async def list_runners(self, *, boot_id: str) -> list[RunnerContainer]:
+        return []
 
 
 # ---------------------------------------------------------------------------

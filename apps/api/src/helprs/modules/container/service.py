@@ -10,7 +10,7 @@ import contextlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +19,12 @@ from helprs.core.config import get_settings
 from helprs.core.database import get_db_context
 from helprs.core.exceptions import ConflictError, ExternalServiceError, NotFoundError
 from helprs.modules.container import repository
-from helprs.modules.container.docker_client import CLAUDE_RUNNER_IMAGE, DockerClient
+from helprs.modules.container.docker_client import (
+    CLAUDE_RUNNER_IMAGE,
+    LABEL_BOOT_ID,
+    LABEL_SESSION_ID,
+    DockerClient,
+)
 from helprs.modules.container.models import ContainerSession, ContainerStatus, SessionEvent
 from helprs.modules.container.pr_comment import build_session_url, extract_score_card, format_pr_comment
 from helprs.modules.container.scorecard import extract_scorecard
@@ -41,6 +46,29 @@ SCORECARD_SKILL = "challenge-me"
 
 
 # --- Session records -------------------------------------------------------
+
+
+# Identity of this API process, stamped on every container it starts.
+#
+# Several uvicorn workers share one Docker socket, so "every running
+# container" is not the same set as "the ones I started". Without this a
+# worker's shutdown hook cancelled its peers' live sessions.
+_boot_id: tuple[int, str] | None = None
+
+
+def current_boot_id() -> str:
+    """A value unique to this process and stable for its lifetime.
+
+    Recomputed when the PID changes, so a forked worker never inherits its
+    parent's id: uvicorn's ``--workers`` mode may fork after import, and two
+    workers sharing a boot id would each stop the other's containers -- the
+    exact bug this exists to prevent.
+    """
+    global _boot_id
+    pid = os.getpid()
+    if _boot_id is None or _boot_id[0] != pid:
+        _boot_id = (pid, f"{pid}-{uuid4().hex[:8]}")
+    return _boot_id[1]
 
 
 async def create_session(
@@ -147,7 +175,8 @@ async def start_container(
             },
             volumes=[f"{SKILLS_HOST_PATH}/{cs.skill_name}:/skills/{cs.skill_name}:ro"],
             labels={
-                "helprs.session_id": str(cs.id),
+                LABEL_SESSION_ID: str(cs.id),
+                LABEL_BOOT_ID: current_boot_id(),
                 "helprs.skill": cs.skill_name,
                 "helprs.repo": cs.repo_full_name,
             },

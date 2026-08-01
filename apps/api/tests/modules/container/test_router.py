@@ -135,6 +135,12 @@ class FakeDockerClientForRouter:
     async def wait_container(self, container_id):
         return self._exit_code
 
+    async def container_is_running(self, container_id):
+        return True
+
+    async def list_runners(self, *, boot_id):
+        return []
+
     async def close(self):
         pass
 

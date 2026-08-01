@@ -44,28 +44,47 @@ async def cleanup_expired(db: AsyncSession, docker: DockerClient, *, ttl_seconds
     return len(expired)
 
 
-async def cleanup_all_running(db: AsyncSession, docker: DockerClient) -> int:
-    """Stop every live session — used on graceful shutdown."""
-    sessions = await repository.list_unfinished(db)
+async def cleanup_own_running(db: AsyncSession, docker: DockerClient, *, boot_id: str) -> int:
+    """Stop the sessions THIS process started — used on graceful shutdown.
 
-    for cs in sessions:
+    Scoped by boot id rather than "everything unfinished". Several uvicorn
+    workers share one Docker socket, so the unscoped version cancelled every
+    peer's live sessions whenever any one worker restarted. Docker is asked
+    which containers carry this process's label, because it is the authority
+    on what is actually running; the database only records what was intended.
+    """
+    stopped = 0
+    for runner in await docker.list_runners(boot_id=boot_id):
+        cs = await repository.get(db, runner.session_id)
+        if cs is None or cs.completed_at is not None:
+            continue
         await _destroy(docker, cs)
         cs.status = ContainerStatus.CANCELLED
         cs.completed_at = datetime.now(UTC)
+        stopped += 1
 
-    if sessions:
+    if stopped:
         await db.flush()
-        await logger.ainfo("shutdown_sessions_stopped", count=len(sessions))
-    return len(sessions)
+        await logger.ainfo("shutdown_sessions_stopped", count=stopped, boot_id=boot_id)
+    return stopped
 
 
-async def reconcile_stale_sessions(db: AsyncSession) -> int:
-    """Fail sessions left RUNNING by a crashed process.
+async def reconcile_stale_sessions(db: AsyncSession, docker: DockerClient) -> int:
+    """Fail sessions whose container is gone.
 
-    Their containers died with the host process, so waiting for the TTL would
-    only leave the dashboard lying for 15 minutes.
+    Asks Docker rather than assuming, because "unfinished at boot" is not the
+    same as "dead": with several workers a RUNNING row usually belongs to a
+    peer that is still streaming it, and marking those FAILED killed live
+    sessions every time one worker restarted.
+
+    A row with no container id never got that far, so nothing is running for
+    it either way.
     """
-    stale = await repository.list_unfinished(db)
+    stale = []
+    for cs in await repository.list_unfinished(db):
+        if cs.container_id and await docker.container_is_running(cs.container_id):
+            continue
+        stale.append(cs)
 
     for cs in stale:
         cs.status = ContainerStatus.FAILED
