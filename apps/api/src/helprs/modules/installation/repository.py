@@ -95,3 +95,14 @@ async def add_byok_config(session: AsyncSession, config: BYOKConfig) -> BYOKConf
 async def delete_byok_config(session: AsyncSession, config: BYOKConfig) -> None:
     await session.delete(config)
     await session.flush()
+
+
+async def list_all_byok_configs(session: AsyncSession) -> list[BYOKConfig]:
+    """Every BYOK row, including those of soft-deleted installations.
+
+    Deliberately not filtered by ``_active()``: a retired Fernet key cannot be
+    dropped while any stored ciphertext still needs it, and a soft-deleted
+    installation's row is still stored ciphertext.
+    """
+    result = await session.execute(select(BYOKConfig).order_by(BYOKConfig.created_at))
+    return list(result.scalars().all())

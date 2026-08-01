@@ -52,7 +52,7 @@ async def sync_user(
     settings: Settings,
 ) -> GitHubUser:
     """Create the user for this GitHub identity, or refresh the stored one."""
-    encrypted_token = fernet_encrypt(access_token, settings.FERNET_KEY.get_secret_value())
+    encrypted_token = fernet_encrypt(access_token, settings.fernet_keys)
     user = await repository.get_by_github_id(session, profile.github_id)
 
     if user is None:
@@ -75,10 +75,10 @@ async def sync_user(
     return user
 
 
-def get_decrypted_github_token(user: GitHubUser, fernet_key: str) -> str:
+def get_decrypted_github_token(user: GitHubUser, fernet_keys: list[str]) -> str:
     """Decrypt a user's stored GitHub access token."""
     try:
-        return fernet_decrypt(user.github_access_token_enc, fernet_key)
+        return fernet_decrypt(user.github_access_token_enc, fernet_keys)
     except InvalidToken as e:
         raise UnauthorizedError("Stored GitHub token is corrupted") from e
 

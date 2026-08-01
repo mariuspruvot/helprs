@@ -44,7 +44,7 @@ async def authed_client(app_with_db):
     session_factory = app_with_db.state.session_factory
 
     async with session_factory() as session:
-        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY.get_secret_value())
+        encrypted_token = fernet_encrypt("gho_test_token", settings.fernet_keys)
         user = GitHubUser(
             github_id=77777777,
             github_login="routertest",

@@ -195,7 +195,7 @@ async def mint_installation_token(
 
 def _user_github_token(user: "GitHubUser", settings: Settings) -> str:
     try:
-        return fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY.get_secret_value())
+        return fernet_decrypt(user.github_access_token_enc, settings.fernet_keys)
     except InvalidToken as e:
         raise UnauthorizedError("Stored GitHub token is corrupted") from e
 
@@ -295,13 +295,13 @@ async def configure_byok(
     session: AsyncSession,
     installation_id: uuid.UUID,
     api_key: str,
-    fernet_key: str,
+    fernet_keys: list[str],
 ) -> BYOKConfig:
     """Validate a Claude credential, then store it encrypted."""
     if not await anthropic.is_credential_valid(api_key):
         raise BYOKKeyInvalidError("API key validation failed -- check your key and try again")
 
-    encrypted_key = fernet_encrypt(api_key, fernet_key)
+    encrypted_key = fernet_encrypt(api_key, fernet_keys)
     key_hint = f"...{api_key[-4:]}"
     now = datetime.now(UTC)
 
@@ -333,10 +333,10 @@ async def get_byok_config(session: AsyncSession, installation_id: uuid.UUID) -> 
     return await repository.get_byok_config(session, installation_id)
 
 
-def decrypt_byok_key(byok_config: BYOKConfig, fernet_key: str) -> str:
+def decrypt_byok_key(byok_config: BYOKConfig, fernet_keys: list[str]) -> str:
     """Decrypt the stored Claude credential."""
     try:
-        return fernet_decrypt(byok_config.encrypted_api_key, fernet_key)
+        return fernet_decrypt(byok_config.encrypted_api_key, fernet_keys)
     except InvalidToken as e:
         raise BYOKKeyInvalidError("Stored API key could not be decrypted") from e
 

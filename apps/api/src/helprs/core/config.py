@@ -9,6 +9,18 @@ from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _assert_fernet_key(key: SecretStr, name: str) -> None:
+    """Reject anything Fernet could not use, naming the offending setting."""
+    try:
+        Fernet(key.get_secret_value().encode())
+    except (ValueError, InvalidToken) as e:
+        raise ValueError(
+            f"{name} must be a valid Fernet key (32 url-safe base64-encoded bytes). "
+            "Generate with: python -c "
+            "'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+        ) from e
+
+
 class Settings(BaseSettings):
     """Runtime configuration.
 
@@ -28,7 +40,13 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: SecretStr
+    # The key new credentials are encrypted with.
     FERNET_KEY: SecretStr
+    # Previously-active keys, newest first. Values written under them stay
+    # readable, so a key can be replaced without a downtime window: set the
+    # new key as FERNET_KEY, move the old one here, deploy, re-encrypt with
+    # `python -m helprs.scripts.rotate_credentials`, then empty this list.
+    FERNET_KEY_FALLBACKS: list[SecretStr] = []
     ADMIN_PASSWORD: SecretStr = SecretStr("")
 
     # GitHub App
@@ -93,15 +111,34 @@ class Settings(BaseSettings):
     @classmethod
     def validate_fernet_key(cls, v: SecretStr) -> SecretStr:
         """Validate that FERNET_KEY is a valid Fernet key (32 url-safe base64 bytes)."""
-        try:
-            Fernet(v.get_secret_value().encode())
-        except (ValueError, InvalidToken) as e:
-            raise ValueError(
-                "FERNET_KEY must be a valid Fernet key (32 url-safe base64-encoded bytes). "
-                "Generate with: python -c "
-                "'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
-            ) from e
+        _assert_fernet_key(v, "FERNET_KEY")
         return v
+
+    @field_validator("FERNET_KEY_FALLBACKS")
+    @classmethod
+    def validate_fernet_fallbacks(cls, v: list[SecretStr]) -> list[SecretStr]:
+        """A malformed retired key must fail at boot, not at first decrypt.
+
+        Without this the app would start happily and only break when it met a
+        value written under that key -- which is precisely the credential a
+        rotation is trying not to lose.
+        """
+        for index, key in enumerate(v):
+            _assert_fernet_key(key, f"FERNET_KEY_FALLBACKS[{index}]")
+        return v
+
+    @property
+    def fernet_keys(self) -> list[str]:
+        """The ordered keyset: primary first, then retired keys.
+
+        A plain property rather than a ``computed_field`` on purpose -- the
+        latter would put every key in ``model_dump()``, undoing the reason the
+        fields are ``SecretStr`` in the first place.
+        """
+        return [
+            self.FERNET_KEY.get_secret_value(),
+            *(key.get_secret_value() for key in self.FERNET_KEY_FALLBACKS),
+        ]
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":

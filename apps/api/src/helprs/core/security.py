@@ -6,19 +6,45 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import jwt
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 
-def fernet_encrypt(plaintext: str, fernet_key: str) -> str:
-    """Encrypt a string using Fernet symmetric encryption."""
-    f = Fernet(fernet_key.encode())
-    return f.encrypt(plaintext.encode()).decode()
+def _cipher(fernet_keys: list[str]) -> MultiFernet:
+    """Build the cipher for an ordered keyset.
+
+    ``MultiFernet`` encrypts with the FIRST key and decrypts with whichever
+    one matches, which is exactly what rotation needs: put the new key first,
+    keep the retired ones behind it until every stored value has been
+    re-encrypted, then drop them.
+    """
+    if not fernet_keys:
+        raise ValueError("At least one Fernet key is required")
+    return MultiFernet([Fernet(key.encode()) for key in fernet_keys])
 
 
-def fernet_decrypt(ciphertext: str, fernet_key: str) -> str:
-    """Decrypt a Fernet-encrypted string."""
-    f = Fernet(fernet_key.encode())
-    return f.decrypt(ciphertext.encode()).decode()
+def fernet_encrypt(plaintext: str, fernet_keys: list[str]) -> str:
+    """Encrypt a string with the primary key of the keyset."""
+    return _cipher(fernet_keys).encrypt(plaintext.encode()).decode()
+
+
+def fernet_decrypt(ciphertext: str, fernet_keys: list[str]) -> str:
+    """Decrypt a value written by any key in the keyset.
+
+    Raises ``InvalidToken`` when no key matches -- which is also what a
+    tampered ciphertext produces, since Fernet verifies its HMAC before
+    decrypting anything.
+    """
+    return _cipher(fernet_keys).decrypt(ciphertext.encode()).decode()
+
+
+def fernet_rotate(ciphertext: str, fernet_keys: list[str]) -> str:
+    """Re-encrypt an existing value under the primary key.
+
+    Does not need the plaintext: ``MultiFernet.rotate`` decrypts with
+    whichever key matches and re-encrypts with the first. This is what lets a
+    retired key actually be retired instead of carried forever.
+    """
+    return _cipher(fernet_keys).rotate(ciphertext.encode()).decode()
 
 
 def create_app_jwt(app_id: str, private_key: str) -> str:

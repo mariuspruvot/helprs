@@ -27,3 +27,9 @@ async def add(session: AsyncSession, user: GitHubUser) -> GitHubUser:
     session.add(user)
     await session.flush()
     return user
+
+
+async def list_all(session: AsyncSession) -> list[GitHubUser]:
+    """Every user row. Used by credential rotation, which must miss nobody."""
+    result = await session.execute(select(GitHubUser).order_by(GitHubUser.created_at))
+    return list(result.scalars().all())

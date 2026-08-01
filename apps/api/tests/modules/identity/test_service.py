@@ -70,7 +70,7 @@ class TestAuthenticateWithCode:
         user, _ = await authenticate_with_code(db_session, "the-code", settings)
 
         assert user.github_access_token_enc != "gho_from_code"
-        assert get_decrypted_github_token(user, settings.FERNET_KEY.get_secret_value()) == "gho_from_code"
+        assert get_decrypted_github_token(user, settings.fernet_keys) == "gho_from_code"
 
 
 class TestSyncUser:
@@ -180,15 +180,15 @@ class TestRefreshTokens:
 
 class TestGetDecryptedGithubToken:
     def test_valid_token(self, settings):
-        user = StoredUser(encrypted_token=fernet_encrypt("gho_test", settings.FERNET_KEY.get_secret_value()))
+        user = StoredUser(encrypted_token=fernet_encrypt("gho_test", settings.fernet_keys))
 
-        assert get_decrypted_github_token(user, settings.FERNET_KEY.get_secret_value()) == "gho_test"
+        assert get_decrypted_github_token(user, settings.fernet_keys) == "gho_test"
 
     def test_corrupted_token(self, settings):
         user = StoredUser(encrypted_token="corrupted_data")
 
         with pytest.raises(UnauthorizedError, match="corrupted"):
-            get_decrypted_github_token(user, settings.FERNET_KEY.get_secret_value())
+            get_decrypted_github_token(user, settings.fernet_keys)
 
 
 class TestUserStats:
