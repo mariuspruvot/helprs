@@ -1,12 +1,18 @@
 """Webhook event handlers."""
 
+from collections.abc import Awaitable, Callable
+from uuid import UUID
+
 import structlog
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from helprs.core.config import get_settings
 from helprs.modules.container.service import create_session
+from helprs.modules.installation.models import Installation
+from helprs.modules.installation.schemas import InstallationPayload
 from helprs.modules.installation.service import (
-    create_installation_from_webhook,
+    create_installation,
     get_installation_by_github_id,
     mint_installation_token,
     post_pr_comment_with_retry,
@@ -31,7 +37,12 @@ def _extract_installation_id(payload: dict) -> int:
 
 async def handle_installation_created(payload: dict, session: AsyncSession) -> None:
     """Handle installation.created webhook event."""
-    installation = await create_installation_from_webhook(session, payload)
+    try:
+        parsed = InstallationPayload.model_validate(payload["installation"])
+    except (KeyError, TypeError, ValidationError) as e:
+        raise ValueError(f"Malformed installation payload: {e}") from e
+
+    installation = await create_installation(session, parsed)
     await logger.ainfo(
         "webhook_installation_created",
         installation_id=str(installation.id),
@@ -39,52 +50,59 @@ async def handle_installation_created(payload: dict, session: AsyncSession) -> N
     )
 
 
+async def _handle_lifecycle_change(
+    payload: dict,
+    session: AsyncSession,
+    *,
+    apply: Callable[[AsyncSession, int], Awaitable[Installation | None]],
+    applied_event: str,
+    missing_event: str,
+) -> None:
+    """Shared body of the delete/suspend/unsuspend handlers.
+
+    The three differed only in which service call they made and which two log
+    events they emitted, so they were byte-identical otherwise -- and they sit
+    one layer above ``_apply_lifecycle_change``, which already parameterises
+    the same axis in the service.
+    """
+    github_id = _extract_installation_id(payload)
+    if await apply(session, github_id):
+        await logger.ainfo(applied_event, github_installation_id=github_id)
+    else:
+        await logger.awarning(missing_event, github_installation_id=github_id)
+
+
 async def handle_installation_deleted(payload: dict, session: AsyncSession) -> None:
     """Handle installation.deleted webhook event."""
-    github_id = _extract_installation_id(payload)
-    result = await soft_delete_installation(session, github_id)
-    if result:
-        await logger.ainfo(
-            "webhook_installation_deleted",
-            github_installation_id=github_id,
-        )
-    else:
-        await logger.awarning(
-            "webhook_installation_delete_not_found",
-            github_installation_id=github_id,
-        )
+    await _handle_lifecycle_change(
+        payload,
+        session,
+        apply=soft_delete_installation,
+        applied_event="webhook_installation_deleted",
+        missing_event="webhook_installation_delete_not_found",
+    )
 
 
 async def handle_installation_suspended(payload: dict, session: AsyncSession) -> None:
     """Handle installation.suspended webhook event."""
-    github_id = _extract_installation_id(payload)
-    result = await suspend_installation(session, github_id)
-    if result:
-        await logger.ainfo(
-            "webhook_installation_suspended",
-            github_installation_id=github_id,
-        )
-    else:
-        await logger.awarning(
-            "webhook_installation_suspend_not_found",
-            github_installation_id=github_id,
-        )
+    await _handle_lifecycle_change(
+        payload,
+        session,
+        apply=suspend_installation,
+        applied_event="webhook_installation_suspended",
+        missing_event="webhook_installation_suspend_not_found",
+    )
 
 
 async def handle_installation_unsuspended(payload: dict, session: AsyncSession) -> None:
     """Handle installation.unsuspended webhook event."""
-    github_id = _extract_installation_id(payload)
-    result = await unsuspend_installation(session, github_id)
-    if result:
-        await logger.ainfo(
-            "webhook_installation_unsuspended",
-            github_installation_id=github_id,
-        )
-    else:
-        await logger.awarning(
-            "webhook_installation_unsuspend_not_found",
-            github_installation_id=github_id,
-        )
+    await _handle_lifecycle_change(
+        payload,
+        session,
+        apply=unsuspend_installation,
+        applied_event="webhook_installation_unsuspended",
+        missing_event="webhook_installation_unsuspend_not_found",
+    )
 
 
 def _pr_label_names(pr: dict) -> set[str]:
@@ -146,7 +164,7 @@ async def handle_pull_request_opened(payload: dict, session: AsyncSession) -> No
     await _announce_session(installation, cs.id, repo_full_name, pr_number)
 
 
-async def _announce_session(installation, session_id, repo_full_name: str, pr_number: int) -> None:
+async def _announce_session(installation: Installation, session_id: UUID, repo_full_name: str, pr_number: int) -> None:
     """Post the session link on the PR. Best effort: never fails the event."""
     settings = get_settings()
     owner, repo_name = repo_full_name.split("/", 1)

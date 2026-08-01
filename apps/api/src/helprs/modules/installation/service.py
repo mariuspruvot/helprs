@@ -24,6 +24,7 @@ from helprs.core.security import create_app_jwt, fernet_decrypt, fernet_encrypt
 from helprs.modules.installation import anthropic, github, repository
 from helprs.modules.installation.github import RUNNER_TOKEN_PERMISSIONS
 from helprs.modules.installation.models import BYOKConfig, Installation
+from helprs.modules.installation.schemas import InstallationPayload
 
 if TYPE_CHECKING:
     from helprs.modules.container.models import ContainerSession
@@ -38,7 +39,7 @@ _NO_REPO = "You do not have access to this repository"
 __all__ = [
     "RUNNER_TOKEN_PERMISSIONS",
     "configure_byok",
-    "create_installation_from_webhook",
+    "create_installation",
     "decrypt_byok_key",
     "delete_byok_config",
     "get_byok_config",
@@ -54,6 +55,7 @@ __all__ = [
     "verify_admin_permission",
     "verify_installation_access",
     "verify_repo_access",
+    "verify_session_access",
 ]
 
 # Re-exported so callers that only need to post a comment do not have to know
@@ -64,19 +66,18 @@ post_pr_comment_with_retry = github.post_pr_comment_with_retry
 # --- Lifecycle -------------------------------------------------------------
 
 
-async def create_installation_from_webhook(session: AsyncSession, webhook_data: dict) -> Installation:
-    """Create an installation from an ``installation.created`` webhook.
+async def create_installation(session: AsyncSession, payload: InstallationPayload) -> Installation:
+    """Create an installation from a parsed ``installation.created`` event.
+
+    Takes a validated model rather than a raw webhook body. Parsing external
+    JSON is a boundary concern: doing it here turned a GitHub shape change
+    into a KeyError in the middle of a use case, and this was the only place
+    in the codebase where a use case read an unparsed payload.
 
     Idempotent: a duplicate delivery, or a concurrent one racing us to the
     unique index, resolves to the existing row.
     """
-    try:
-        inst_data = webhook_data["installation"]
-        account = inst_data["account"]
-        github_installation_id = inst_data["id"]
-    except (KeyError, TypeError) as e:
-        await logger.awarning("webhook_payload_malformed", error=str(e))
-        raise ValueError(f"Malformed webhook payload: missing {e}") from e
+    github_installation_id = payload.github_installation_id
 
     existing = await repository.get_by_github_id(session, github_installation_id)
     if existing:
@@ -87,14 +88,14 @@ async def create_installation_from_webhook(session: AsyncSession, webhook_data: 
         session,
         Installation(
             github_installation_id=github_installation_id,
-            account_login=account["login"],
-            account_id=account["id"],
-            account_type=account["type"],
-            repository_selection=inst_data.get("repository_selection", "all"),
-            app_slug=inst_data.get("app_slug", ""),
-            target_type=inst_data.get("target_type", "Organization"),
-            permissions=inst_data.get("permissions"),
-            events=inst_data.get("events"),
+            account_login=payload.account.login,
+            account_id=payload.account.account_id,
+            account_type=payload.account.account_type,
+            repository_selection=payload.repository_selection,
+            app_slug=payload.app_slug,
+            target_type=payload.target_type or "Organization",
+            permissions=payload.permissions,
+            events=payload.events,
             suspended_at=None,
         ),
     )
@@ -108,7 +109,7 @@ async def create_installation_from_webhook(session: AsyncSession, webhook_data: 
     await logger.ainfo(
         "installation_created",
         github_installation_id=github_installation_id,
-        account_login=account["login"],
+        account_login=created.account_login,
     )
     return created
 
