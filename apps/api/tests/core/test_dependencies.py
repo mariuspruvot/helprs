@@ -1,8 +1,8 @@
 """Tests for the authentication dependencies.
 
-Two dependencies, deliberately different: ``get_current_user`` accepts the
-``Authorization`` header only, while ``get_current_user_for_stream`` also
-accepts ``?access_token=`` because ``EventSource`` cannot set headers.
+Two paths, deliberately different: the ``get_current_user`` dependency accepts
+the ``Authorization`` header only, while ``stream_token`` also accepts
+``?access_token=``, because ``EventSource`` cannot set request headers.
 """
 
 import uuid
@@ -11,7 +11,7 @@ from datetime import timedelta
 import pytest
 
 from helprs.core.config import get_settings
-from helprs.core.dependencies import get_current_user, get_current_user_for_stream
+from helprs.core.dependencies import authenticate_token, get_current_user, stream_token
 from helprs.core.exceptions import UnauthorizedError
 from helprs.core.security import create_access_token
 
@@ -132,12 +132,16 @@ class TestGetCurrentUser:
             await get_current_user(request, FakeSession(FakeUser(user_id, "ssouser")), settings)
 
 
-class TestGetCurrentUserForStream:
+class TestStreamToken:
+    """The SSE endpoint extracts the token itself rather than through a
+    dependency: a ``Depends(get_db)`` behind an auth dependency would stay
+    checked out for the whole stream. ``stream_token`` is that extraction."""
+
     async def test_accepts_the_query_parameter(self, settings):
         user_id, token = _token(settings, login="ssouser")
         request = FakeRequest(query={"access_token": token})
 
-        user = await get_current_user_for_stream(request, FakeSession(FakeUser(user_id, "ssouser")), settings)
+        user = await authenticate_token(FakeSession(FakeUser(user_id, "ssouser")), settings, stream_token(request))
 
         assert user.github_login == "ssouser"
 
@@ -145,7 +149,7 @@ class TestGetCurrentUserForStream:
         user_id, token = _token(settings, login="headeruser")
         request = FakeRequest(headers={"Authorization": f"Bearer {token}"})
 
-        user = await get_current_user_for_stream(request, FakeSession(FakeUser(user_id, "headeruser")), settings)
+        user = await authenticate_token(FakeSession(FakeUser(user_id, "headeruser")), settings, stream_token(request))
 
         assert user.github_login == "headeruser"
 
@@ -156,10 +160,17 @@ class TestGetCurrentUserForStream:
             query={"access_token": "garbage-should-be-ignored"},
         )
 
-        user = await get_current_user_for_stream(request, FakeSession(FakeUser(user_id, "headeruser")), settings)
+        user = await authenticate_token(FakeSession(FakeUser(user_id, "headeruser")), settings, stream_token(request))
 
         assert user.github_login == "headeruser"
 
-    async def test_no_token_at_all_is_rejected(self, settings):
+    async def test_no_token_at_all_is_rejected(self):
         with pytest.raises(UnauthorizedError, match="Missing or invalid"):
-            await get_current_user_for_stream(FakeRequest(), FakeSession(), settings)
+            stream_token(FakeRequest())
+
+    async def test_a_malformed_header_is_rejected_rather_than_ignored(self):
+        """Previously the prefix was stripped with removeprefix(), so a bare
+        ``Authorization: <token>`` was accepted here but not by the header-only
+        dependency -- two notions of a valid header in one module."""
+        with pytest.raises(UnauthorizedError, match="Missing or invalid"):
+            stream_token(FakeRequest(headers={"Authorization": "Basic abc123"}))

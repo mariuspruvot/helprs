@@ -1,7 +1,8 @@
 """Webhook module — GitHub webhook reception and dispatch."""
 
-from helprs.modules.webhook.models import WebhookEvent
-from helprs.modules.webhook.router import router
-from helprs.modules.webhook.tasks import process_webhook_event
-
-__all__ = ["WebhookEvent", "process_webhook_event", "router"]
+# Deliberately no re-exports. Importing a router here made every
+# submodule import pull the whole router graph back through
+# core.dependencies, which imports identity.models -- a cycle that left
+# `import helprs.core.dependencies` broken on its own and made startup
+# depend on main.py happening to import admin.views first. Import
+# submodules by their full path instead.

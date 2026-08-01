@@ -5,7 +5,9 @@ shape the response. Two tiers apply: reads need membership, mutations of
 credentials and settings need org-admin.
 """
 
-from fastapi import APIRouter, Request, Response
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Request, Response
 
 from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
 from helprs.core.exceptions import NotFoundError
@@ -147,23 +149,26 @@ async def list_installation_sessions(
     session: DbSession,
     settings: GetSettings,
     user: CurrentUser,
-    page: int = 1,
-    per_page: int = 20,
-    status: str | None = None,
+    # Constrained in the signature rather than clamped in the body: the old
+    # min()/max() pair let per_page=0 through, which divided by zero when
+    # computing total_pages, and let a negative value reach Postgres as a
+    # LIMIT. Both surfaced as a 500 where the client deserves a 422. Typing
+    # status as the enum makes FastAPI reject a bad value the same way, in
+    # place of a ValueError raised mid-handler.
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 20,
+    status: ContainerStatus | None = None,
 ) -> PaginatedSessionsResponse:
     """One page of session history for an installation, newest first."""
     installation = await _installation_or_404(session, installation_id)
     await verify_installation_access(user, installation, settings)
-
-    page = max(page, 1)
-    per_page = min(per_page, MAX_PAGE_SIZE)
 
     items, total = await sessions.list_for_installation(
         session,
         installation.id,
         page=page,
         per_page=per_page,
-        status=ContainerStatus(status) if status else None,
+        status=status,
     )
 
     return PaginatedSessionsResponse(

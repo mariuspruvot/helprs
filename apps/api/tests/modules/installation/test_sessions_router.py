@@ -220,17 +220,30 @@ class TestListInstallationSessions:
             response = await client.get("/api/v1/installations/33333333/sessions")
         assert response.status_code == 401
 
-    async def test_caps_per_page_at_100(self, authed_client_with_installation):
+    @pytest.mark.parametrize(
+        ("query", "why"),
+        [
+            ("per_page=500", "above the cap"),
+            ("per_page=0", "used to divide by zero computing total_pages"),
+            ("per_page=-5", "used to reach Postgres as a negative LIMIT"),
+            ("page=0", "pages are 1-indexed"),
+            ("status=bogus", "used to raise ValueError before any DB call"),
+        ],
+    )
+    async def test_invalid_query_params_are_rejected(self, authed_client_with_installation, query, why):
+        """Each of these produced a 500 when the handler validated by hand.
+
+        per_page was clamped with min()/max(), which silently accepted 0 and
+        negatives, and status was coerced with ContainerStatus(status) inside
+        the body. Both are now constrained in the signature, so FastAPI
+        answers 422 before the handler runs.
+        """
         client, installation = authed_client_with_installation
 
         with _mock_github_admin():
-            response = await client.get(
-                f"/api/v1/installations/{installation.github_installation_id}/sessions?per_page=500"
-            )
+            response = await client.get(f"/api/v1/installations/{installation.github_installation_id}/sessions?{query}")
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["per_page"] == 100
+        assert response.status_code == 422, why
 
     async def test_session_response_fields(self, authed_client_with_installation):
         client, installation = authed_client_with_installation
