@@ -126,7 +126,7 @@ DATABASE_URL=postgresql+asyncpg://helprs:helprs@db:5432/helprs
 # JWT signing key -- keep it secret, keep it safe
 SECRET_KEY=           # python -c "import secrets; print(secrets.token_urlsafe(48))"
 
-# Encryption key for stored Claude credentials
+# Encryption key for stored credentials (see "Rotating the encryption key" below)
 FERNET_KEY=           # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # Admin panel password (required when ENVIRONMENT=production)
@@ -322,6 +322,45 @@ For direct database access, use the admin panel at `/admin`:
 If you enabled **Post results to PR** in installation settings, the score card is also posted as a PR comment.
 
 ---
+
+## Rotating the encryption key
+
+`FERNET_KEY` encrypts the GitHub and Claude credentials stored in your
+database. Replacing it naively would make every one of them unreadable, so
+rotation happens in four steps and needs no downtime.
+
+**1. Generate a key and put the old one behind it.**
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+```bash
+FERNET_KEY=<the new key>
+FERNET_KEY_FALLBACKS=["<the previous key>"]
+```
+
+**2. Deploy.** New credentials are written with the new key; existing ones are
+still read with the old one.
+
+**3. Re-encrypt what is already stored.**
+
+```bash
+docker exec helprs-api-1 uv run python -m helprs.scripts.rotate_credentials
+```
+
+It reports how many credentials it rewrote. If any row cannot be read by any
+configured key it names them and exits non-zero, leaving them untouched — add
+the missing key to `FERNET_KEY_FALLBACKS` and run it again. The script is safe
+to re-run.
+
+**4. Empty `FERNET_KEY_FALLBACKS` and deploy again.** Only now is the old key
+genuinely retired; until then it still decrypts real credentials and must be
+protected exactly like the live one.
+
+> Rotate whenever the key may have been exposed — a leaked `.env`, a departing
+> operator, an unexplained access. Rotating `FERNET_KEY` does not invalidate
+> user sessions; that is `SECRET_KEY`, which is separate.
 
 ## Troubleshooting
 

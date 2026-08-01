@@ -23,7 +23,7 @@ class FakeUser:
 
     def __init__(self, token: str = "gho_usertoken") -> None:
         settings = get_settings()
-        self.github_access_token_enc = fernet_encrypt(token, settings.FERNET_KEY.get_secret_value())
+        self.github_access_token_enc = fernet_encrypt(token, settings.fernet_keys)
         self.github_id = 4242
         self.github_login = "octocat"
 

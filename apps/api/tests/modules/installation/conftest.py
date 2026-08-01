@@ -42,7 +42,7 @@ def settings():
 async def test_user(db_session, settings):
     """Create a test GitHubUser and return (user, valid_jwt) tuple."""
     user_id = uuid.uuid4()
-    encrypted_token = fernet_encrypt("gho_test_token_12345", settings.FERNET_KEY.get_secret_value())
+    encrypted_token = fernet_encrypt("gho_test_token_12345", settings.fernet_keys)
     user = GitHubUser(
         id=user_id,
         github_id=12345678,

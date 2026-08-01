@@ -189,3 +189,29 @@ def test_environment_rejects_unknown_values():
     which is the one guard meant to fail loud at startup."""
     with pytest.raises(ValidationError):
         _make_settings(ENVIRONMENT="prod")
+
+
+def test_fernet_keys_puts_the_primary_first():
+    retired = Fernet.generate_key().decode()
+    s = _make_settings(FERNET_KEY=VALID_FERNET_KEY, FERNET_KEY_FALLBACKS=[retired])
+
+    assert s.fernet_keys == [VALID_FERNET_KEY, retired]
+
+
+def test_fernet_keys_is_just_the_primary_when_no_rotation_is_in_flight():
+    assert _make_settings().fernet_keys == [VALID_FERNET_KEY]
+
+
+def test_a_malformed_fallback_key_fails_at_boot():
+    """Not at first decrypt: the row that would break is exactly the
+    credential a rotation is trying not to lose."""
+    with pytest.raises(ValidationError, match=r"FERNET_KEY_FALLBACKS\[0\]"):
+        _make_settings(FERNET_KEY_FALLBACKS=["not-a-fernet-key"])
+
+
+def test_fallback_keys_are_masked_in_repr():
+    retired = Fernet.generate_key().decode()
+    s = _make_settings(FERNET_KEY_FALLBACKS=[retired])
+
+    assert retired not in f"{s!r} {s} {s.model_dump()}"
+    assert retired in s.fernet_keys
