@@ -57,7 +57,7 @@ async def seeded_app(app_with_db):
     session_factory = app_with_db.state.session_factory
 
     async with session_factory() as session:
-        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY)
+        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY.get_secret_value())
         user = GitHubUser(
             github_id=88888888,
             github_login="container-test-user",
@@ -82,7 +82,7 @@ async def seeded_app(app_with_db):
 
         byok = BYOKConfig(
             installation_id=installation.id,
-            encrypted_api_key=fernet_encrypt("sk-ant-test1234567890", settings.FERNET_KEY),
+            encrypted_api_key=fernet_encrypt("sk-ant-test1234567890", settings.FERNET_KEY.get_secret_value()),
             key_status="valid",
             validated_at=datetime.now(UTC),
             key_hint="...7890",
@@ -92,7 +92,7 @@ async def seeded_app(app_with_db):
 
         access_token = create_access_token(
             {"sub": str(user.id), "github_login": user.github_login},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
         )
         await session.commit()
 

@@ -45,7 +45,7 @@ def settings():
 @pytest.fixture
 def webhook_secret(settings):
     """Return the webhook secret for test signing."""
-    return settings.GITHUB_WEBHOOK_SECRET
+    return settings.GITHUB_WEBHOOK_SECRET.get_secret_value()
 
 
 @pytest.fixture

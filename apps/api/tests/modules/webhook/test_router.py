@@ -88,7 +88,7 @@ def session_factory(app_with_db):
 @pytest.fixture
 def webhook_secret():
     get_settings.cache_clear()
-    return get_settings().GITHUB_WEBHOOK_SECRET
+    return get_settings().GITHUB_WEBHOOK_SECRET.get_secret_value()
 
 
 def _delivery_id() -> str:

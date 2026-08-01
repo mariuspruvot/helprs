@@ -43,7 +43,7 @@ async def authed_client_with_installation(app_with_db):
     session_factory = app_with_db.state.session_factory
 
     async with session_factory() as session:
-        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY)
+        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY.get_secret_value())
         user = GitHubUser(
             github_id=88888888,
             github_login="sessiontest",
@@ -87,7 +87,7 @@ async def authed_client_with_installation(app_with_db):
 
     jwt_token = create_access_token(
         {"sub": str(user_id), "github_login": "sessiontest"},
-        settings.SECRET_KEY,
+        settings.SECRET_KEY.get_secret_value(),
     )
 
     async with AsyncClient(
@@ -164,7 +164,7 @@ class TestListInstallationSessions:
         session_factory = app_with_db.state.session_factory
 
         async with session_factory() as session:
-            encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY)
+            encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY.get_secret_value())
             user = GitHubUser(
                 github_id=99999999,
                 github_login="emptytest",
@@ -195,7 +195,7 @@ class TestListInstallationSessions:
 
         jwt_token = create_access_token(
             {"sub": str(user_id), "github_login": "emptytest"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
         )
 
         async with AsyncClient(

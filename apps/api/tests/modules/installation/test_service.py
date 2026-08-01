@@ -62,7 +62,7 @@ async def _make_other_user(db_session, settings) -> GitHubUser:
         github_login="someone-else",
         email="else@example.com",
         avatar_url=None,
-        github_access_token_enc=fernet_encrypt("gho_other", settings.FERNET_KEY),
+        github_access_token_enc=fernet_encrypt("gho_other", settings.FERNET_KEY.get_secret_value()),
     )
     db_session.add(other)
     await db_session.flush()

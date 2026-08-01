@@ -24,7 +24,7 @@ async def verify_webhook_signature(request: Request) -> bytes:
         await logger.aerror("webhook_secret_not_configured")
         raise UnauthorizedError("Webhook signature verification is not configured")
 
-    if not verify_github_webhook_signature(body, signature, settings.GITHUB_WEBHOOK_SECRET):
+    if not verify_github_webhook_signature(body, signature, settings.GITHUB_WEBHOOK_SECRET.get_secret_value()):
         await logger.awarning(
             "webhook_signature_invalid",
             has_signature=signature is not None,

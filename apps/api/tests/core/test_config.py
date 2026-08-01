@@ -29,9 +29,9 @@ def test_settings_loads_with_valid_values(monkeypatch):
     for var in _ENV_VARS_TO_CLEAR:
         monkeypatch.delenv(var, raising=False)
     s = _make_settings()
-    assert s.DATABASE_URL == "postgresql+asyncpg://test:test@localhost/test"
-    assert s.SECRET_KEY == "test-secret"
-    assert s.FERNET_KEY == VALID_FERNET_KEY
+    assert s.DATABASE_URL.get_secret_value() == "postgresql+asyncpg://test:test@localhost/test"
+    assert s.SECRET_KEY.get_secret_value() == "test-secret"
+    assert s.FERNET_KEY.get_secret_value() == VALID_FERNET_KEY
     assert s.ENVIRONMENT == "development"
     assert s.CORS_ORIGINS == ["http://localhost:5173"]
 
@@ -71,11 +71,11 @@ def test_settings_extra_env_vars_ignored():
 
 
 def test_settings_optional_fields_default_empty(monkeypatch):
-    for var in _ENV_VARS_TO_CLEAR:
+    for var in (*_ENV_VARS_TO_CLEAR, "GITHUB_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     s = _make_settings()
-    assert s.SENTRY_DSN == ""
-    assert s.ANTHROPIC_API_KEY == ""
+    assert s.SENTRY_DSN.get_secret_value() == ""
+    assert s.GITHUB_CLIENT_SECRET.get_secret_value() == ""
 
 
 def test_settings_cors_origins_override():
@@ -87,16 +87,16 @@ PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE K
 
 
 def test_private_key_raw_pem_passes_through():
-    assert PEM.strip() == _make_settings(GITHUB_APP_PRIVATE_KEY=PEM).GITHUB_APP_PRIVATE_KEY
+    assert PEM.strip() == _make_settings(GITHUB_APP_PRIVATE_KEY=PEM).GITHUB_APP_PRIVATE_KEY.get_secret_value()
 
 
 def test_private_key_base64_is_decoded():
     encoded = base64.b64encode(PEM.encode()).decode()
-    assert _make_settings(GITHUB_APP_PRIVATE_KEY=encoded).GITHUB_APP_PRIVATE_KEY == PEM
+    assert _make_settings(GITHUB_APP_PRIVATE_KEY=encoded).GITHUB_APP_PRIVATE_KEY.get_secret_value() == PEM
 
 
 def test_private_key_empty_stays_empty():
-    assert _make_settings(GITHUB_APP_PRIVATE_KEY="").GITHUB_APP_PRIVATE_KEY == ""
+    assert _make_settings(GITHUB_APP_PRIVATE_KEY="").GITHUB_APP_PRIVATE_KEY.get_secret_value() == ""
 
 
 def test_private_key_garbage_is_rejected():
@@ -150,3 +150,42 @@ def test_production_error_lists_every_missing_secret():
         "GITHUB_CLIENT_SECRET",
     ):
         assert expected in message
+
+
+def test_secrets_are_masked_in_repr():
+    """Regression: every credential used to render in cleartext.
+
+    sentry_sdk.init defaults to include_local_variables=True and a live
+    ``settings`` sits in a dozen frames that can raise, so one unhandled 500
+    was enough to upload the whole secret set to a third party.
+    """
+    s = _make_settings(
+        DATABASE_URL="postgresql+asyncpg://u:pgpassw0rd@h/d",
+        SECRET_KEY="secret-key-value",
+        ADMIN_PASSWORD="admin-password-value",
+        GITHUB_CLIENT_SECRET="client-secret-value",
+        GITHUB_WEBHOOK_SECRET="webhook-secret-value",
+        SENTRY_DSN="https://sentry-key@example.com/1",
+    )
+    rendered = f"{s!r} {s} {s.model_dump()}"
+
+    for leaked in (
+        "pgpassw0rd",
+        "secret-key-value",
+        "admin-password-value",
+        "client-secret-value",
+        "webhook-secret-value",
+        "sentry-key",
+        VALID_FERNET_KEY,
+    ):
+        assert leaked not in rendered
+
+    # Still readable on purpose.
+    assert s.SECRET_KEY.get_secret_value() == "secret-key-value"
+
+
+def test_environment_rejects_unknown_values():
+    """A typo like "prod" would silently skip validate_production_secrets,
+    which is the one guard meant to fail loud at startup."""
+    with pytest.raises(ValidationError):
+        _make_settings(ENVIRONMENT="prod")

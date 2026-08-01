@@ -101,7 +101,7 @@ def create_engine() -> AsyncEngine:
     """
     settings = get_settings()
     return create_async_engine(
-        settings.DATABASE_URL,
+        settings.DATABASE_URL.get_secret_value(),
         echo=False,
         pool_pre_ping=True,
         pool_size=settings.DB_POOL_SIZE,

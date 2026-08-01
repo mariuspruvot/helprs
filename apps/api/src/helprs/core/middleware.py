@@ -47,7 +47,7 @@ def configure_sentry(settings: Settings) -> None:
     """Initialize Sentry SDK if SENTRY_DSN is configured."""
     if settings.SENTRY_DSN:
         sentry_sdk.init(
-            dsn=settings.SENTRY_DSN,
+            dsn=settings.SENTRY_DSN.get_secret_value(),
             traces_sample_rate=0.2,
             integrations=[
                 StarletteIntegration(transaction_style="endpoint"),
@@ -89,20 +89,40 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 def setup_middleware(app: FastAPI, settings: Settings) -> None:
-    """Register all middleware on the app in correct order."""
-    # CORS first
+    """Register all middleware on the app.
+
+    Registration order is the REVERSE of execution order: Starlette inserts
+    each new middleware at the front of the stack, so the last one added ends
+    up outermost. Rate limiting is therefore registered first and CORS last.
+
+    CORS outermost is the documented convention and the safe default: any
+    response produced below it then carries the headers. Note this is
+    belt-and-braces rather than a bug fix -- rate-limit rejections already
+    reach the browser correctly, because RateLimitExceeded subclasses
+    HTTPException and is rendered by ExceptionMiddleware, which sits inside
+    the user stack either way. The genuinely broken case, unhandled 500s, is
+    unreachable from here at all: ServerErrorMiddleware always sits outside
+    the user stack, which is why ``_handle_unhandled_exception`` has to set
+    the headers by hand.
+    """
+    # Innermost: rate limiting.
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
+    # Then request logging, so rate-limited requests get logged too.
+    app.add_middleware(RequestLoggingMiddleware)
+
+    # Outermost: CORS, so every response carries the headers -- including the
+    # ones short-circuited by the middleware below it.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID", "Last-Event-ID"],
+        # Set on the way out; allow_headers only governs the request
+        # direction, so without this the frontend cannot read the ID it would
+        # quote in a bug report.
+        expose_headers=["X-Request-ID"],
     )
-
-    # Request logging
-    app.add_middleware(RequestLoggingMiddleware)
-
-    # Rate limiting
-    app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    app.add_middleware(SlowAPIMiddleware)
