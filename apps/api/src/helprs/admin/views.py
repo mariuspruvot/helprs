@@ -3,8 +3,14 @@
 import secrets
 
 import structlog
+from limits import parse
+from limits.storage import MemoryStorage
+from limits.strategies import FixedWindowRateLimiter
+from slowapi.util import get_remote_address
 from sqladmin import Admin, ModelView
 from sqladmin.authentication import AuthenticationBackend
+from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.applications import Starlette
 from starlette.requests import Request
 
 from helprs.core.config import get_settings
@@ -94,6 +100,18 @@ class WebhookEventAdmin(ModelView, model=WebhookEvent):
     icon = "fa-solid fa-bolt"
 
 
+# SlowAPIMiddleware cannot protect this login. It resolves the handler through
+# `_find_route_handler`, which requires `hasattr(route, "endpoint")`; SQLAdmin
+# is a Mount, so the whole /admin subtree is treated as exempt and skipped.
+# Guessing was therefore unlimited against a single shared password that
+# guards user rows and BYOK ciphertext, so the limit is enforced here instead.
+#
+# Storage is per-process, like the app's other limiter: with several uvicorn
+# workers the effective budget is this figure times the worker count. That is
+# still a hard bound on guessing, which is the point.
+_LOGIN_ATTEMPT_LIMIT = parse("5/minute")
+
+
 class AdminAuth(AuthenticationBackend):
     """Password authentication for the admin panel.
 
@@ -104,7 +122,18 @@ class AdminAuth(AuthenticationBackend):
     opening it (``setup_admin`` refuses to mount in that case).
     """
 
+    def __init__(self, secret_key: str) -> None:
+        super().__init__(secret_key=secret_key)
+        # One counter per mounted panel rather than a module global, so the
+        # lifetime matches the app's.
+        self._login_limiter = FixedWindowRateLimiter(MemoryStorage())
+
     async def login(self, request: Request) -> bool:
+        client = get_remote_address(request)
+        if not self._login_limiter.hit(_LOGIN_ATTEMPT_LIMIT, client):
+            logger.warning("admin_login_rate_limited", client=client)
+            return False
+
         form = await request.form()
         password = form.get("password")
         if not isinstance(password, str):
@@ -112,7 +141,7 @@ class AdminAuth(AuthenticationBackend):
 
         # compare_digest("", "") is True, so an unset password would otherwise
         # authenticate an empty form field.
-        expected = get_settings().ADMIN_PASSWORD
+        expected = get_settings().ADMIN_PASSWORD.get_secret_value()
         if not expected or not secrets.compare_digest(password, expected):
             return False
 
@@ -127,7 +156,7 @@ class AdminAuth(AuthenticationBackend):
         return request.session.get("authenticated", False)
 
 
-def setup_admin(app, engine, secret_key: str) -> Admin | None:
+def setup_admin(app: Starlette, engine: AsyncEngine, secret_key: str) -> Admin | None:
     """Mount SQLAdmin at /admin, or nothing at all when no password is set."""
     if not get_settings().ADMIN_PASSWORD:
         logger.warning("admin_panel_disabled", reason="ADMIN_PASSWORD is not set")

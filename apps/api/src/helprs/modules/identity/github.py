@@ -49,7 +49,7 @@ async def exchange_code_for_token(code: str, settings: Settings) -> GitHubOAuthT
                 GITHUB_TOKEN_URL,
                 data={
                     "client_id": settings.GITHUB_CLIENT_ID,
-                    "client_secret": settings.GITHUB_CLIENT_SECRET,
+                    "client_secret": settings.GITHUB_CLIENT_SECRET.get_secret_value(),
                     "code": code,
                 },
                 headers={"Accept": "application/json"},

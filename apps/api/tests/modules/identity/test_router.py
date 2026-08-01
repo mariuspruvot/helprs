@@ -44,7 +44,7 @@ async def authed_client(app_with_db):
     session_factory = app_with_db.state.session_factory
 
     async with session_factory() as session:
-        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY)
+        encrypted_token = fernet_encrypt("gho_test_token", settings.FERNET_KEY.get_secret_value())
         user = GitHubUser(
             github_id=77777777,
             github_login="routertest",
@@ -59,7 +59,7 @@ async def authed_client(app_with_db):
 
     jwt_token = create_access_token(
         {"sub": str(user_id), "github_login": "routertest"},
-        settings.SECRET_KEY,
+        settings.SECRET_KEY.get_secret_value(),
     )
 
     async with AsyncClient(
@@ -161,7 +161,7 @@ class TestRefresh:
 
         refresh_token = create_access_token(
             {"sub": str(user_id), "type": "refresh"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             timedelta(days=7),
         )
 

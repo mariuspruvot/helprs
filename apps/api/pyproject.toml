@@ -18,6 +18,10 @@ dependencies = [
     "structlog>=24.4.0",
     "sentry-sdk[fastapi]>=2.19.0",
     "slowapi>=0.1.9",
+    # Pulled in by slowapi, declared because it is imported directly to rate
+    # limit the SQLAdmin login, which slowapi's middleware cannot see: it
+    # skips anything mounted rather than routed.
+    "limits>=3.0.0",
     "itsdangerous>=2.2.0",
     "aiodocker>=0.23.0",
 ]

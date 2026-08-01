@@ -62,7 +62,7 @@ class TestAuthenticateWithCode:
         assert user.github_id == 13579
         assert user.github_login == "freshuser"
         assert isinstance(tokens, TokenPair)
-        assert decode_access_token(tokens.access_token, settings.SECRET_KEY)["sub"] == str(user.id)
+        assert decode_access_token(tokens.access_token, settings.SECRET_KEY.get_secret_value())["sub"] == str(user.id)
 
     async def test_stores_the_github_token_encrypted(self, db_session, settings, monkeypatch):
         _serve_oauth(monkeypatch, profile_id=24680, login="encrypteduser")
@@ -70,7 +70,7 @@ class TestAuthenticateWithCode:
         user, _ = await authenticate_with_code(db_session, "the-code", settings)
 
         assert user.github_access_token_enc != "gho_from_code"
-        assert get_decrypted_github_token(user, settings.FERNET_KEY) == "gho_from_code"
+        assert get_decrypted_github_token(user, settings.FERNET_KEY.get_secret_value()) == "gho_from_code"
 
 
 class TestSyncUser:
@@ -119,8 +119,8 @@ class TestCreateTokenPair:
         pair = create_token_pair(user, settings)
 
         assert pair.access_token != pair.refresh_token
-        access_claims = decode_access_token(pair.access_token, settings.SECRET_KEY)
-        refresh_claims = decode_access_token(pair.refresh_token, settings.SECRET_KEY)
+        access_claims = decode_access_token(pair.access_token, settings.SECRET_KEY.get_secret_value())
+        refresh_claims = decode_access_token(pair.refresh_token, settings.SECRET_KEY.get_secret_value())
         assert access_claims["github_login"] == "testuser"
         assert "type" not in access_claims
         assert refresh_claims["type"] == "refresh"
@@ -131,14 +131,14 @@ class TestRefreshTokens:
         user, _ = test_user
         refresh_token = create_access_token(
             {"sub": str(user.id), "type": "refresh"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             timedelta(days=7),
         )
 
         pair = await refresh_tokens(refresh_token, db_session, settings)
 
         assert isinstance(pair, TokenPair)
-        assert decode_access_token(pair.access_token, settings.SECRET_KEY)["sub"] == str(user.id)
+        assert decode_access_token(pair.access_token, settings.SECRET_KEY.get_secret_value())["sub"] == str(user.id)
 
     async def test_invalid_refresh_token(self, db_session, settings):
         with pytest.raises(UnauthorizedError, match="Invalid or expired"):
@@ -153,7 +153,7 @@ class TestRefreshTokens:
     async def test_user_not_found(self, db_session, settings):
         refresh_token = create_access_token(
             {"sub": str(uuid.uuid4()), "type": "refresh"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             timedelta(days=7),
         )
 
@@ -163,7 +163,7 @@ class TestRefreshTokens:
     async def test_non_uuid_subject_is_rejected(self, db_session, settings):
         refresh_token = create_access_token(
             {"sub": "not-a-uuid", "type": "refresh"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             timedelta(days=7),
         )
 
@@ -171,7 +171,8 @@ class TestRefreshTokens:
             await refresh_tokens(refresh_token, db_session, settings)
 
     async def test_missing_subject_is_rejected(self, db_session, settings):
-        refresh_token = create_access_token({"type": "refresh"}, settings.SECRET_KEY, timedelta(days=7))
+        secret = settings.SECRET_KEY.get_secret_value()
+        refresh_token = create_access_token({"type": "refresh"}, secret, timedelta(days=7))
 
         with pytest.raises(UnauthorizedError, match="Invalid refresh token payload"):
             await refresh_tokens(refresh_token, db_session, settings)
@@ -179,15 +180,15 @@ class TestRefreshTokens:
 
 class TestGetDecryptedGithubToken:
     def test_valid_token(self, settings):
-        user = StoredUser(encrypted_token=fernet_encrypt("gho_test", settings.FERNET_KEY))
+        user = StoredUser(encrypted_token=fernet_encrypt("gho_test", settings.FERNET_KEY.get_secret_value()))
 
-        assert get_decrypted_github_token(user, settings.FERNET_KEY) == "gho_test"
+        assert get_decrypted_github_token(user, settings.FERNET_KEY.get_secret_value()) == "gho_test"
 
     def test_corrupted_token(self, settings):
         user = StoredUser(encrypted_token="corrupted_data")
 
         with pytest.raises(UnauthorizedError, match="corrupted"):
-            get_decrypted_github_token(user, settings.FERNET_KEY)
+            get_decrypted_github_token(user, settings.FERNET_KEY.get_secret_value())
 
 
 class TestUserStats:

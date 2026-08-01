@@ -183,7 +183,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         set_session_factory(session_factory)
         stack.callback(clear_session_factory)
 
-        setup_admin(app, engine, settings.SECRET_KEY)
+        setup_admin(app, engine, settings.SECRET_KEY.get_secret_value())
 
         await _replay_pending_webhook_events(app)
         await _reconcile_stale_sessions(session_factory)

@@ -12,6 +12,9 @@ CLAUDE_RUNNER_IMAGE = "claude-runner:latest"
 
 CONTAINER_MEMORY_BYTES = 512 * 1024 * 1024
 CONTAINER_NANO_CPUS = 1_000_000_000
+# Generous for a git clone plus a node process, tight enough that a runaway
+# fork loop hits the cap instead of the host's process table.
+CONTAINER_PIDS_LIMIT = 512
 
 # The entrypoint reads newline-terminated commands from this FIFO.
 _INPUT_FIFO = "/tmp/claude-input"
@@ -75,11 +78,19 @@ class AioDockerClient:
                 "Env": [f"{k}={v}" for k, v in environment.items()],
                 "Labels": labels,
                 "OpenStdin": True,
+                # This is the one container in the system that executes
+                # untrusted input: `claude --dangerously-skip-permissions`
+                # against PR content written by whoever opened the PR. Memory
+                # and CPU alone do not bound that -- a fork bomb exhausts PIDs
+                # long before it exhausts a 512 MB cap.
                 "HostConfig": {
                     "Binds": volumes,
                     "Memory": CONTAINER_MEMORY_BYTES,
                     "NanoCPUs": CONTAINER_NANO_CPUS,
                     "NetworkMode": "bridge",
+                    "PidsLimit": CONTAINER_PIDS_LIMIT,
+                    "CapDrop": ["ALL"],
+                    "SecurityOpt": ["no-new-privileges"],
                 },
             }
         )

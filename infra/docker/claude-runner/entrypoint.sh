@@ -1,5 +1,7 @@
 #!/bin/bash
-set -euo pipefail
+# -E propagates the ERR trap into functions and subshells; without it a failure
+# inside a helper exits silently.
+set -Eeuo pipefail
 
 # Clean shutdown on SIGTERM/SIGINT (docker stop).
 # Do NOT use `kill 0` — it sends SIGTERM to bash's own process group while
@@ -19,6 +21,37 @@ emit_error() {
   msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
   printf '{"type":"error","error":{"message":"%s"}}\n' "$msg"
+}
+
+# Every setup failure below is meant to be reported through emit_error, but
+# `set -e` aborts on the first unchecked non-zero status without running one.
+# This trap is the backstop so no setup path can exit silently and leave the
+# frontend with a dead session and no reason. It is cleared once setup is done.
+trap 'emit_error "Container setup failed unexpectedly at line ${LINENO}."; exit 1' ERR
+
+# Replace every literal occurrence of a marker with a literal value, in place.
+#
+# Deliberately not `sed`: sed builds an expression *from the data*, so a value
+# containing the delimiter can close the s command and start another one --
+# and GNU sed's `e` command then executes a shell. PR titles are attacker-
+# controlled, which made that a remote code execution path. Here the value
+# reaches awk through the environment (never -v, which expands backslash
+# escapes) and is only ever used with index()/substr(), so no byte of it is
+# parsed as a pattern or as code.
+substitute_inline() {
+  local marker="$1" value="$2"
+  MARKER="$marker" VALUE="$value" awk '
+    BEGIN { m = ENVIRON["MARKER"]; v = ENVIRON["VALUE"]; ml = length(m) }
+    {
+      out = ""
+      while ((p = index($0, m)) > 0) {
+        out = out substr($0, 1, p - 1) v
+        $0 = substr($0, p + ml)
+      }
+      print out $0
+    }
+  ' "$PROMPT_FILE" > /tmp/prompt_tmp.md
+  mv /tmp/prompt_tmp.md "$PROMPT_FILE"
 }
 
 # gh CLI auto-detects GITHUB_TOKEN env var -- no explicit login needed.
@@ -68,7 +101,6 @@ gh pr checkout "$PR_NUMBER" --detach || {
 PR_TITLE=$(jq -r '.title' /tmp/pr_meta.json)
 PR_AUTHOR=$(jq -r '.author.login' /tmp/pr_meta.json)
 PR_DESCRIPTION=$(jq -r '.body // "No description provided."' /tmp/pr_meta.json)
-PR_DIFF=$(cat /tmp/pr_diff.txt)
 FILE_LIST=$(jq -r '.files[].path' /tmp/pr_meta.json)
 
 # Build the prompt file from template + PR context.
@@ -79,17 +111,16 @@ PROMPT_FILE=/tmp/prompt.md
   cat "/skills/$SKILL_NAME/prompt.md"
 } > "$PROMPT_FILE"
 
-# Substitute placeholders using sed (handles large diffs without hitting ARG_MAX).
-# Small fields first (safe as shell vars), then large fields via temp files.
-sed -i "s|{{PR_NUMBER}}|$PR_NUMBER|g" "$PROMPT_FILE"
-sed -i "s|{{PR_TITLE}}|$PR_TITLE|g" "$PROMPT_FILE"
-sed -i "s|{{PR_AUTHOR}}|$PR_AUTHOR|g" "$PROMPT_FILE"
+# Short fields substituted inline; they can appear mid-line in a template.
+substitute_inline "{{PR_NUMBER}}" "$PR_NUMBER"
+substitute_inline "{{PR_TITLE}}" "$PR_TITLE"
+substitute_inline "{{PR_AUTHOR}}" "$PR_AUTHOR"
 
-# Large fields: use sed with file-read to avoid shell expansion limits.
-# PR_DESCRIPTION, FILE_LIST, and PR_DIFF are written to temp files
-# and inserted via sed's r command with a marker-delete approach.
-echo "$PR_DESCRIPTION" > /tmp/pr_description.txt
-echo "$FILE_LIST" > /tmp/pr_filelist.txt
+# Large fields go through files rather than shell variables to stay clear of
+# ARG_MAX on big PRs. printf rather than echo: bash's builtin echo swallows a
+# leading -n/-e/-E, which a PR description can legitimately start with.
+printf '%s\n' "$PR_DESCRIPTION" > /tmp/pr_description.txt
+printf '%s\n' "$FILE_LIST" > /tmp/pr_filelist.txt
 
 # For each large placeholder: replace the line containing it with the file contents.
 # Using awk because sed r-command can't replace inline — it only appends.
@@ -111,6 +142,11 @@ for placeholder_pair in \
     mv /tmp/prompt_tmp.md "$PROMPT_FILE"
   fi
 done
+
+# Setup is done. Past this point a non-zero status is a skill run ending
+# badly, not a setup failure, and the claude invocations handle their own
+# (`|| true`), so the backstop would only produce misleading errors.
+trap - ERR
 
 # ---------------------------------------------------------------------------
 # Multi-turn conversation via per-turn invocations

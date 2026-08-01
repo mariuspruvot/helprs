@@ -82,7 +82,7 @@ async def create_container_session(
     if not byok_config:
         raise NotFoundError("No Claude token configured for this installation")
 
-    claude_oauth_token = fernet_decrypt(byok_config.encrypted_api_key, settings.FERNET_KEY)
+    claude_oauth_token = fernet_decrypt(byok_config.encrypted_api_key, settings.FERNET_KEY.get_secret_value())
 
     # Narrowed to this repo, read-only: the container runs Claude Code over
     # untrusted PR content with network egress.

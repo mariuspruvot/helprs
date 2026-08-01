@@ -7,6 +7,15 @@ on:
     branches: [main]
 
 jobs:
+  # The runner entrypoint executes untrusted PR content and was the only code
+  # in the repo with no linter over it. A shell injection lived there
+  # undetected; shellcheck is what stops the next one.
+  lint-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck infra/docker/claude-runner/entrypoint.sh scripts/*.sh
+
   lint-backend:
     runs-on: ubuntu-latest
     defaults:

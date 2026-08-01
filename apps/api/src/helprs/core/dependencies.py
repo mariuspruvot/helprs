@@ -36,7 +36,7 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 async def _authenticate(request: Request, session: AsyncSession, settings: Settings, token: str) -> GitHubUser:
     """Resolve a bearer token to the user it belongs to."""
     try:
-        payload = decode_access_token(token, settings.SECRET_KEY)
+        payload = decode_access_token(token, settings.SECRET_KEY.get_secret_value())
     except JWTError as e:
         raise UnauthorizedError("Invalid or expired token") from e
 

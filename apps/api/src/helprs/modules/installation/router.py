@@ -100,7 +100,7 @@ async def post_byok(
     installation = await _installation_or_404(session, installation_id)
     await verify_admin_permission(user, installation, settings)
 
-    config = await configure_byok(session, installation.id, body.api_key, settings.FERNET_KEY)
+    config = await configure_byok(session, installation.id, body.api_key, settings.FERNET_KEY.get_secret_value())
     return BYOKConfigResponse.model_validate(config)
 
 

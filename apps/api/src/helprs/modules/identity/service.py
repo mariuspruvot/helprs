@@ -51,7 +51,7 @@ async def sync_user(
     settings: Settings,
 ) -> GitHubUser:
     """Create the user for this GitHub identity, or refresh the stored one."""
-    encrypted_token = fernet_encrypt(access_token, settings.FERNET_KEY)
+    encrypted_token = fernet_encrypt(access_token, settings.FERNET_KEY.get_secret_value())
     user = await repository.get_by_github_id(session, profile.github_id)
 
     if user is None:
@@ -87,11 +87,11 @@ def create_token_pair(user: GitHubUser, settings: Settings) -> TokenPair:
     return TokenPair(
         access_token=create_access_token(
             {"sub": str(user.id), "github_login": user.github_login},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
         ),
         refresh_token=create_access_token(
             {"sub": str(user.id), "type": "refresh"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             REFRESH_TOKEN_LIFETIME,
         ),
     )
@@ -100,7 +100,7 @@ def create_token_pair(user: GitHubUser, settings: Settings) -> TokenPair:
 async def refresh_tokens(refresh_token: str, session: AsyncSession, settings: Settings) -> TokenPair:
     """Validate a refresh token and issue a fresh pair."""
     try:
-        payload = decode_access_token(refresh_token, settings.SECRET_KEY)
+        payload = decode_access_token(refresh_token, settings.SECRET_KEY.get_secret_value())
     except Exception as e:
         raise UnauthorizedError("Invalid or expired refresh token") from e
 

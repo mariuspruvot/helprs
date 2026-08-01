@@ -182,7 +182,7 @@ async def mint_installation_token(
     permissions: dict[str, str] | None = None,
 ) -> str:
     """Mint an installation access token, optionally narrowed to one repo."""
-    app_jwt = create_app_jwt(settings.GITHUB_APP_ID, settings.GITHUB_APP_PRIVATE_KEY)
+    app_jwt = create_app_jwt(settings.GITHUB_APP_ID, settings.GITHUB_APP_PRIVATE_KEY.get_secret_value())
     token = await github.create_installation_access_token(
         github_installation_id,
         app_jwt,
@@ -194,7 +194,7 @@ async def mint_installation_token(
 
 def _user_github_token(user: "GitHubUser", settings: Settings) -> str:
     try:
-        return fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY)
+        return fernet_decrypt(user.github_access_token_enc, settings.FERNET_KEY.get_secret_value())
     except InvalidToken as e:
         raise UnauthorizedError("Stored GitHub token is corrupted") from e
 

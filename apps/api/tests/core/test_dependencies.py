@@ -60,7 +60,7 @@ def _token(settings, login: str = "validuser", **claims) -> tuple[uuid.UUID, str
     user_id = uuid.uuid4()
     token = create_access_token(
         {"sub": str(user_id), "github_login": login, **claims},
-        settings.SECRET_KEY,
+        settings.SECRET_KEY.get_secret_value(),
     )
     return user_id, token
 
@@ -93,7 +93,7 @@ class TestGetCurrentUser:
     async def test_expired_jwt(self, settings):
         token = create_access_token(
             {"sub": str(uuid.uuid4()), "github_login": "test"},
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             timedelta(seconds=-1),
         )
         request = FakeRequest(headers={"Authorization": f"Bearer {token}"})
@@ -109,7 +109,7 @@ class TestGetCurrentUser:
             await get_current_user(request, FakeSession(), settings)
 
     async def test_non_uuid_subject_is_rejected(self, settings):
-        token = create_access_token({"sub": "not-a-uuid"}, settings.SECRET_KEY)
+        token = create_access_token({"sub": "not-a-uuid"}, settings.SECRET_KEY.get_secret_value())
         request = FakeRequest(headers={"Authorization": f"Bearer {token}"})
 
         with pytest.raises(UnauthorizedError, match="Invalid token payload"):

@@ -84,7 +84,7 @@ class TestConfigureByok:
                 db_session,
                 test_installation.id,
                 "sk-ant-api03-test1234",
-                settings.FERNET_KEY,
+                settings.FERNET_KEY.get_secret_value(),
             )
 
         assert config.key_status == "valid"
@@ -98,11 +98,11 @@ class TestConfigureByok:
                 db_session,
                 test_installation.id,
                 "sk-ant-api03-secret99",
-                settings.FERNET_KEY,
+                settings.FERNET_KEY.get_secret_value(),
             )
 
         assert "sk-ant-api03-secret99" not in config.encrypted_api_key
-        assert decrypt_byok_key(config, settings.FERNET_KEY) == "sk-ant-api03-secret99"
+        assert decrypt_byok_key(config, settings.FERNET_KEY.get_secret_value()) == "sk-ant-api03-secret99"
 
     async def test_invalid_key_raises(self, db_session, test_installation, settings):
         with serving_github(claude_key_valid=False), pytest.raises(BYOKKeyInvalidError, match="validation failed"):
@@ -110,7 +110,7 @@ class TestConfigureByok:
                 db_session,
                 test_installation.id,
                 "sk-ant-api03-badkey0",
-                settings.FERNET_KEY,
+                settings.FERNET_KEY.get_secret_value(),
             )
 
     async def test_upsert_updates_existing(self, db_session, test_installation, settings):
@@ -119,13 +119,13 @@ class TestConfigureByok:
                 db_session,
                 test_installation.id,
                 "sk-ant-api03-firstkey1",
-                settings.FERNET_KEY,
+                settings.FERNET_KEY.get_secret_value(),
             )
             second = await configure_byok(
                 db_session,
                 test_installation.id,
                 "sk-ant-api03-secondk2",
-                settings.FERNET_KEY,
+                settings.FERNET_KEY.get_secret_value(),
             )
 
         assert first.id == second.id
@@ -137,11 +137,11 @@ class TestDecryptByokKey:
         api_key = "sk-ant-api03-testkey123"
         config = BYOKConfig(
             installation_id=_UNUSED_INSTALLATION_ID,
-            encrypted_api_key=fernet_encrypt(api_key, settings.FERNET_KEY),
+            encrypted_api_key=fernet_encrypt(api_key, settings.FERNET_KEY.get_secret_value()),
             key_status="valid",
         )
 
-        assert decrypt_byok_key(config, settings.FERNET_KEY) == api_key
+        assert decrypt_byok_key(config, settings.FERNET_KEY.get_secret_value()) == api_key
 
     def test_corrupted_ciphertext_raises(self, settings):
         config = BYOKConfig(
@@ -151,7 +151,7 @@ class TestDecryptByokKey:
         )
 
         with pytest.raises(BYOKKeyInvalidError, match="could not be decrypted"):
-            decrypt_byok_key(config, settings.FERNET_KEY)
+            decrypt_byok_key(config, settings.FERNET_KEY.get_secret_value())
 
 
 class TestDeleteByokConfig:
@@ -161,7 +161,7 @@ class TestDeleteByokConfig:
                 db_session,
                 test_installation.id,
                 "sk-ant-api03-deltest1",
-                settings.FERNET_KEY,
+                settings.FERNET_KEY.get_secret_value(),
             )
 
         assert await delete_byok_config(db_session, test_installation.id) is True
