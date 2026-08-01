@@ -5,10 +5,29 @@ without pulling in the Docker SDK.
 """
 
 import base64
+import contextlib
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
 CLAUDE_RUNNER_IMAGE = "claude-runner:latest"
+
+# Labels stamped on every runner. ``boot_id`` identifies the API process that
+# spawned it, which is how a shutting-down worker tells its own containers
+# apart from a peer's: with several uvicorn workers sharing one Docker socket,
+# "every running container" is not the same set as "mine".
+LABEL_SESSION_ID = "helprs.session_id"
+LABEL_BOOT_ID = "helprs.boot_id"
+
+
+@dataclass(frozen=True)
+class RunnerContainer:
+    """A live runner, identified by both ids the cleanup paths need."""
+
+    container_id: str
+    session_id: UUID
+
 
 CONTAINER_MEMORY_BYTES = 512 * 1024 * 1024
 CONTAINER_NANO_CPUS = 1_000_000_000
@@ -54,6 +73,19 @@ class DockerClient(Protocol):
         """Block until the container exits; return its exit code."""
         ...
 
+    async def container_is_running(self, container_id: str) -> bool:
+        """Whether the container still exists and is running.
+
+        The honest answer to "is this session actually alive?", which the DB
+        cannot give: a row says RUNNING whether its container is streaming or
+        died with the process that started it.
+        """
+        ...
+
+    async def list_runners(self, *, boot_id: str) -> list[RunnerContainer]:
+        """Live runners started by one API process, newest state from Docker."""
+        ...
+
     async def close(self) -> None: ...
 
 
@@ -95,6 +127,31 @@ class AioDockerClient:
             }
         )
         return container.id
+
+    async def container_is_running(self, container_id: str) -> bool:
+        try:
+            container = await self._docker.containers.get(container_id)
+            state = (await container.show()).get("State") or {}
+        except Exception:
+            # Gone, unreachable, or never existed: for every caller here that
+            # means "not alive", and treating an error as "still running"
+            # would leave sessions stuck RUNNING forever.
+            return False
+        return bool(state.get("Running"))
+
+    async def list_runners(self, *, boot_id: str) -> list[RunnerContainer]:
+        containers = await self._docker.containers.list(
+            filters={"label": [f"{LABEL_BOOT_ID}={boot_id}"]},
+        )
+        runners = []
+        for container in containers:
+            # A runner whose session label is missing or unparseable is not
+            # ours to reason about; skipping beats guessing which row it
+            # belongs to and cancelling the wrong session.
+            with contextlib.suppress(KeyError, TypeError, ValueError):
+                labels = container["Labels"] or {}
+                runners.append(RunnerContainer(container_id=container.id, session_id=UUID(labels[LABEL_SESSION_ID])))
+        return runners
 
     async def start_container(self, container_id: str) -> None:
         container = await self._docker.containers.get(container_id)

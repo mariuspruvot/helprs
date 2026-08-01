@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from helprs.core.database import Base
+from helprs.modules.container.docker_client import RunnerContainer
 from helprs.modules.container.models import ContainerSession, ContainerStatus
 from helprs.modules.installation.models import BYOKConfig, Installation
 
@@ -83,6 +84,12 @@ class FakeDockerClient:
 
     async def wait_container(self, container_id: str) -> int:
         return 0
+
+    async def container_is_running(self, container_id: str) -> bool:
+        return container_id in self.started and container_id not in self.removed
+
+    async def list_runners(self, *, boot_id: str) -> list[RunnerContainer]:
+        return []
 
     async def close(self) -> None:
         pass

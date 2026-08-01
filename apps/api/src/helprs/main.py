@@ -22,6 +22,7 @@ from helprs.core.database import (
 from helprs.core.exceptions import DomainError, domain_exception_handler
 from helprs.core.middleware import configure_logging, configure_sentry, setup_middleware
 from helprs.modules.container import cleanup as container_cleanup
+from helprs.modules.container import service as container_service
 from helprs.modules.container.docker_client import AioDockerClient
 from helprs.modules.container.router import router as container_router
 from helprs.modules.identity.router import router as identity_router
@@ -129,25 +130,43 @@ async def _run_container_cleanup(
 
 
 async def _reconcile_stale_sessions(session_factory: SessionFactory) -> None:
-    """Mark sessions left RUNNING/PENDING by a previous run as FAILED."""
+    """Fail sessions whose container is no longer running.
+
+    Takes a Docker client because "unfinished" alone is not evidence of death:
+    with several workers, most RUNNING rows at boot belong to a peer that is
+    still streaming them.
+    """
     try:
-        async with session_factory() as db:
-            await container_cleanup.reconcile_stale_sessions(db)
-            await db.commit()
+        docker = AioDockerClient()
+        try:
+            async with session_factory() as db:
+                await container_cleanup.reconcile_stale_sessions(db, docker)
+                await db.commit()
+        finally:
+            await docker.close()
     except Exception:
         logger.exception("session_reconciliation_failed")
 
 
-async def _stop_running_containers(session_factory: SessionFactory) -> None:
-    """Stop every container still running before the engine goes away."""
+async def _stop_own_containers(session_factory: SessionFactory) -> None:
+    """Stop the containers THIS process started, before the engine goes away.
+
+    Not every container on the host: with ``--workers N`` they share a Docker
+    socket, and stopping the lot cancelled peers' live sessions on any single
+    worker restart.
+    """
     try:
         docker = AioDockerClient()
-        async with session_factory() as db:
-            stopped = await container_cleanup.cleanup_all_running(db, docker)
-            await db.commit()
-            if stopped:
-                logger.info("shutdown_containers_stopped", count=stopped)
-        await docker.close()
+        try:
+            async with session_factory() as db:
+                stopped = await container_cleanup.cleanup_own_running(
+                    db, docker, boot_id=container_service.current_boot_id()
+                )
+                await db.commit()
+                if stopped:
+                    logger.info("shutdown_containers_stopped", count=stopped)
+        finally:
+            await docker.close()
     except Exception:
         logger.exception("shutdown_container_cleanup_failed")
 
@@ -188,7 +207,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _replay_pending_webhook_events(app)
         await _reconcile_stale_sessions(session_factory)
 
-        stack.push_async_callback(_stop_running_containers, session_factory)
+        stack.push_async_callback(_stop_own_containers, session_factory)
         stack.push_async_callback(_drain_replay_tasks, app)
 
         for loop in (_run_webhook_reaper(app), _run_container_cleanup(app)):
