@@ -91,7 +91,9 @@ def create_token_pair(user: GitHubUser, settings: Settings) -> TokenPair:
             settings.SECRET_KEY.get_secret_value(),
         ),
         refresh_token=create_access_token(
-            {"sub": str(user.id), "type": "refresh"},
+            # ver pins the token to the user's current version, so logout can
+            # invalidate every outstanding one by bumping it.
+            {"sub": str(user.id), "type": "refresh", "ver": user.token_version},
             settings.SECRET_KEY.get_secret_value(),
             REFRESH_TOKEN_LIFETIME,
         ),
@@ -112,7 +114,27 @@ async def refresh_tokens(refresh_token: str, session: AsyncSession, settings: Se
     if not user:
         raise UnauthorizedError("User not found")
 
+    if payload.get("ver") != user.token_version:
+        # Issued before a logout. Tokens minted before this field existed have
+        # no "ver" claim and are rejected the same way, which is the intent:
+        # the point of adding it is that older tokens stop being honoured.
+        raise UnauthorizedError("Refresh token has been revoked")
+
     return create_token_pair(user, settings)
+
+
+async def revoke_refresh_tokens(session: AsyncSession, user: GitHubUser) -> None:
+    """Invalidate every refresh token outstanding for this user.
+
+    Logout previously only cleared the cookie, so a token copied out of the
+    browser stayed valid for its full lifetime -- a "log out" that logged
+    nobody out. Bumping the version invalidates all of the user's sessions,
+    not just this browser's: for a tool that holds GitHub and Claude
+    credentials, logging out everywhere is the behaviour worth having, and it
+    is what someone clicking logout after losing a laptop expects.
+    """
+    user.token_version += 1
+    await session.flush()
 
 
 def _parse_subject(subject: object) -> uuid_mod.UUID:

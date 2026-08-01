@@ -5,7 +5,14 @@ export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 let isRefreshing = false
 let refreshPromise: Promise<string | null> | null = null
 
-async function refreshToken(): Promise<string | null> {
+/**
+ * Trade the httpOnly refresh cookie for an access token.
+ *
+ * Also how the OAuth callback obtains its first token: the backend used to
+ * put it in the redirect URL, where it landed in browser history, in the
+ * Referer of the next request, and in every proxy log on the way.
+ */
+export async function refreshToken(): Promise<string | null> {
   const resp = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
     method: 'POST',
     credentials: 'include',

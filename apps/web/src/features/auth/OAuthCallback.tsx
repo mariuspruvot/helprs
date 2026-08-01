@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router'
+import { useNavigate } from 'react-router'
 import { useAuthStore } from './store'
-import { apiFetch } from '../../shared/api/client'
+import { apiFetch, refreshToken } from '../../shared/api/client'
 import { RETURN_URL_STORAGE_KEY } from './ProtectedRoute'
 
 function readPersistedReturnUrl(): string | null {
@@ -21,7 +21,6 @@ function clearPersistedReturnUrl() {
 }
 
 export default function OAuthCallback() {
-  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { login, setUser, returnUrl, setReturnUrl } = useAuthStore()
   const processed = useRef(false)
@@ -30,15 +29,15 @@ export default function OAuthCallback() {
     if (processed.current) return
     processed.current = true
 
-    const token = searchParams.get('access_token')
-    if (!token) {
-      navigate('/', { replace: true })
-      return
-    }
-
-    login(token)
-
-    apiFetch('/api/v1/auth/me')
+    // The access token arrives in a response body, not in the URL: the
+    // backend set the httpOnly refresh cookie on the redirect, and this
+    // trades it for one.
+    refreshToken()
+      .then((token) => {
+        if (!token) throw new Error('No session')
+        login(token)
+        return apiFetch('/api/v1/auth/me')
+      })
       .then((resp) => {
         if (!resp.ok) throw new Error('Failed to fetch user')
         return resp.json()
@@ -56,7 +55,7 @@ export default function OAuthCallback() {
         clearPersistedReturnUrl()
         navigate('/', { replace: true })
       })
-  }, [searchParams, login, setUser, navigate, returnUrl, setReturnUrl])
+  }, [login, setUser, navigate, returnUrl, setReturnUrl])
 
   return (
     <div className="min-h-screen bg-primary text-text-primary flex items-center justify-center">

@@ -20,6 +20,7 @@ from helprs.modules.identity.service import (
     create_token_pair,
     get_decrypted_github_token,
     refresh_tokens,
+    revoke_refresh_tokens,
     sync_user,
 )
 
@@ -27,10 +28,11 @@ from helprs.modules.identity.service import (
 class StoredUser:
     """Stand-in for a GitHubUser row where no database is needed."""
 
-    def __init__(self, *, encrypted_token: str = "", user_id: uuid.UUID | None = None) -> None:
+    def __init__(self, *, encrypted_token: str = "", user_id: uuid.UUID | None = None, token_version: int = 0) -> None:
         self.id = user_id or uuid.uuid4()
         self.github_login = "testuser"
         self.github_access_token_enc = encrypted_token
+        self.token_version = token_version
 
 
 def _serve_oauth(monkeypatch, *, profile_id: int = 99999999, login: str = "newuser") -> None:
@@ -124,13 +126,15 @@ class TestCreateTokenPair:
         assert access_claims["github_login"] == "testuser"
         assert "type" not in access_claims
         assert refresh_claims["type"] == "refresh"
+        # Pins the token to the user's version so logout can revoke it.
+        assert refresh_claims["ver"] == user.token_version
 
 
 class TestRefreshTokens:
     async def test_valid_refresh_returns_a_new_pair(self, db_session, settings, test_user):
         user, _ = test_user
         refresh_token = create_access_token(
-            {"sub": str(user.id), "type": "refresh"},
+            {"sub": str(user.id), "type": "refresh", "ver": user.token_version},
             settings.SECRET_KEY.get_secret_value(),
             timedelta(days=7),
         )
@@ -139,6 +143,44 @@ class TestRefreshTokens:
 
         assert isinstance(pair, TokenPair)
         assert decode_access_token(pair.access_token, settings.SECRET_KEY.get_secret_value())["sub"] == str(user.id)
+
+    async def test_a_token_issued_before_logout_is_rejected(self, db_session, settings, test_user):
+        """A refresh token cannot be withdrawn once issued, so logout bumps
+        the version it was minted under. Before this, clearing the cookie was
+        the whole of "logout" and a copied token stayed valid for a week."""
+        user, _ = test_user
+        refresh_token = create_access_token(
+            {"sub": str(user.id), "type": "refresh", "ver": user.token_version},
+            settings.SECRET_KEY.get_secret_value(),
+            timedelta(days=7),
+        )
+
+        await revoke_refresh_tokens(db_session, user)
+
+        with pytest.raises(UnauthorizedError, match="revoked"):
+            await refresh_tokens(refresh_token, db_session, settings)
+
+    async def test_a_token_with_no_version_claim_is_rejected(self, db_session, settings, test_user):
+        """Tokens minted before the field existed. Rejecting them logs current
+        users out once, which is the point of adding it."""
+        user, _ = test_user
+        legacy = create_access_token(
+            {"sub": str(user.id), "type": "refresh"},
+            settings.SECRET_KEY.get_secret_value(),
+            timedelta(days=7),
+        )
+
+        with pytest.raises(UnauthorizedError, match="revoked"):
+            await refresh_tokens(legacy, db_session, settings)
+
+    async def test_a_fresh_token_still_works_after_revocation(self, db_session, settings, test_user):
+        user, _ = test_user
+        await revoke_refresh_tokens(db_session, user)
+
+        reissued = create_token_pair(user, settings)
+
+        pair = await refresh_tokens(reissued.refresh_token, db_session, settings)
+        assert isinstance(pair, TokenPair)
 
     async def test_invalid_refresh_token(self, db_session, settings):
         with pytest.raises(UnauthorizedError, match="Invalid or expired"):

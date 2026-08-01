@@ -15,7 +15,12 @@ from helprs.core.dependencies import CurrentUser, DbSession, GetSettings
 from helprs.core.exceptions import UnauthorizedError
 from helprs.core.middleware import limiter
 from helprs.modules.identity.schemas import TokenResponse, UserResponse, UserStatsResponse
-from helprs.modules.identity.service import authenticate_with_code, get_user_stats, refresh_tokens
+from helprs.modules.identity.service import (
+    authenticate_with_code,
+    get_user_stats,
+    refresh_tokens,
+    revoke_refresh_tokens,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -94,7 +99,12 @@ async def github_callback(
 
     _, tokens = await authenticate_with_code(session, code, settings)
 
-    response = RedirectResponse(url=f"{settings.APP_BASE_URL}/auth/callback?access_token={tokens.access_token}")
+    # No token in the URL. A redirect target lands in browser history, in the
+    # Referer of whatever the page loads next, and in every proxy log on the
+    # way -- for a credential that authenticates the whole API. The frontend
+    # trades the httpOnly refresh cookie set below for an access token by
+    # calling POST /auth/refresh, which puts it in a response body instead.
+    response = RedirectResponse(url=f"{settings.APP_BASE_URL}/auth/callback")
     _set_refresh_cookie(response, tokens.refresh_token, settings)
     response.delete_cookie(_OAUTH_STATE_COOKIE)
     return response
@@ -139,8 +149,21 @@ async def get_me(request: Request, user: CurrentUser) -> UserResponse:
 
 @router.post("/logout")
 @limiter.limit("30/minute")
-async def logout(request: Request, settings: GetSettings) -> Response:
-    """Clear the refresh cookie."""
+async def logout(
+    request: Request,
+    session: DbSession,
+    settings: GetSettings,
+    user: CurrentUser,
+) -> Response:
+    """Revoke the user's refresh tokens and clear the cookie.
+
+    Authenticated on purpose: revocation needs to know whose tokens to
+    invalidate. Clearing the cookie alone left a copied refresh token valid
+    for its full lifetime, which made this endpoint a no-op against anyone
+    who had actually taken one.
+    """
+    await revoke_refresh_tokens(session, user)
+
     response = Response(content='{"status":"ok"}', media_type="application/json")
     # Attributes must match those used to set it, or the browser keeps it.
     response.delete_cookie(
