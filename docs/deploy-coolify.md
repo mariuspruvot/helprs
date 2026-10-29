@@ -261,6 +261,33 @@ If you enabled **Post results to PR** in the installation settings, the score ca
 
 ---
 
+## 12. Database Backups
+
+The `db-backup` service runs `pg_dump --format=custom` once when it starts, then every `BACKUP_INTERVAL_SECONDS` (default 24h). It keeps the newest `BACKUP_KEEP` dumps (default 7) in `BACKUP_HOST_PATH` on the host (default `/data/backups/helprs`). That directory is outside the `pgdata` volume, so the dumps survive deleting the volume or the Coolify resource.
+
+They do **not** survive losing the server. For that, copy the directory off the host (rsync, rclone, S3...).
+
+Check that backups are being written:
+
+```bash
+# On the server:
+ls -lh /data/backups/helprs
+docker logs $(docker ps -qf label=com.docker.compose.service=db-backup) | tail
+# Expected: "backup written: /backups/helprs_<timestamp>.dump (<size>)"
+```
+
+A failed dump stops the container, so a broken backup shows up as `db-backup` restarting in a loop, not as a silent gap.
+
+Restore a dump (this replaces the current data):
+
+```bash
+# On the server, from the backup directory:
+docker exec -i $(docker ps -qf label=com.docker.compose.service=db) \
+  pg_restore --clean --if-exists -U helprs -d helprs < helprs_<timestamp>.dump
+```
+
+---
+
 ## Troubleshooting
 
 ### Build fails: "path not found"
